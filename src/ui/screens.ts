@@ -6,7 +6,7 @@ import { formatRunTime } from './time';
 export interface ScreenHandlers {
   /** Кнопка «Прокачка» на экране результата. */
   openUpgrade(): void;
-  /** Кнопка «Начать забег» на экране прокачки. */
+  /** Кнопка «Начать забег» — есть и на экране прокачки, и на экране результата. */
   startRun(): void;
 }
 
@@ -52,9 +52,12 @@ export class Screens {
       .querySelector<HTMLButtonElement>('#result-continue')
       ?.addEventListener('click', () => handlers.openUpgrade());
 
-    document
-      .querySelector<HTMLButtonElement>('#upgrade-start')
-      ?.addEventListener('click', () => handlers.startRun());
+    // Один и тот же handlers.startRun() с двух экранов: путь в забег остаётся один.
+    for (const selector of ['#upgrade-start', '#result-start']) {
+      document
+        .querySelector<HTMLButtonElement>(selector)
+        ?.addEventListener('click', () => handlers.startRun());
+    }
 
     document.querySelector<HTMLButtonElement>('#upgrade-reset')?.addEventListener('click', () => {
       this.meta.reset();

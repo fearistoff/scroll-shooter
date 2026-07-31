@@ -68,6 +68,14 @@ export class EnemyPool {
   private readonly hpBarLeft: Float32Array;
   /** Остаток вспышки от урона (ui.damageFlash), тоже по игровому dt. */
   private readonly flashLeft: Float32Array;
+  /**
+   * Остаток сжатия после удара, секунды. Ставится в момент атаки, убывает по
+   * игровому dt; пока > 0, капсула съезжает с peakScale обратно к 1.
+   *
+   * Замах отдельным полем НЕ хранится: он однозначно считается из attackTimer,
+   * а вот сжатие — нет, потому что после удара таймер обнуляется.
+   */
+  private readonly recoverLeft: Float32Array;
 
   /** Цвета для instanceColor. Заведены один раз: в цикле отрисовки нельзя мусорить. */
   private readonly normalColor = new Color(CONFIG.enemies.normal.color);
@@ -110,6 +118,7 @@ export class EnemyPool {
     this.isBig = new Uint8Array(poolSize);
     this.hpBarLeft = new Float32Array(poolSize);
     this.flashLeft = new Float32Array(poolSize);
+    this.recoverLeft = new Float32Array(poolSize);
   }
 
   private static createMesh(
@@ -189,9 +198,10 @@ export class EnemyPool {
     this.stopAt[i] = stopZ - Math.random() * stopLineJitter;
     this.isBig[i] = kind === 'big' ? 1 : 0;
     // Обязательно обнуляем: в этот слот мог попасть таймер убитого зомби, и
-    // новый мигнул бы полоской и вспышкой, не получив урона.
+    // новый мигнул бы полоской, вспышкой и сжатием после чужого удара.
     this.hpBarLeft[i] = 0;
     this.flashLeft[i] = 0;
+    this.recoverLeft[i] = 0;
 
     this.spawnedTotal++;
     if (kind === 'big') this.bigSpawnedTotal++;
@@ -201,7 +211,7 @@ export class EnemyPool {
   update(dt: number, squad: SquadTarget): void {
     this.spawnStream(dt, squad);
 
-    const { normal, big, extraSpeed, attackInterval, attackReachX } = CONFIG.enemies;
+    const { normal, big, extraSpeed, attackInterval, attackReachX, attackAnim } = CONFIG.enemies;
     const { worldSpeed, despawnZ } = CONFIG.world;
     // Зомби идут сами плюс их несёт наезжающий мир.
     const step = (worldSpeed + extraSpeed) * dt;
@@ -215,8 +225,11 @@ export class EnemyPool {
 
       if (this.hpBarLeft[i]! > 0) this.hpBarLeft[i]! -= dt;
       if (this.flashLeft[i]! > 0) this.flashLeft[i]! -= dt;
+      if (this.recoverLeft[i]! > 0) this.recoverLeft[i]! -= dt;
 
-      if (this.posZ[i]! < this.stopAt[i]!) {
+      const arrived = this.posZ[i]! >= this.stopAt[i]!;
+
+      if (!arrived) {
         // Ещё идёт. Не перескакиваем линию остановки за шаг.
         this.posZ[i] = Math.min(this.posZ[i]! + step, this.stopAt[i]!);
       } else {
@@ -224,6 +237,8 @@ export class EnemyPool {
         this.attackTimer[i]! += dt;
         if (this.attackTimer[i]! >= attackInterval) {
           this.attackTimer[i]! -= attackInterval;
+          // Замах кончился ударом — дальше сжатие обратно.
+          this.recoverLeft[i] = attackAnim.recoverSeconds;
           squad.damageNearestShooter(
             this.posX[i]!,
             this.posZ[i]!,
@@ -233,14 +248,20 @@ export class EnemyPool {
         }
       }
 
+      const scale = this.instanceScale(i);
+
       // Страховка: за камеру зомби уходить не должен, но если уйдёт — в пул.
       if (this.posZ[i]! > despawnZ) {
         this.recycle(i);
         continue;
       }
 
-      const y = stats.capsule.length / 2 + stats.capsule.radius;
-      this.matrix.makeTranslation(this.posX[i]!, y, this.posZ[i]!);
+      // Высота центра капсулы умножается на тот же масштаб — иначе раздутый
+      // зомби наполовину провалился бы под дорогу: капсула масштабируется
+      // относительно своего центра, а расти должна от подошвы.
+      const y = (stats.capsule.length / 2 + stats.capsule.radius) * scale;
+      this.matrix.makeScale(scale, scale, scale);
+      this.matrix.setPosition(this.posX[i]!, y, this.posZ[i]!);
       // Цвет пишется рядом с матрицей и по тому же индексу отрисовки: у зомби
       // индекс в пуле и индекс в меше не совпадают (обычные и крупные рисуются
       // разными мешами), и разъехавшись, вспышка досталась бы чужому.
@@ -386,6 +407,40 @@ export class EnemyPool {
     return total;
   }
 
+  /**
+   * Масштаб капсулы зомби i — вся анимация атаки (CONFIG.enemies.attackAnim).
+   *
+   * Сжатие после удара проверяется ПЕРВЫМ и перебивает замах. Сразу после удара
+   * attackTimer почти ноль, то есть замах и так дал бы 1, но порядок нужен на
+   * случай кулдауна короче recoverSeconds: следующий замах там начинается,
+   * когда сжатие ещё идёт, и без приоритета капсула дёргалась бы вверх-вниз.
+   *
+   * Замах считается только у ДОШЕДШИХ до линии остановки: у идущего attackTimer
+   * стоит на стартовом значении (attackInterval − firstAttackDelay), и без этой
+   * проверки при коротком firstAttackDelay зомби ехал бы к отряду уже раздутым.
+   *
+   * Только чтение: таймеры убывают в update, поэтому вызывать можно сколько угодно
+   * раз за кадр — этим пользуется debugSnapshot.
+   */
+  private instanceScale(i: number): number {
+    const { attackInterval, attackAnim } = CONFIG.enemies;
+    const grow = attackAnim.peakScale - 1;
+
+    if (this.recoverLeft[i]! > 0) {
+      return 1 + grow * Math.min(this.recoverLeft[i]! / attackAnim.recoverSeconds, 1);
+    }
+
+    if (this.posZ[i]! < this.stopAt[i]!) return 1;
+
+    const windupSeconds = attackInterval * attackAnim.windupPortion;
+    if (windupSeconds <= 0) return 1;
+
+    const windupLeft = this.attackTimer[i]! - (attackInterval - windupSeconds);
+    if (windupLeft <= 0) return 1;
+
+    return 1 + grow * Math.min(windupLeft / windupSeconds, 1);
+  }
+
   /** Наносит урон зомби i. Возвращает true, если он погиб. */
   private applyDamage(i: number, damage: number): boolean {
     this.hp[i]! -= damage;
@@ -511,6 +566,7 @@ export class EnemyPool {
       this.isBig[i] = this.isBig[last]!;
       this.hpBarLeft[i] = this.hpBarLeft[last]!;
       this.flashLeft[i] = this.flashLeft[last]!;
+      this.recoverLeft[i] = this.recoverLeft[last]!;
     }
 
     this.count--;
@@ -524,6 +580,9 @@ export class EnemyPool {
     stopAt: number;
     kind: ZombieKind;
     hpBarLeft: number;
+    attackTimer: number;
+    recoverLeft: number;
+    scale: number;
   }> {
     const out = [];
     for (let i = 0; i < this.count; i++) {
@@ -534,6 +593,10 @@ export class EnemyPool {
         stopAt: this.stopAt[i]!,
         kind: (this.isBig[i] === 1 ? 'big' : 'normal') as ZombieKind,
         hpBarLeft: +this.hpBarLeft[i]!.toFixed(3),
+        attackTimer: +this.attackTimer[i]!.toFixed(3),
+        recoverLeft: +this.recoverLeft[i]!.toFixed(3),
+        // Фактический масштаб инстанса — по нему проверяется анимация атаки.
+        scale: +this.instanceScale(i).toFixed(3),
       });
     }
     return out;
