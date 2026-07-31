@@ -3,6 +3,13 @@
 # Требует однократной настройки в репозитории: Settings → Pages → Source →
 # «GitHub Actions». Без этого workflow отработает, а публикация упадёт на шаге
 # deploy-pages с ошибкой про не включённые Pages.
+#
+# ВАЖНО: этот workflow должен быть в репозитории ЕДИНСТВЕННЫМ, который публикует
+# Pages. Автоматически предложенный GitHub'ом jekyll-gh-pages.yml прогонял Jekyll
+# по корню репозитория и выкладывал ИСХОДНИКИ: браузер получал исходный index.html
+# со ссылкой на /src/main.ts, то есть на TypeScript, который выполнить не может.
+# Оба workflow висели на одном событии push и на одной concurrency-группе, так что
+# публикацию забирал тот, кто финишировал последним.
 name: Deploy to GitHub Pages
 
 on:
@@ -37,14 +44,20 @@ jobs:
           # Кеш по package-lock.json — он в репозитории, поэтому npm ci честный.
           cache: npm
 
+      # Именно ci, а не install: ставит строго по package-lock.json и падает, если
+      # тот разошёлся с package.json. Разошёлся он однажды и уронил публикацию —
+      # после любого npm install lock-файл нужно коммитить.
       - run: npm ci
 
       # npm run build = tsc --noEmit && vite build: ошибки типов валят публикацию,
       # а не уезжают на прод.
       - run: npm run build
 
-      # actions/configure-pages здесь не нужен: он даёт base_path для сборок с
-      # абсолютным base, а у нас base './' — сборка работает из любой подпапки.
+      # configure-pages сам base_path нам не нужен (base сборки './'), но шаг
+      # оставлен: это связка из штатного шаблона GitHub, и именно она на этом
+      # репозитории уже отработала публикацию без нареканий.
+      - uses: actions/configure-pages@v5
+
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
@@ -57,4 +70,4 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - id: deploy
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
