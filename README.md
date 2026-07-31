@@ -27,7 +27,8 @@ npm run dev
 `npm run typecheck`, `npm run preview` (раздача собранного билда).
 
 Собранная версия — PWA: устанавливается на домашний экран и **играется офлайн**.
-Подробности и ограничения — в разделе «PWA и офлайн».
+Публикуется на GitHub Pages автоматически при push в `main`. Подробности и
+ограничения — в разделе «PWA и офлайн».
 
 ## Договорённости
 
@@ -72,6 +73,8 @@ npm run dev
 ```
 index.html          разметка HUD и экранов, все стили, мета-теги PWA
 vite.config.ts      сборка + плагин, генерирующий service worker с предкешем
+.github/workflows/
+  deploy.yml            сборка и публикация на GitHub Pages
 public/
   manifest.webmanifest  манифест PWA
   icons/                иконки 192/512/512-maskable и apple-touch-icon

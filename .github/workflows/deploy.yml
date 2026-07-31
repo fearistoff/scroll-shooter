@@ -1,0 +1,60 @@
+# Сборка и публикация прототипа на GitHub Pages.
+#
+# Требует однократной настройки в репозитории: Settings → Pages → Source →
+# «GitHub Actions». Без этого workflow отработает, а публикация упадёт на шаге
+# deploy-pages с ошибкой про не включённые Pages.
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  # Ручной запуск: удобно перевыложить сборку, ничего не коммитя.
+  workflow_dispatch:
+
+# Права ровно под задачу: читать код, писать Pages, получить OIDC-токен для
+# deploy-pages.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Публикация одна на репозиторий, параллельные деплои друг друга затирают.
+# cancel-in-progress: false — идущую публикацию не обрываем, она короткая.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Vite 8 требует Node 20.19+/22.12+; 22 — текущий LTS.
+          node-version: '22'
+          # Кеш по package-lock.json — он в репозитории, поэтому npm ci честный.
+          cache: npm
+
+      - run: npm ci
+
+      # npm run build = tsc --noEmit && vite build: ошибки типов валят публикацию,
+      # а не уезжают на прод.
+      - run: npm run build
+
+      # actions/configure-pages здесь не нужен: он даёт base_path для сборок с
+      # абсолютным base, а у нас base './' — сборка работает из любой подпапки.
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

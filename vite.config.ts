@@ -6,11 +6,20 @@ import { defineConfig, type Plugin } from 'vite';
 const PUBLIC_DIR = 'public';
 const SW_FILE = 'sw.js';
 
-/** Все файлы из public/ путями относительно него самого. */
+/**
+ * Файлы из public/ путями относительно него самого.
+ *
+ * Скрытые файлы пропускаются намеренно. Это служебные маркеры хостинга
+ * (.nojekyll для GitHub Pages), которые игре не нужны, а часть раздач их вообще
+ * не отдаёт. Попади такой файл в предкеш — install воркера упал бы целиком:
+ * cache.addAll отклоняется, если хоть один запрос неуспешен, и офлайна не было бы
+ * вовсе. Проверено: без фильтра .nojekyll оказывался в списке.
+ */
 function listPublicFiles(dir: string): string[] {
   const out: string[] = [];
   const walk = (current: string): void => {
     for (const name of readdirSync(current)) {
+      if (name.startsWith('.')) continue;
       const full = join(current, name);
       if (statSync(full).isDirectory()) walk(full);
       else out.push(relative(dir, full).split(sep).join(posix.sep));
