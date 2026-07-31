@@ -50,6 +50,21 @@ export class Boss {
 
   private phase: BossPhase = 'absent';
   private hp = 0;
+  /**
+   * Запас, с которым вышел ЭТОТ босс: CONFIG.boss.totalHp × множитель волны
+   * (CONFIG.run.waveHpGrowth). Слои полосы считаются от него, а не от конфига,
+   * иначе у босса поздней волны слоёв стало бы больше layerCount.
+   */
+  private maxHp = 0;
+  /**
+   * Множитель урона волны, в которой вышел ЭТОТ босс
+   * (CONFIG.run.waveDamageGrowth). Обе атаки умножаются на него.
+   *
+   * 1 по умолчанию, а не 0: пока босса нет, атак всё равно нет, но нулевой
+   * множитель превратил бы прямой spawn() из отладочного скрипта в безобидного
+   * босса, если бы поле когда-нибудь прочли раньше записи.
+   */
+  private damageMul = 1;
   private posZ = 0;
 
   /** Обратный отсчёт до следующей атаки каждого типа. */
@@ -119,14 +134,18 @@ export class Boss {
     return Math.max(0, this.hp);
   }
 
+  /** С каким запасом вышел текущий босс — с учётом множителя волны. */
   get totalHp(): number {
-    return CONFIG.boss.totalHp;
+    return this.maxHp;
   }
 
-  /** HP одного слоя полосы. */
+  /**
+   * HP одного слоя полосы. Считается от запаса ЭТОГО босса, поэтому слоёв всегда
+   * ровно layerCount, какой бы крепкий он ни был.
+   */
   get layerHp(): number {
-    const { totalHp, layerCount } = CONFIG.boss;
-    return layerCount > 0 ? totalHp / layerCount : totalHp;
+    const { layerCount } = CONFIG.boss;
+    return layerCount > 0 ? this.maxHp / layerCount : this.maxHp;
   }
 
   /** Сколько слоёв ещё не снято, включая текущий (это и есть «×N» на полосе). */
@@ -172,6 +191,8 @@ export class Boss {
   reset(): void {
     this.phase = 'absent';
     this.hp = 0;
+    this.maxHp = 0;
+    this.damageMul = 1;
     this.posZ = CONFIG.world.spawnZ;
     this.aoeIn = 0;
     this.allHitIn = 0;
@@ -195,7 +216,11 @@ export class Boss {
     const { totalHp, attacks } = CONFIG.boss;
 
     this.phase = 'entering';
-    this.hp = totalHp;
+    // Босс крепнет с волной наравне с зомби (CONFIG.run.waveHpGrowth).
+    this.maxHp = totalHp * this.run.hpMultiplier;
+    this.hp = this.maxHp;
+    // Урон обеих атак — своим множителем волны, как у зомби.
+    this.damageMul = this.run.damageMultiplier;
     this.posZ = CONFIG.world.spawnZ;
     // Первые атаки не сразу по прибытии: игрок должен успеть понять, что вышло.
     this.aoeIn = attacks.firstAttackDelay;
@@ -288,7 +313,7 @@ export class Boss {
           this.telegraphX,
           0,
           aoe.radius,
-          aoe.damage,
+          aoe.damage * this.damageMul,
         );
         this.telegraph.visible = false;
         this.aoeIn = aoe.cooldown;
@@ -312,7 +337,7 @@ export class Boss {
     if (this.allHitIn <= 0) {
       this.allHitIn = allHit.cooldown;
       this.recoverLeft = CONFIG.enemies.attackAnim.recoverSeconds;
-      this.allHitsTotal += this.squad.damageAllShooters(allHit.damage);
+      this.allHitsTotal += this.squad.damageAllShooters(allHit.damage * this.damageMul);
     }
   }
 
@@ -375,6 +400,8 @@ export class Boss {
   debugSnapshot(): {
     phase: BossPhase;
     hp: number;
+    maxHp: number;
+    damageMul: number;
     z: number;
     layersRemaining: number;
     layerFill: number;
@@ -388,6 +415,8 @@ export class Boss {
     return {
       phase: this.phase,
       hp: +this.hp.toFixed(2),
+      maxHp: +this.maxHp.toFixed(2),
+      damageMul: +this.damageMul.toFixed(3),
       z: +this.posZ.toFixed(2),
       layersRemaining: this.layersRemaining,
       layerFill: +this.currentLayerFill.toFixed(3),

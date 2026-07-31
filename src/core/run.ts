@@ -76,6 +76,30 @@ export class RunState {
     return CONFIG.run.waveBudgetGrowth ** (this.wave - 1);
   }
 
+  /**
+   * Во сколько раз крепче противники этой волны по сравнению с первой:
+   * 1, 1.2, 1.44, … (CONFIG.run.waveHpGrowth).
+   *
+   * Применяется НА СПАВНЕ, в EnemyPool.spawn и Boss.spawn, и запоминается в
+   * максимуме конкретного противника. Иначе смена волны меняла бы полоски уже
+   * вышедших зомби: доля hp/max поехала бы у всех живых разом.
+   */
+  get hpMultiplier(): number {
+    return CONFIG.run.waveHpGrowth ** (this.wave - 1);
+  }
+
+  /**
+   * Во сколько раз больнее бьют противники этой волны по сравнению с первой
+   * (CONFIG.run.waveDamageGrowth).
+   *
+   * Тоже берётся НА СПАВНЕ и запоминается у противника: зомби, доживший до
+   * следующей волны, бьёт с силой СВОЕЙ волны, а не текущей. Иначе смена волны
+   * усиливала бы уже стоящую у отряда толпу задним числом.
+   */
+  get damageMultiplier(): number {
+    return CONFIG.run.waveDamageGrowth ** (this.wave - 1);
+  }
+
   private resetWaveBudget(): void {
     const growth = this.budgetMultiplier;
     // Округляем каждый вид отдельно: иначе соотношение обычных к крупным
@@ -218,6 +242,8 @@ export class RunState {
     elapsed: number;
     wave: number;
     spawnRateMultiplier: number;
+    hpMultiplier: number;
+    damageMultiplier: number;
   } {
     return {
       total: this.totalZombies,
@@ -230,6 +256,8 @@ export class RunState {
       elapsed: +this.elapsed.toFixed(2),
       wave: this.wave,
       spawnRateMultiplier: +this.spawnRateMultiplier.toFixed(3),
+      hpMultiplier: +this.hpMultiplier.toFixed(3),
+      damageMultiplier: +this.damageMultiplier.toFixed(3),
     };
   }
 }

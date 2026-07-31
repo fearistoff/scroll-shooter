@@ -54,6 +54,18 @@ export class EnemyPool {
   private readonly posX: Float32Array;
   private readonly posZ: Float32Array;
   private readonly hp: Float32Array;
+  /**
+   * С каким запасом зомби вышел: базовое HP вида × множитель волны. Хранится
+   * поштучно, а не берётся из CONFIG, потому что с ростом волн на дороге
+   * одновременно живут зомби разных волн, и доля для полоски у каждого своя.
+   */
+  private readonly maxHp: Float32Array;
+  /**
+   * Сколько снимает один удар ЭТОГО зомби: базовый damagePerHit вида × множитель
+   * волны. Хранится поштучно по той же причине, что и maxHp: на дороге стоят
+   * зомби разных волн, и сила удара у каждого своя.
+   */
+  private readonly damage: Float32Array;
   private readonly attackTimer: Float32Array;
   /** Своя линия остановки у каждого — толпа не выстраивается в стену. */
   private readonly stopAt: Float32Array;
@@ -111,6 +123,8 @@ export class EnemyPool {
     this.posX = new Float32Array(poolSize);
     this.posZ = new Float32Array(poolSize);
     this.hp = new Float32Array(poolSize);
+    this.maxHp = new Float32Array(poolSize);
+    this.damage = new Float32Array(poolSize);
     this.attackTimer = new Float32Array(poolSize);
     this.stopAt = new Float32Array(poolSize);
     this.isBig = new Uint8Array(poolSize);
@@ -187,7 +201,13 @@ export class EnemyPool {
 
     this.posX[i] = x;
     this.posZ[i] = CONFIG.world.spawnZ;
-    this.hp[i] = stats.hp;
+    // Запас растёт от волны к волне (CONFIG.run.waveHpGrowth). Множитель берётся
+    // на спавне и запоминается: у зомби, вышедших в разных волнах, разный максимум.
+    this.hp[i] = stats.hp * this.run.hpMultiplier;
+    this.maxHp[i] = this.hp[i]!;
+    // Урон растёт своим множителем (CONFIG.run.waveDamageGrowth) и тоже
+    // фиксируется на спавне.
+    this.damage[i] = stats.damagePerHit * this.run.damageMultiplier;
     // Атака начинается с паузы: таймер копится только после того, как зомби дошёл
     // до линии остановки, поэтому первый удар прилетает через firstAttackDelay
     // ПОСЛЕ прибытия, а не в тот же кадр. Раньше здесь стоял attackInterval, то
@@ -237,7 +257,7 @@ export class EnemyPool {
           this.attackTimer[i]! -= attackInterval;
           // Замах кончился ударом — дальше сжатие обратно.
           this.recoverLeft[i] = attackAnim.recoverSeconds;
-          squad.damageNearestShooter(this.posX[i]!, this.posZ[i]!, stats.damagePerHit);
+          squad.damageNearestShooter(this.posX[i]!, this.posZ[i]!, this.damage[i]!);
         }
       }
 
@@ -385,7 +405,7 @@ export class EnemyPool {
         this.posX[i]!,
         top + offsetY,
         this.posZ[i]!,
-        this.hp[i]! / stats.hp,
+        this.hp[i]! / this.maxHp[i]!,
         bigOne ? 1 : normalZombieScale,
       );
     }
@@ -558,6 +578,8 @@ export class EnemyPool {
       this.posX[i] = this.posX[last]!;
       this.posZ[i] = this.posZ[last]!;
       this.hp[i] = this.hp[last]!;
+      this.maxHp[i] = this.maxHp[last]!;
+      this.damage[i] = this.damage[last]!;
       this.attackTimer[i] = this.attackTimer[last]!;
       this.stopAt[i] = this.stopAt[last]!;
       this.isBig[i] = this.isBig[last]!;
@@ -574,6 +596,8 @@ export class EnemyPool {
     x: number;
     z: number;
     hp: number;
+    maxHp: number;
+    damage: number;
     stopAt: number;
     kind: ZombieKind;
     hpBarLeft: number;
@@ -587,6 +611,8 @@ export class EnemyPool {
         x: this.posX[i]!,
         z: this.posZ[i]!,
         hp: this.hp[i]!,
+        maxHp: this.maxHp[i]!,
+        damage: this.damage[i]!,
         stopAt: this.stopAt[i]!,
         kind: (this.isBig[i] === 1 ? 'big' : 'normal') as ZombieKind,
         hpBarLeft: +this.hpBarLeft[i]!.toFixed(3),
