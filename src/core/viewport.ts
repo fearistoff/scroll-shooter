@@ -20,6 +20,8 @@ export class Viewport {
 
   private readonly observer: ResizeObserver;
   private readonly onOrientationChange = () => this.apply();
+  /** Изменения самой видимой области: адресная строка, клавиатура, вход в PWA. */
+  private readonly onVisualResize = () => this.apply();
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -32,6 +34,9 @@ export class Viewport {
     this.observer.observe(document.documentElement);
 
     window.addEventListener('orientationchange', this.onOrientationChange);
+    // ResizeObserver на documentElement не ловит изменения visualViewport, а
+    // размер холста считается теперь по нему — подписываемся отдельно.
+    window.visualViewport?.addEventListener('resize', this.onVisualResize);
   }
 
   /** Ширина холста в CSS-пикселях. */
@@ -49,11 +54,32 @@ export class Viewport {
     return this.canvas;
   }
 
+  /**
+   * Доступная область в CSS-пикселях.
+   *
+   * Берётся из visualViewport, а не из window.innerHeight: в standalone-режиме на
+   * iOS innerHeight отдаёт БОЛЬШУЮ величину, чем видимая область, и холст, посчитанный
+   * от неё, не совпадал с тем, что раскладывает CSS, — снизу оставалась чёрная полоса.
+   * visualViewport совпадает с единицей dvh, которой задана высота body.
+   *
+   * documentElement.clientHeight — запас для браузеров без visualViewport.
+   */
+  private static availableSize(): { width: number; height: number } {
+    const visual = window.visualViewport;
+    if (visual !== null && visual !== undefined && visual.width > 0 && visual.height > 0) {
+      return { width: visual.width, height: visual.height };
+    }
+    const root = document.documentElement;
+    return {
+      width: root.clientWidth || window.innerWidth,
+      height: root.clientHeight || window.innerHeight,
+    };
+  }
+
   private apply(): void {
     const { minAspect, maxAspect, maxPixelRatio } = CONFIG.viewport;
 
-    const availWidth = window.innerWidth;
-    const availHeight = window.innerHeight;
+    const { width: availWidth, height: availHeight } = Viewport.availableSize();
     if (availWidth <= 0 || availHeight <= 0) return;
 
     const windowAspect = availWidth / availHeight;
@@ -102,5 +128,6 @@ export class Viewport {
   dispose(): void {
     this.observer.disconnect();
     window.removeEventListener('orientationchange', this.onOrientationChange);
+    window.visualViewport?.removeEventListener('resize', this.onVisualResize);
   }
 }
