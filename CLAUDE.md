@@ -41,8 +41,15 @@ __config.enemies.normal.hp = 5;          // числа крутятся на ж�
 [`src/core/game.ts`](src/core/game.ts) держит сцену, рендер, камеру и все подсистемы.
 **Порядок создания в конструкторе разрывает цикл зависимостей** и менять его нельзя
 произвольно: `crystals → enemies(run, crystals) → mines(enemies) → squad(bullets, mines)
-→ barrels(squad, crystals, run) → gates(squad, run) → boss(squad, run, crystals)`,
-и только потом `mines.addAreaTarget(barrels/boss)`.
+→ barrels(squad, crystals, run, bonusSlot) → gates(squad, run, bonusSlot) →
+boss(squad, run, crystals)`, и только потом `mines.addAreaTarget(barrels/boss)` и
+`bonusSlot.add(barrels/gates)`.
+
+[`src/entities/bonusSlot.ts`](src/entities/bonusSlot.ts) — общий слот: **на экране
+одновременно допустим один бонус**, бочка ИЛИ ворота (стена или колонна турникетов
+целиком считается одним). Оба поля спрашивают разрешение у слота, а не друг у друга,
+иначе бочки и ворота замкнулись бы взаимной зависимостью. Правило стоит только в
+потоках спавна, поэтому явный `spawn()` из замерочных скриптов работает как раньше.
 
 **Порядок внутри `update(dt)` тоже смысловой**, а не случайный:
 

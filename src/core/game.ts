@@ -1,6 +1,7 @@
 import { AxesHelper, Scene, WebGLRenderer } from 'three';
 import { CONFIG } from '../config';
 import { BarrelField } from '../entities/barrels';
+import { BonusSlot } from '../entities/bonusSlot';
 import { Boss } from '../entities/boss';
 import { BulletPool } from '../entities/bullets';
 import { CrystalPool } from '../entities/crystals';
@@ -41,6 +42,8 @@ export class Game {
   readonly squad: Squad;
   readonly barrels: BarrelField;
   readonly gates: GateField;
+  /** Общий слот бонусов: на экране одновременно допустим только один. */
+  readonly bonusSlot = new BonusSlot();
   readonly boss: Boss;
   readonly input: PointerInput;
   readonly hud: Hud;
@@ -80,11 +83,15 @@ export class Game {
     // мины, бочки — отряд, и только потом бочки попадают в цели взрыва.
     this.mines = new MineField(this.scene, this.enemies);
     this.squad = new Squad(this.scene, this.bullets, this.mines);
-    this.barrels = new BarrelField(this.scene, this.squad, this.crystals, this.run);
-    this.gates = new GateField(this.scene, this.squad, this.run);
+    this.barrels = new BarrelField(this.scene, this.squad, this.crystals, this.run, this.bonusSlot);
+    this.gates = new GateField(this.scene, this.squad, this.run, this.bonusSlot);
     this.boss = new Boss(this.scene, this.squad, this.run, this.crystals);
     this.mines.addAreaTarget(this.barrels);
     this.mines.addAreaTarget(this.boss);
+    // Слот заполняется после создания полей: бочки и ворота делят его на двоих, и
+    // каждое поле должно видеть занятость соседа.
+    this.bonusSlot.add(this.barrels);
+    this.bonusSlot.add(this.gates);
     this.input = new PointerInput(canvas);
     this.hud = new Hud();
     this.labels = new LabelLayer();

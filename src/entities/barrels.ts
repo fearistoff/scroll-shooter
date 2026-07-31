@@ -2,6 +2,7 @@ import { BoxGeometry, Mesh, MeshStandardMaterial, type Scene } from 'three';
 import { CONFIG } from '../config';
 import { segmentHitsCircle } from '../core/collision';
 import type { RunState } from '../core/run';
+import type { BonusSlot } from './bonusSlot';
 import type { CrystalPool } from './crystals';
 import type { SquadTarget } from './enemies';
 import { randomSpecialWeapon, type WeaponId } from './weapons';
@@ -104,6 +105,7 @@ export class BarrelField {
     private readonly squad: SquadTarget & BonusReceiver,
     private readonly crystals: CrystalPool,
     private readonly run: RunState,
+    private readonly bonusSlot: BonusSlot,
   ) {
     const { size, poolSize, colors } = CONFIG.barrels;
 
@@ -514,7 +516,17 @@ export class BarrelField {
     if (!this.spawnEnabled || interval <= 0) return;
 
     this.spawnTimer += dt;
-    while (this.spawnTimer >= interval) {
+
+    // На экране допустим только один бонус (бочка или ворота). Пока он там,
+    // подошедший тик НЕ расходуется: таймер держим у порога, и новая бочка
+    // выходит в первый же кадр после того, как экран освободился. Пропускать
+    // тик было бы проще, но тогда к занятости экрана добавлялось бы ещё до
+    // interval секунд пустой дороги.
+    if (!this.bonusSlot.isFree && this.spawnTimer > interval) this.spawnTimer = interval;
+
+    // isFree в условии цикла, а не только перед ним: иначе накопленный таймер
+    // выпустил бы за один кадр сразу две бочки.
+    while (this.spawnTimer >= interval && this.bonusSlot.isFree) {
       this.spawnTimer -= interval;
       const spread = (CONFIG.world.roadWidth / 2) * (lateralSpreadPercent / 100);
       this.spawn((Math.random() * 2 - 1) * spread);

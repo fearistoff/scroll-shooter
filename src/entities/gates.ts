@@ -2,6 +2,7 @@ import { BoxGeometry, Mesh, MeshStandardMaterial, type Scene } from 'three';
 import { CONFIG } from '../config';
 import { segmentHitsSlab } from '../core/collision';
 import type { RunState } from '../core/run';
+import type { BonusSlot } from './bonusSlot';
 
 /** Тип ворот (ТЗ раздел 8). */
 export type GateKind = 'A' | 'B';
@@ -68,6 +69,7 @@ export class GateField {
     scene: Scene,
     private readonly squad: GateTarget,
     private readonly run: RunState,
+    private readonly bonusSlot: BonusSlot,
   ) {
     const { poolSize } = CONFIG.gates;
 
@@ -175,7 +177,16 @@ export class GateField {
     if (!this.spawnEnabled || interval <= 0) return;
 
     this.spawnTimer += dt;
-    while (this.spawnTimer >= interval) {
+
+    // На экране допустим только один бонус (бочка или ворота). Пока он там, тик
+    // не расходуется — таймер держим у порога, и ворота выходят в первый же кадр
+    // после освобождения экрана. Одна стена или колонна — это один бонус: части
+    // выезжают одним вызовом спавна, поэтому слот проверяется до него.
+    if (!this.bonusSlot.isFree && this.spawnTimer > interval) this.spawnTimer = interval;
+
+    // isFree в условии цикла, а не только перед ним: иначе накопленный таймер
+    // выпустил бы за один кадр сразу две стены.
+    while (this.spawnTimer >= interval && this.bonusSlot.isFree) {
       this.spawnTimer -= interval;
 
       // Каждый тик — только шанс, а не гарантия: так ворота вдвое реже прежнего
