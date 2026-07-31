@@ -127,7 +127,8 @@ export class Screens {
       const batch = document.createElement('button');
       batch.className = 'upgrade__batch';
       batch.type = 'button';
-      batch.textContent = `×${CONFIG.meta.batchSize}`;
+      // Текст проставляется в refreshUpgrades: на кнопке не потолок пачки, а
+      // сколько уровней реально оплатит текущий банк.
       batch.addEventListener('click', () => {
         this.meta.buyBatch(id);
         this.refreshUpgrades();
@@ -166,7 +167,12 @@ export class Screens {
       row.meta.textContent = `${level}/${max} · ${effect}`;
       row.buy.textContent = cost === null ? 'макс.' : `${cost} EXP`;
       row.buy.disabled = !this.meta.canBuy(id);
-      row.batch.disabled = !this.meta.canBuy(id);
+
+      // Пачка тратит весь банк, но не больше batchSize уровней, — на кнопке
+      // стоит фактическое число, чтобы было видно, за что жмёшь.
+      const batchCount = this.meta.affordableLevels(id);
+      row.batch.textContent = `×${batchCount}`;
+      row.batch.disabled = batchCount === 0;
     }
   }
 

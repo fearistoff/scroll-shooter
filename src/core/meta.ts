@@ -98,6 +98,28 @@ export class MetaProgress {
   }
 
   /**
+   * Сколько уровней реально возьмёт кнопка «пачкой»: сколько успеет оплатить
+   * банк, но не больше limit. Считается тем же экспоненциальным шагом цены, что
+   * и покупка, — иначе подпись на кнопке разошлась бы с результатом нажатия.
+   */
+  affordableLevels(id: UpgradeId, limit = CONFIG.meta.batchSize): number {
+    let count = 0;
+    let bank = this.bankValue;
+    let level = this.level(id);
+    const { baseCost, maxLevel } = CONFIG.meta.upgrades[id];
+
+    while (count < limit && level < maxLevel) {
+      const cost = Math.round(baseCost * CONFIG.meta.costGrowth ** level);
+      if (bank < cost) break;
+      bank -= cost;
+      level++;
+      count++;
+    }
+
+    return count;
+  }
+
+  /**
    * Покупает до count уровней подряд, пока хватает EXP и есть куда расти.
    * Возвращает, сколько уровней куплено. Нужна на поздних уровнях: жать кнопку
    * по одному разу пятьдесят раз невыносимо.
