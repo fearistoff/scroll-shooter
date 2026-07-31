@@ -27,7 +27,9 @@ export interface BossTarget {
 }
 
 /**
- * Босс-гигант (ТЗ раздел 10).
+ * Босс-гигант (ТЗ раздел 10). ЭТО ТОЖЕ ЗОМБИ — зомби-босс, а не отдельный вид
+ * противника: визуальный язык у него общий с толпой (замах раздуванием, вспышка
+ * светлым оттенком своего цвета), отличаются только числа и набор атак.
  *
  * Один на забег, выходит после того, как волна зачищена. Доезжает до ~1/3 экрана
  * снизу, останавливается и чередует две атаки:
@@ -59,6 +61,11 @@ export class Boss {
 
   /** Остаток вспышки от урона (ui.damageFlash). Тает по игровому dt. */
   private flashLeft = 0;
+  /**
+   * Остаток сжатия после удара, секунды. Как у зомби: замах считается из таймеров
+   * атак, а сжатие — нет, потому что после удара таймер уже перезаряжен.
+   */
+  private recoverLeft = 0;
   /** Материал и цвета для вспышки: босс — обычный меш, не инстанс. */
   private readonly material: MeshStandardMaterial;
   private readonly baseColor = new Color(CONFIG.boss.color);
@@ -174,7 +181,11 @@ export class Boss {
     this.allHitsTotal = 0;
     this.aoeCastTotal = 0;
     this.flashLeft = 0;
+    this.recoverLeft = 0;
     this.material.color.copy(this.baseColor);
+    // Масштаб тоже сбрасывается: босс мог умереть на пике замаха, и следующий
+    // забег он начал бы раздутым — меш один на всю игру, его не пересоздают.
+    this.mesh.scale.setScalar(1);
     this.mesh.visible = false;
     this.telegraph.visible = false;
   }
@@ -190,6 +201,11 @@ export class Boss {
     this.aoeIn = attacks.firstAttackDelay;
     this.allHitIn = attacks.firstAttackDelay + attacks.allHit.cooldown / 2;
     this.telegraphIn = 0;
+    // Босс прошлой волны мог погибнуть на пике замаха, а меш один на всю игру:
+    // без сброса следующий вышел бы уже раздутым. reset() здесь не поможет — он
+    // вызывается только на старте забега, а волн с боссом в забеге много.
+    this.recoverLeft = 0;
+    this.mesh.scale.setScalar(1);
     this.mesh.visible = true;
   }
 
@@ -198,9 +214,9 @@ export class Boss {
     if (!this.isActive) return;
 
     const { capsule, stopZ, approachSpeed } = CONFIG.boss;
-    const y = capsule.length / 2 + capsule.radius;
 
     if (this.flashLeft > 0) this.flashLeft -= dt;
+    if (this.recoverLeft > 0) this.recoverLeft -= dt;
     this.material.color.copy(this.flashLeft > 0 ? this.flashColor : this.baseColor);
 
     if (this.phase === 'entering') {
@@ -211,7 +227,53 @@ export class Boss {
       this.updateAttacks(dt);
     }
 
+    // Масштаб считается ПОСЛЕ атак: удар, случившийся в этом кадре, уже поставил
+    // recoverLeft, и сжатие начинается с пика, а не со следующего кадра.
+    const scale = this.attackScale();
+    this.mesh.scale.setScalar(scale);
+    // Высота центра капсулы умножается на тот же масштаб — рост идёт от подошвы,
+    // иначе раздутый босс провалился бы в дорогу. Круг-телеграф лежит отдельным
+    // мешем и не масштабируется: он размечает область урона, а не тело.
+    const y = (capsule.length / 2 + capsule.radius) * scale;
     this.mesh.position.set(0, y, this.posZ);
+  }
+
+  /**
+   * Масштаб капсулы босса — анимация атаки, та же, что у зомби
+   * (CONFIG.enemies.attackAnim), со своим временем замаха (CONFIG.boss.attackAnim).
+   *
+   * Сжатие после удара перебивает замах: удары двух типов идут по своим кулдаунам
+   * и могут сойтись, а сжатие должно доиграть.
+   *
+   * Замах — только в фазе fighting. На выходе (entering) босс не атакует, и
+   * раздуваться ему нечем; заодно это повторяет правило зомби «замах считается
+   * только у дошедших до линии остановки».
+   *
+   * Только чтение: таймеры убывают в update.
+   */
+  private attackScale(): number {
+    const { peakScale, recoverSeconds } = CONFIG.enemies.attackAnim;
+    const grow = peakScale - 1;
+
+    if (this.recoverLeft > 0) {
+      return 1 + grow * Math.min(this.recoverLeft / recoverSeconds, 1);
+    }
+
+    if (this.phase !== 'fighting') return 1;
+
+    const windup = CONFIG.boss.attackAnim.windupSeconds;
+    if (windup <= 0) return 1;
+
+    // Время до УДАРА, а не до начала замаха. У AoE удар в конце телеграфа,
+    // поэтому пока круг на земле — это telegraphIn, а до него ещё и весь телеграф.
+    const aoeStrikeIn =
+      this.telegraphIn > 0
+        ? this.telegraphIn
+        : this.aoeIn + CONFIG.boss.attacks.aoe.telegraphTime;
+    const strikeIn = Math.min(aoeStrikeIn, this.allHitIn);
+    if (strikeIn >= windup) return 1;
+
+    return 1 + grow * (1 - Math.max(strikeIn, 0) / windup);
   }
 
   private updateAttacks(dt: number): void {
@@ -230,6 +292,8 @@ export class Boss {
         );
         this.telegraph.visible = false;
         this.aoeIn = aoe.cooldown;
+        // Замах кончился ударом — дальше сжатие обратно.
+        this.recoverLeft = CONFIG.enemies.attackAnim.recoverSeconds;
       }
     } else {
       this.aoeIn -= dt;
@@ -247,6 +311,7 @@ export class Boss {
     this.allHitIn -= dt;
     if (this.allHitIn <= 0) {
       this.allHitIn = allHit.cooldown;
+      this.recoverLeft = CONFIG.enemies.attackAnim.recoverSeconds;
       this.allHitsTotal += this.squad.damageAllShooters(allHit.damage);
     }
   }
@@ -315,6 +380,10 @@ export class Boss {
     layerFill: number;
     telegraphing: boolean;
     telegraphX: number;
+    aoeIn: number;
+    allHitIn: number;
+    recoverLeft: number;
+    scale: number;
   } {
     return {
       phase: this.phase,
@@ -324,6 +393,11 @@ export class Boss {
       layerFill: +this.currentLayerFill.toFixed(3),
       telegraphing: this.isTelegraphing,
       telegraphX: +this.telegraphX.toFixed(2),
+      aoeIn: +this.aoeIn.toFixed(3),
+      allHitIn: +this.allHitIn.toFixed(3),
+      recoverLeft: +this.recoverLeft.toFixed(3),
+      // Фактический масштаб меша — по нему проверяется анимация атаки.
+      scale: +this.mesh.scale.x.toFixed(3),
     };
   }
 }
