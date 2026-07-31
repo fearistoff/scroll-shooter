@@ -1,0 +1,463 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#0b0b0e" />
+    <title>Zombie Crowd Shooter — прототип</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #0b0b0e;
+        /* Портретный холст центрируется, по бокам — тёмные поля */
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        /* Никаких резиновых прокруток и выделения текста при драге отряда */
+        overscroll-behavior: none;
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-tap-highlight-color: transparent;
+        font-family: system-ui, -apple-system, sans-serif;
+      }
+
+      /* Размер задаётся из viewport.ts (letterbox под соотношение телефона).
+         Контейнер нужен, чтобы HUD ложился ровно на холст, а не на всё окно. */
+      #stage {
+        position: relative;
+        line-height: 0;
+      }
+
+      #game-canvas {
+        display: block;
+        background: #000;
+        /* Драг по холсту не должен скроллить страницу на тач-устройствах */
+        touch-action: none;
+      }
+
+      /* Отладочный HUD слоя 3. В слое 9 его заменит настоящий интерфейс. */
+      #hud {
+        position: absolute;
+        inset: 0;
+        /* Не перехватывает касания — управление отрядом важнее */
+        pointer-events: none;
+        padding: 14px 16px;
+        line-height: 1.3;
+        color: #fff;
+        text-shadow: 0 2px 6px rgba(0, 0, 0, 0.9);
+        font-variant-numeric: tabular-nums;
+      }
+
+      /* EXP слева вверху — как в референсе (3.png, 4.png) */
+      #hud-exp {
+        display: inline-block;
+        padding: 3px 10px;
+        border-radius: 6px;
+        background: rgba(0, 0, 0, 0.45);
+        font-size: 17px;
+        font-weight: 800;
+        letter-spacing: 0.5px;
+        color: #6fe6f5;
+      }
+
+      /* Полоса волны по центру вверху, череп над ней = в конце будет босс */
+      #hud-wave {
+        position: absolute;
+        top: 10px;
+        left: 50%;
+        transform: translateX(-50%);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 2px;
+      }
+
+      #hud-wave-skull {
+        font-size: 20px;
+        line-height: 1;
+      }
+
+      #hud-wave-bar {
+        position: relative;
+        width: 190px;
+        height: 22px;
+        border: 2px solid rgba(0, 0, 0, 0.55);
+        border-radius: 4px;
+        background: rgba(0, 0, 0, 0.5);
+        overflow: hidden;
+      }
+
+      #hud-wave-fill {
+        position: absolute;
+        inset: 0;
+        transform-origin: left center;
+        background: linear-gradient(180deg, #e04a3a, #a81f14);
+      }
+
+      #hud-wave-count {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 15px;
+        font-weight: 800;
+      }
+
+      /* Полоса босса шире полосы волны и красная (ТЗ раздел 10) */
+      #hud-wave.boss #hud-wave-bar {
+        width: 230px;
+        height: 26px;
+      }
+
+      #hud-wave.boss #hud-wave-count {
+        color: #ff3a2a;
+        font-size: 18px;
+      }
+
+      /* Полоса и множитель в одной строке. Множитель НЕ внутри полосы: у той
+         overflow: hidden для обрезки заливки, и всё за её краем пропадало. */
+      #hud-wave-row {
+        position: relative;
+        display: flex;
+        align-items: center;
+      }
+
+      /* Множитель «×N» — сколько слоёв полосы осталось.
+         Позиционируется абсолютно, чтобы не сдвигать полосу с центра экрана. */
+      #hud-wave-layers {
+        position: absolute;
+        top: 50%;
+        left: calc(100% + 8px);
+        transform: translateY(-50%);
+        font-size: 16px;
+        font-weight: 800;
+        white-space: nowrap;
+      }
+
+      /* Узкий холст (класс ставит viewport.ts): в верхнюю строку не влезают
+         одновременно EXP, полоса волны и секундомер, поэтому полоса вместе с
+         номером волны опускается под них. */
+      #stage.narrow #hud-wave {
+        top: 46px;
+      }
+
+      /* Номер волны под полосой: босс не конец забега, после него волна следующая */
+      #hud-wave-number {
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 1.5px;
+        opacity: 0.8;
+      }
+
+      /* Секундомер забега — правый верхний угол, симметрично EXP слева */
+      #hud-timer {
+        position: absolute;
+        top: 14px;
+        right: 16px;
+        padding: 3px 10px;
+        border-radius: 6px;
+        background: rgba(0, 0, 0, 0.45);
+        font-size: 17px;
+        font-weight: 800;
+        letter-spacing: 0.5px;
+      }
+
+      /* HP и счётчики внизу: вверху их место заняли EXP, полоса волны и
+         секундомер, а под отрядом остаётся свободная полоса дороги. */
+      #hud-bottom {
+        position: absolute;
+        left: 16px;
+        right: 16px;
+        bottom: 14px;
+      }
+
+      #hud-hp {
+        font-size: 22px;
+        font-weight: 700;
+      }
+
+      #hud-debug {
+        margin-top: 4px;
+        font-size: 12px;
+        opacity: 0.65;
+      }
+
+      /* Подписи в мировых координатах (labels.ts): число прочности бочки,
+         значения секций ворот, HP крупных зомби. Позиционируются transform'ом
+         от левого верхнего угла холста. */
+      #hud-labels {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+      }
+
+      .world-label {
+        position: absolute;
+        top: 0;
+        left: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 1px;
+        white-space: nowrap;
+        will-change: transform;
+      }
+
+      .world-label__icon {
+        font-size: 17px;
+        line-height: 1;
+      }
+
+      .world-label__value {
+        font-size: 19px;
+        font-weight: 800;
+        line-height: 1;
+        color: #fff;
+        /* Обводка вместо тени: число читается и на светлой бочке, и на дороге */
+        -webkit-text-stroke: 3px rgba(0, 0, 0, 0.55);
+        paint-order: stroke fill;
+      }
+
+      .world-label--cracked50 .world-label__value {
+        color: #ffd98a;
+      }
+
+      .world-label--cracked25 .world-label__value {
+        color: #ff9c7a;
+      }
+
+      /* Ворота: знак значения важнее цвета секции — плюс бонус, минус штраф */
+      .world-label--gate-plus .world-label__value {
+        color: #8ed0ff;
+        font-size: 23px;
+      }
+
+      .world-label--gate-minus .world-label__value {
+        color: #ff8a7a;
+        font-size: 23px;
+      }
+
+      /* --- Экраны результата и прокачки (ТЗ раздел 11) --- */
+      .screen {
+        position: absolute;
+        inset: 0;
+        display: none;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 14px;
+        padding: 20px 18px;
+        /* Обязательно: #stage задаёт line-height 0 (убирает зазор под холстом),
+           и без переопределения строки экрана получают нулевую высоту и налезают
+           друг на друга. */
+        line-height: 1.3;
+        background: rgba(8, 9, 12, 0.86);
+        /* Экраны перехватывают ввод: под ними игра не должна ловить драг */
+        pointer-events: auto;
+        overflow-y: auto;
+      }
+
+      .screen.visible {
+        display: flex;
+      }
+
+      .screen__title {
+        font-size: 30px;
+        font-weight: 800;
+        letter-spacing: 0.5px;
+      }
+
+      .screen__row {
+        font-size: 16px;
+        opacity: 0.85;
+      }
+
+      .screen__exp {
+        font-size: 26px;
+        font-weight: 800;
+        color: #6fe6f5;
+      }
+
+      .screen__button {
+        min-width: 190px;
+        padding: 12px 18px;
+        border: 0;
+        border-radius: 8px;
+        background: #3f6fd8;
+        color: #fff;
+        font: inherit;
+        font-size: 17px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      .screen__button--ghost {
+        background: rgba(255, 255, 255, 0.12);
+        font-size: 14px;
+        min-width: 0;
+        padding: 8px 14px;
+      }
+
+      .screen__button:disabled {
+        opacity: 0.35;
+        cursor: default;
+      }
+
+      /* Список улучшений */
+      #upgrade-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        width: 100%;
+        max-width: 340px;
+      }
+
+      .upgrade {
+        display: grid;
+        grid-template-columns: 1fr auto auto;
+        grid-template-areas: 'name buy batch' 'meta buy batch';
+        align-items: center;
+        gap: 2px 8px;
+        padding: 8px 10px;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.07);
+      }
+
+      .upgrade__name {
+        grid-area: name;
+        font-size: 15px;
+        font-weight: 700;
+      }
+
+      .upgrade__meta {
+        grid-area: meta;
+        font-size: 12px;
+        opacity: 0.7;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .upgrade__buy {
+        grid-area: buy;
+        min-width: 74px;
+        padding: 9px 8px;
+        border: 0;
+        border-radius: 6px;
+        background: #2f7d4f;
+        color: #fff;
+        font: inherit;
+        font-size: 13px;
+        font-weight: 700;
+        cursor: pointer;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .upgrade__batch {
+        grid-area: batch;
+        min-width: 42px;
+        padding: 9px 6px;
+        border: 0;
+        border-radius: 6px;
+        background: rgba(47, 125, 79, 0.45);
+        color: #fff;
+        font: inherit;
+        font-size: 13px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      .upgrade__buy:disabled,
+      .upgrade__batch:disabled {
+        opacity: 0.3;
+        cursor: default;
+      }
+
+      /* Полоски HP над стрелками и зомби: видны 3 секунды после урона.
+         Дорожка нужна, чтобы полный запас отличался от половины. */
+      .world-bar {
+        position: absolute;
+        top: 0;
+        left: 0;
+        border-radius: 2px;
+        background: rgba(0, 0, 0, 0.6);
+        box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
+        overflow: hidden;
+        will-change: transform;
+      }
+
+      .world-bar__fill {
+        width: 100%;
+        height: 100%;
+        transform-origin: left center;
+        background: linear-gradient(180deg, #ff5a4a, #cc1f10);
+      }
+
+      /* HP крупного зомби — по ТЗ показан над ним всегда */
+      .world-label--enemy-hp .world-label__value {
+        color: #ffd9d9;
+        font-size: 17px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="stage">
+      <canvas id="game-canvas"></canvas>
+      <div id="hud">
+        <div id="hud-exp"></div>
+        <div id="hud-wave">
+          <div id="hud-wave-skull"></div>
+          <div id="hud-wave-row">
+            <div id="hud-wave-bar">
+              <div id="hud-wave-fill"></div>
+              <span id="hud-wave-count"></span>
+            </div>
+            <span id="hud-wave-layers"></span>
+          </div>
+          <div id="hud-wave-number"></div>
+        </div>
+        <div id="hud-timer"></div>
+        <div id="hud-bottom">
+          <div id="hud-hp"></div>
+          <div id="hud-debug"></div>
+        </div>
+        <div id="hud-labels"></div>
+      </div>
+
+      <div id="screen-result" class="screen">
+        <div id="result-title" class="screen__title"></div>
+        <div id="result-time" class="screen__row"></div>
+        <div class="screen__row">Опыт за забег</div>
+        <div id="result-run-exp" class="screen__exp"></div>
+        <div id="result-bank" class="screen__row"></div>
+        <button id="result-continue" class="screen__button" type="button">Прокачка</button>
+      </div>
+
+      <div id="screen-upgrade" class="screen">
+        <div class="screen__title">Прокачка</div>
+        <div id="upgrade-bank" class="screen__exp"></div>
+        <div id="upgrade-list"></div>
+        <button id="upgrade-start" class="screen__button" type="button">Начать забег</button>
+        <button id="upgrade-reset" class="screen__button screen__button--ghost" type="button">
+          Сбросить прогресс
+        </button>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
