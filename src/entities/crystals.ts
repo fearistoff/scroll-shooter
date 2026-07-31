@@ -21,9 +21,10 @@ export type CollectHandler = (value: number) => void;
  * через swap-remove, активные непрерывно в [0, count). За забег кристаллов
  * сотни, поэтому создавать их по одному нельзя.
  *
- * Кристалл едет вместе с миром и одновременно стягивается по x к отряду — так
- * поток сходится к игроку и читается как «собирается», а не «проезжает мимо».
- * Собирается автоматически на линии отряда: подбирать вручную по ТЗ не нужно.
+ * Кристалл летит быстрее дороги (exp.speedScale к скорости мира) и одновременно
+ * стягивается по x к отряду — так поток сходится к игроку и читается как
+ * «собирается», а не «проезжает мимо». Собирается автоматически на линии отряда:
+ * подбирать вручную по ТЗ не нужно.
  */
 export class CrystalPool {
   private readonly mesh: InstancedMesh;
@@ -97,8 +98,9 @@ export class CrystalPool {
    */
   update(dt: number, squadX: number, onCollect: CollectHandler): void {
     const { worldSpeed } = CONFIG.world;
-    const { y, magnetLerp, collectZ, spinPerSecond } = CONFIG.exp;
-    const step = worldSpeed * dt;
+    const { y, speedScale, magnetLerp, collectZ, spinPerSecond } = CONFIG.exp;
+    // Кристалл летит быстрее дороги: скорость мира, умноженная на speedScale.
+    const step = worldSpeed * speedScale * dt;
 
     this.spin = (this.spin + spinPerSecond * dt * Math.PI * 2) % (Math.PI * 2);
     this.rotation.setFromAxisAngle(this.spinAxis, this.spin);
