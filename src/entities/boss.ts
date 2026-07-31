@@ -1,6 +1,7 @@
 import {
   CapsuleGeometry,
   CircleGeometry,
+  Color,
   Mesh,
   MeshBasicMaterial,
   MeshStandardMaterial,
@@ -10,6 +11,7 @@ import { CONFIG } from '../config';
 import { segmentHitsCircle } from '../core/collision';
 import type { RunState } from '../core/run';
 import type { CrystalPool } from './crystals';
+import { makeFlashColor } from './flash';
 
 /** Фаза боссфайта. */
 export type BossPhase = 'absent' | 'entering' | 'fighting' | 'dead';
@@ -55,6 +57,14 @@ export class Boss {
   private telegraphIn = 0;
   private telegraphX = 0;
 
+  /** Остаток вспышки от урона (ui.damageFlash). Тает по игровому dt. */
+  private flashLeft = 0;
+  /** Материал и цвета для вспышки: босс — обычный меш, не инстанс. */
+  private readonly material: MeshStandardMaterial;
+  private readonly baseColor = new Color(CONFIG.boss.color);
+  /** Вспышка — светлый оттенок собственного цвета босса. */
+  private readonly flashColor = makeFlashColor(CONFIG.boss.color);
+
   private aoeHitsTotal = 0;
   private allHitsTotal = 0;
   private aoeCastTotal = 0;
@@ -67,9 +77,10 @@ export class Boss {
   ) {
     const { capsule, color, telegraph } = CONFIG.boss;
 
+    this.material = new MeshStandardMaterial({ color, roughness: 0.75, metalness: 0.05 });
     this.mesh = new Mesh(
       new CapsuleGeometry(capsule.radius, capsule.length, 6, 16),
-      new MeshStandardMaterial({ color, roughness: 0.75, metalness: 0.05 }),
+      this.material,
     );
     this.mesh.visible = false;
     scene.add(this.mesh);
@@ -162,6 +173,8 @@ export class Boss {
     this.aoeHitsTotal = 0;
     this.allHitsTotal = 0;
     this.aoeCastTotal = 0;
+    this.flashLeft = 0;
+    this.material.color.copy(this.baseColor);
     this.mesh.visible = false;
     this.telegraph.visible = false;
   }
@@ -186,6 +199,9 @@ export class Boss {
 
     const { capsule, stopZ, approachSpeed } = CONFIG.boss;
     const y = capsule.length / 2 + capsule.radius;
+
+    if (this.flashLeft > 0) this.flashLeft -= dt;
+    this.material.color.copy(this.flashLeft > 0 ? this.flashColor : this.baseColor);
 
     if (this.phase === 'entering') {
       // Босс идёт сам плюс его несёт наезжающий мир.
@@ -270,6 +286,7 @@ export class Boss {
 
   private applyDamage(damage: number): void {
     this.hp -= damage;
+    this.flashLeft = CONFIG.ui.damageFlash.seconds;
     if (this.hp > 0) return;
 
     this.hp = 0;

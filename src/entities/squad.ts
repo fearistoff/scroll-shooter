@@ -1,5 +1,6 @@
 import {
   CapsuleGeometry,
+  Color,
   DynamicDrawUsage,
   InstancedMesh,
   Matrix4,
@@ -12,6 +13,7 @@ import type { BonusReceiver } from './barrels';
 import type { BossTarget } from './boss';
 import type { BulletPool } from './bullets';
 import type { SquadTarget } from './enemies';
+import { makeFlashColor } from './flash';
 import type { GateTarget } from './gates';
 import type { MineField } from './mines';
 import {
@@ -28,6 +30,8 @@ interface Ally {
   weapon: WeaponState;
   /** Сколько секунд ещё показывать полоску HP. Ставится при уроне. */
   hpBarLeft: number;
+  /** Остаток вспышки от урона (ui.damageFlash). Ставится там же. */
+  flashLeft: number;
 }
 
 /**
@@ -57,10 +61,21 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
 
   /** Сколько секунд ещё показывать полоску HP героя. */
   private heroHpBarLeft = 0;
+  /** Остаток вспышки героя от урона (ui.damageFlash). */
+  private heroFlashLeft = 0;
 
   private readonly allyMesh: InstancedMesh;
   private readonly matrix = new Matrix4();
   private readonly allies: Ally[] = [];
+
+  /** Материал героя — по нему переключается его вспышка (он один, не инстанс). */
+  private readonly heroMaterial: MeshStandardMaterial;
+  /** Цвета для вспышек. Заведены один раз: раскладка строя идёт каждый кадр. */
+  private readonly heroColor = new Color(CONFIG.player.colors.hero);
+  private readonly allyColor = new Color(CONFIG.player.colors.ally);
+  // Вспышка — светлый оттенок СВОЕГО цвета, поэтому у героя и союзника разная.
+  private readonly heroFlash = makeFlashColor(CONFIG.player.colors.hero);
+  private readonly allyFlash = makeFlashColor(CONFIG.player.colors.ally);
 
   /** Общее стрелковое оружие отряда (ТЗ раздел 6: подобрал — у всех). */
   private commonWeapon: WeaponId;
@@ -89,9 +104,15 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
     this.commonWeapon = startWeapon as WeaponId;
     this.heroWeapon = new WeaponState(this.commonWeapon);
 
+    // Материал героя держим ссылкой: его цвет переключается на вспышку при уроне.
+    this.heroMaterial = new MeshStandardMaterial({
+      color: colors.hero,
+      roughness: 0.7,
+      metalness: 0,
+    });
     this.heroMesh = new Mesh(
       new CapsuleGeometry(heroCapsule.radius, heroCapsule.length, 4, 12),
-      new MeshStandardMaterial({ color: colors.hero, roughness: 0.7, metalness: 0 }),
+      this.heroMaterial,
     );
     // Капсула центрируется по середине: поднимаем на пол-высоты, чтобы ноги
     // стояли на дороге (y = 0).
@@ -100,7 +121,10 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
 
     this.allyMesh = new InstancedMesh(
       new CapsuleGeometry(allyCapsule.radius, allyCapsule.length, 4, 10),
-      new MeshStandardMaterial({ color: colors.ally, roughness: 0.8, metalness: 0 }),
+      // Белый материал: цвет союзника задаётся через instanceColor, который three
+      // умножает на цвет материала. С бежевым материалом вспышка не смогла бы
+      // стать краснее его — умножение только гасит.
+      new MeshStandardMaterial({ color: 0xffffff, roughness: 0.8, metalness: 0 }),
       Squad.visibleAllyCapacity,
     );
     this.allyMesh.instanceMatrix.setUsage(DynamicDrawUsage);
@@ -202,6 +226,8 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
     this.aimX = null;
     this.aimZ = null;
     this.heroHpBarLeft = 0;
+    this.heroFlashLeft = 0;
+    this.heroMaterial.color.copy(this.heroColor);
     this.allyMesh.count = 0;
     this.allyMesh.instanceMatrix.needsUpdate = true;
     this.heroMesh.position.x = 0;
@@ -211,17 +237,21 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
   update(dt: number, targetPercent: number): void {
     this.percent += (targetPercent - this.percent) * CONFIG.player.followLerp;
 
-    // Таймеры полосок тают по игровому dt: на экранах результата и прокачки
-    // игровой шаг не идёт, поэтому полоски там не гаснут.
+    // Таймеры полосок и вспышек тают по игровому dt: на экранах результата и
+    // прокачки игровой шаг не идёт, поэтому там они не гаснут.
     if (this.heroHpBarLeft > 0) this.heroHpBarLeft -= dt;
+    if (this.heroFlashLeft > 0) this.heroFlashLeft -= dt;
     for (const ally of this.allies) {
       if (ally.hpBarLeft > 0) ally.hpBarLeft -= dt;
+      if (ally.flashLeft > 0) ally.flashLeft -= dt;
     }
 
     this.regenerate(dt);
 
     const squadX = this.x;
     this.heroMesh.position.x = squadX;
+    // Герой — обычный меш, поэтому вспышка у него через цвет материала.
+    this.heroMaterial.color.copy(this.heroFlashLeft > 0 ? this.heroFlash : this.heroColor);
 
     this.layoutAllies(squadX);
     this.fire(dt, squadX);
@@ -263,10 +293,14 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
       this.allyOffset(i);
       this.matrix.makeTranslation(squadX + this.offsetX, y, this.offsetZ);
       this.allyMesh.setMatrixAt(i, this.matrix);
+      // Индекс в меше равен индексу в строю, поэтому вспышку можно писать здесь же.
+      const flashing = (this.allies[i]?.flashLeft ?? 0) > 0;
+      this.allyMesh.setColorAt(i, flashing ? this.allyFlash : this.allyColor);
     }
 
     this.allyMesh.count = visible;
     this.allyMesh.instanceMatrix.needsUpdate = true;
+    if (this.allyMesh.instanceColor !== null) this.allyMesh.instanceColor.needsUpdate = true;
   }
 
   /**
@@ -515,6 +549,7 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
   private hurtHero(incoming: number): void {
     this.heroHp = Math.max(0, this.heroHp - incoming);
     this.heroHpBarLeft = CONFIG.ui.hpBar.showSeconds;
+    this.heroFlashLeft = CONFIG.ui.damageFlash.seconds;
   }
 
   /** Наносит урон союзнику index; выбитый покидает строй. */
@@ -524,6 +559,7 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
 
     ally.hp -= incoming;
     ally.hpBarLeft = CONFIG.ui.hpBar.showSeconds;
+    ally.flashLeft = CONFIG.ui.damageFlash.seconds;
 
     if (ally.hp <= 0) {
       // Выбитый боец покидает строй. Массив = строй, поэтому сдвиг сам подтягивает
@@ -550,8 +586,9 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
         hp: CONFIG.player.allyHp,
         // Случайная фаза: одинаковые накопители у всех дали бы залпы вместо потока.
         weapon: new WeaponState(this.commonWeapon, Math.random()),
-        // Новый боец урона не получал — полоски у него быть не должно.
+        // Новый боец урона не получал — ни полоски, ни вспышки у него быть не должно.
         hpBarLeft: 0,
+        flashLeft: 0,
       });
     }
   }

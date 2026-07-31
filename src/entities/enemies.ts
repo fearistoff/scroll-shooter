@@ -1,5 +1,6 @@
 import {
   CapsuleGeometry,
+  Color,
   DynamicDrawUsage,
   InstancedMesh,
   Matrix4,
@@ -10,6 +11,7 @@ import { CONFIG } from '../config';
 import { segmentHitsCircle } from '../core/collision';
 import type { RunState, ZombieKind } from '../core/run';
 import type { CrystalPool } from './crystals';
+import { makeFlashColor } from './flash';
 
 /**
  * То, по чему бьют зомби. В слое 3 это был один герой, теперь весь отряд,
@@ -64,6 +66,15 @@ export class EnemyPool {
    * ИГРОВОМУ dt — на паузе между забегами полоски не тают.
    */
   private readonly hpBarLeft: Float32Array;
+  /** Остаток вспышки от урона (ui.damageFlash), тоже по игровому dt. */
+  private readonly flashLeft: Float32Array;
+
+  /** Цвета для instanceColor. Заведены один раз: в цикле отрисовки нельзя мусорить. */
+  private readonly normalColor = new Color(CONFIG.enemies.normal.color);
+  private readonly bigColor = new Color(CONFIG.enemies.big.color);
+  // Вспышка — светлый оттенок СВОЕГО цвета, поэтому у каждого вида свой.
+  private readonly normalFlash = makeFlashColor(CONFIG.enemies.normal.color);
+  private readonly bigFlash = makeFlashColor(CONFIG.enemies.big.color);
 
   private count = 0;
   private spawnTimer = 0;
@@ -98,17 +109,21 @@ export class EnemyPool {
     this.stopAt = new Float32Array(poolSize);
     this.isBig = new Uint8Array(poolSize);
     this.hpBarLeft = new Float32Array(poolSize);
+    this.flashLeft = new Float32Array(poolSize);
   }
 
   private static createMesh(
     scene: Scene,
     capsule: { radius: number; length: number },
-    color: number,
+    _color: number,
     poolSize: number,
   ): InstancedMesh {
     const mesh = new InstancedMesh(
       new CapsuleGeometry(capsule.radius, capsule.length, 4, 10),
-      new MeshStandardMaterial({ color, roughness: 0.8, metalness: 0 }),
+      // Материал БЕЛЫЙ намеренно: цвет каждого зомби задаётся через instanceColor,
+      // который three умножает на цвет материала. Оставь здесь зелёный — вспышка
+      // не смогла бы стать краснее его, умножение только гасит.
+      new MeshStandardMaterial({ color: 0xffffff, roughness: 0.8, metalness: 0 }),
       poolSize,
     );
     mesh.instanceMatrix.setUsage(DynamicDrawUsage);
@@ -174,8 +189,9 @@ export class EnemyPool {
     this.stopAt[i] = stopZ - Math.random() * stopLineJitter;
     this.isBig[i] = kind === 'big' ? 1 : 0;
     // Обязательно обнуляем: в этот слот мог попасть таймер убитого зомби, и
-    // новый мигнул бы полоской, не получив урона.
+    // новый мигнул бы полоской и вспышкой, не получив урона.
     this.hpBarLeft[i] = 0;
+    this.flashLeft[i] = 0;
 
     this.spawnedTotal++;
     if (kind === 'big') this.bigSpawnedTotal++;
@@ -198,6 +214,7 @@ export class EnemyPool {
       const stats = bigOne ? big : normal;
 
       if (this.hpBarLeft[i]! > 0) this.hpBarLeft[i]! -= dt;
+      if (this.flashLeft[i]! > 0) this.flashLeft[i]! -= dt;
 
       if (this.posZ[i]! < this.stopAt[i]!) {
         // Ещё идёт. Не перескакиваем линию остановки за шаг.
@@ -224,10 +241,18 @@ export class EnemyPool {
 
       const y = stats.capsule.length / 2 + stats.capsule.radius;
       this.matrix.makeTranslation(this.posX[i]!, y, this.posZ[i]!);
+      // Цвет пишется рядом с матрицей и по тому же индексу отрисовки: у зомби
+      // индекс в пуле и индекс в меше не совпадают (обычные и крупные рисуются
+      // разными мешами), и разъехавшись, вспышка досталась бы чужому.
+      const flashing = this.flashLeft[i]! > 0;
       if (bigOne) {
-        this.bigMesh.setMatrixAt(bigDrawn++, this.matrix);
+        this.bigMesh.setMatrixAt(bigDrawn, this.matrix);
+        this.bigMesh.setColorAt(bigDrawn, flashing ? this.bigFlash : this.bigColor);
+        bigDrawn++;
       } else {
-        this.normalMesh.setMatrixAt(normalDrawn++, this.matrix);
+        this.normalMesh.setMatrixAt(normalDrawn, this.matrix);
+        this.normalMesh.setColorAt(normalDrawn, flashing ? this.normalFlash : this.normalColor);
+        normalDrawn++;
       }
 
       i++;
@@ -237,6 +262,8 @@ export class EnemyPool {
     this.bigMesh.count = bigDrawn;
     this.normalMesh.instanceMatrix.needsUpdate = true;
     this.bigMesh.instanceMatrix.needsUpdate = true;
+    if (this.normalMesh.instanceColor !== null) this.normalMesh.instanceColor.needsUpdate = true;
+    if (this.bigMesh.instanceColor !== null) this.bigMesh.instanceColor.needsUpdate = true;
   }
 
   /**
@@ -352,8 +379,9 @@ export class EnemyPool {
   private applyDamage(i: number, damage: number): boolean {
     this.hp[i]! -= damage;
     // Единственная воронка урона по зомби (попадание пули и взрыв мины идут
-    // через неё), поэтому таймер полоски ставится здесь и только здесь.
+    // через неё), поэтому таймеры полоски и вспышки ставятся здесь и только здесь.
     this.hpBarLeft[i] = CONFIG.ui.hpBar.showSeconds;
+    this.flashLeft[i] = CONFIG.ui.damageFlash.seconds;
     if (this.hp[i]! > 0) return false;
 
     // Кристалл падает там, где зомби погиб; крупный стоит дороже (ТЗ раздел 9).
@@ -471,6 +499,7 @@ export class EnemyPool {
       this.stopAt[i] = this.stopAt[last]!;
       this.isBig[i] = this.isBig[last]!;
       this.hpBarLeft[i] = this.hpBarLeft[last]!;
+      this.flashLeft[i] = this.flashLeft[last]!;
     }
 
     this.count--;
