@@ -54,7 +54,12 @@ export class Game {
   private readonly viewport: Viewport;
   private readonly loop: GameLoop;
 
-  private phase: GamePhase = 'running';
+  /**
+   * Игра открывается экраном прокачки, а не забегом: накопленный в прошлых
+   * сессиях опыт лежит в localStorage, и первым делом игрок должен увидеть, что
+   * его есть на что потратить. Забег начинается кнопкой «Начать забег».
+   */
+  private phase: GamePhase = 'upgrade';
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new WebGLRenderer({
@@ -99,6 +104,10 @@ export class Game {
       (dt) => this.update(dt),
       () => this.render(),
     );
+
+    // Через openUpgrade, а не показом экрана напрямую: так путь в прокачку один и
+    // тот же и при старте, и после забега.
+    this.openUpgrade();
   }
 
   start(): void {
