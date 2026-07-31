@@ -8,6 +8,18 @@
     />
     <meta name="theme-color" content="#0b0b0e" />
     <title>Zombie Crowd Shooter — прототип</title>
+
+    <!-- PWA: манифест и иконки лежат в public/, поэтому пути относительные —
+         сборка с base './' работает и из подпапки. -->
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png" />
+
+    <!-- iOS манифест игнорирует: полноэкранный режим, вид статус-бара и иконку
+         домашнего экрана там задают только эти мета-теги. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Crowd Shooter" />
+    <link rel="apple-touch-icon" href="./icons/apple-touch-icon-180.png" />
     <style>
       :root {
         color-scheme: dark;
@@ -406,12 +418,6 @@
         height: 100%;
         transform-origin: left center;
         background: linear-gradient(180deg, #ff5a4a, #cc1f10);
-      }
-
-      /* HP крупного зомби — по ТЗ показан над ним всегда */
-      .world-label--enemy-hp .world-label__value {
-        color: #ffd9d9;
-        font-size: 17px;
       }
     </style>
   </head>

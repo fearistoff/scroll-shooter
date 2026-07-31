@@ -67,6 +67,8 @@ export class EnemyPool {
 
   private count = 0;
   private spawnTimer = 0;
+  /** Первый зомби забега выходит сразу, а не через интервал. Ставится в reset. */
+  private primeFirstSpawn = true;
 
   /**
    * Выключатель потока. Раньше спавн глушился через interval <= 0, но с разгоном
@@ -303,22 +305,15 @@ export class EnemyPool {
     return hit;
   }
 
-  /**
-   * Перечисляет подписи HP. По ТЗ число показывается ТОЛЬКО над крупным зомби —
-   * и всегда, независимо от того, получал он урон или нет.
+  /*
+   * Подписей HP у зомби НЕТ. Раньше над крупным зомби всегда висело число (ТЗ
+   * раздел 9), но по решению запас врага показывают только полоски, поэтому
+   * forEachLabel у пула зомби удалён вместе с enemies.hpLabelOffsetY.
+   *
+   * Следствие, о котором стоит помнить: полоска появляется лишь на
+   * ui.hpBar.showSeconds после урона, значит у крупного зомби, пока в него не
+   * попали, индикатора нет вообще.
    */
-  forEachLabel(
-    visit: (x: number, y: number, z: number, value: string, icon: string, variant: string) => void,
-  ): void {
-    const { capsule } = CONFIG.enemies.big;
-    // Выше полоски урона, чтобы число и полоска не наложились.
-    const labelY = capsule.length + capsule.radius * 2 + CONFIG.enemies.hpLabelOffsetY;
-
-    for (let i = 0; i < this.count; i++) {
-      if (this.isBig[i] !== 1) continue;
-      visit(this.posX[i]!, labelY, this.posZ[i]!, String(Math.ceil(this.hp[i]!)), '', 'enemy-hp');
-    }
-  }
 
   /**
    * Перечисляет полоски HP: только те зомби, что получали урон в последние
@@ -400,6 +395,14 @@ export class EnemyPool {
     const interval = this.spawnInterval(squad.shooterCount);
     if (!this.spawnEnabled || interval <= 0) return;
 
+    // Первого зомби забега выпускаем сразу, не выжидая интервал: он и так идёт до
+    // зоны огня 4 секунды, а с ожиданием интервала (1.6 с у одиночки) пустая
+    // дорога тянулась 5.5 секунды.
+    if (this.primeFirstSpawn) {
+      this.spawnTimer = interval;
+      this.primeFirstSpawn = false;
+    }
+
     this.spawnTimer += dt;
     while (this.spawnTimer >= interval) {
       this.spawnTimer -= interval;
@@ -417,6 +420,7 @@ export class EnemyPool {
   reset(): void {
     this.count = 0;
     this.spawnTimer = 0;
+    this.primeFirstSpawn = true;
     this.spawnEnabled = true;
     this.killedTotal = 0;
     this.spawnedTotal = 0;
