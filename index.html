@@ -223,19 +223,16 @@
         letter-spacing: 0.5px;
       }
 
-      /* HP и счётчики внизу: вверху их место заняли EXP, полоса волны и
-         секундомер, а под отрядом остаётся свободная полоса дороги. */
+      /* Строка счётчиков внизу: вверху место заняли EXP, полоса волны и
+         секундомер, а под отрядом остаётся свободная полоса дороги.
+         Числа HP здесь больше нет — запас героя показывает только полоска над
+         его головой (ui.hpBar). */
       #hud-bottom {
         position: absolute;
         left: calc(16px + var(--safe-left));
         right: calc(16px + var(--safe-right));
         /* Над домашней полоской: иначе строка счётчиков лезет ей под низ. */
         bottom: calc(14px + var(--safe-bottom));
-      }
-
-      #hud-hp {
-        font-size: 22px;
-        font-weight: 700;
       }
 
       #hud-debug {
@@ -473,7 +470,6 @@
         </div>
         <div id="hud-timer"></div>
         <div id="hud-bottom">
-          <div id="hud-hp"></div>
           <div id="hud-debug"></div>
         </div>
         <div id="hud-labels"></div>

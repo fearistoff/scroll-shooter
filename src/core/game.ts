@@ -192,7 +192,6 @@ export class Game {
     this.world.update(dt);
 
     this.hud.update({
-      hp: this.squad.heroHp,
       weapon: this.squad.weaponId,
       shooters: this.squad.shooterCount,
       hiddenShooters: this.squad.hiddenAllyCount,

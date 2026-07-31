@@ -14,7 +14,6 @@ import { formatRunTime } from './time';
  * любом devicePixelRatio, а по кадру ничего не стоит.
  */
 export interface HudState {
-  hp: number;
   weapon: string;
   shooters: number;
   hiddenShooters: number;
@@ -53,9 +52,19 @@ export class Hud {
   private readonly waveSkullElement: HTMLElement | null;
   private readonly waveLayersElement: HTMLElement | null;
   private readonly waveNumberElement: HTMLElement | null;
-  private readonly hpElement: HTMLElement | null;
   private readonly debugElement: HTMLElement | null;
+  /** Контейнер нижнего блока — в нём только отладочная строка счётчиков. */
+  private readonly bottomElement: HTMLElement | null;
   private readonly timerElement: HTMLElement | null;
+
+  /**
+   * Отладочная строка счётчиков внизу — только в dev-режиме Vite.
+   *
+   * В собранной игре она не нужна и вводит в заблуждение: это внутренние числа, а
+   * не интерфейс игрока. В PROD блок прячется один раз в конструкторе, а строка
+   * даже не собирается — заодно уходит склейка десятка значений на кадр.
+   */
+  private readonly showDebug = import.meta.env.DEV;
 
   /** Последние выведенные значения — DOM трогаем только при изменении. */
   private lastExp = '';
@@ -63,7 +72,6 @@ export class Hud {
   private lastWaveFill = -1;
   private lastSkull = '';
   private lastLayers = '';
-  private lastHp = '';
   private lastDebug = '';
   private lastTimer = '';
   private lastWaveNumber = '';
@@ -78,9 +86,13 @@ export class Hud {
     this.waveSkullElement = document.querySelector<HTMLElement>('#hud-wave-skull');
     this.waveLayersElement = document.querySelector<HTMLElement>('#hud-wave-layers');
     this.waveNumberElement = document.querySelector<HTMLElement>('#hud-wave-number');
-    this.hpElement = document.querySelector<HTMLElement>('#hud-hp');
     this.debugElement = document.querySelector<HTMLElement>('#hud-debug');
+    this.bottomElement = document.querySelector<HTMLElement>('#hud-bottom');
     this.timerElement = document.querySelector<HTMLElement>('#hud-timer');
+
+    if (!this.showDebug && this.bottomElement !== null) {
+      this.bottomElement.style.display = 'none';
+    }
   }
 
   update(state: HudState): void {
@@ -88,7 +100,6 @@ export class Hud {
     // в плашку лезло «EXP 330.72000000000065» — она распирала верхнюю строку и
     // налезала на полосу волны.
     this.setText(this.expElement, `EXP ${Math.floor(state.exp)}`, 'lastExp');
-    this.setText(this.hpElement, `HP ${Math.ceil(state.hp)}`, 'lastHp');
     this.setText(this.timerElement, formatRunTime(state.elapsedSeconds), 'lastTimer');
     this.setText(this.waveNumberElement, `ВОЛНА ${state.wave}`, 'lastWaveNumber');
 
@@ -114,6 +125,8 @@ export class Hud {
       this.setFill(fill, '');
     }
 
+    if (!this.showDebug) return;
+
     const hidden = state.hiddenShooters > 0 ? ` (+${state.hiddenShooters} скрыто)` : '';
     const specials = state.specials > 0 ? ` · особое ×${state.specials}` : '';
     const big = state.bigEnemies > 0 ? ` (крупных ${state.bigEnemies})` : '';
@@ -134,7 +147,6 @@ export class Hud {
       | 'lastWaveCount'
       | 'lastSkull'
       | 'lastLayers'
-      | 'lastHp'
       | 'lastDebug'
       | 'lastTimer'
       | 'lastWaveNumber',
