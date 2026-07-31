@@ -285,7 +285,8 @@ export class Boss {
   }
 
   private applyDamage(damage: number): void {
-    this.hp -= damage;
+    // Сопротивление урону — в воронке, поэтому одинаково гасит и пули, и мины.
+    this.hp -= damage * CONFIG.boss.damageResistance;
     this.flashLeft = CONFIG.ui.damageFlash.seconds;
     if (this.hp > 0) return;
 

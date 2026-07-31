@@ -397,7 +397,6 @@ export const CONFIG = {
      */
     bulletsPerHiddenShooter: 1,
   },
-
   /**
    * Оружие (ТЗ разделы 6 и 12).
    * range в units, а не в % экрана: не зависит от соотношения сторон телефона.

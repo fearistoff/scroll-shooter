@@ -436,7 +436,11 @@ export class EnemyPool {
 
   /** Наносит урон зомби i. Возвращает true, если он погиб. */
   private applyDamage(i: number, damage: number): boolean {
-    this.hp[i]! -= damage;
+    // Сопротивление урону берётся по виду зомби и применяется здесь, в воронке, —
+    // тогда его учитывают и пули, и взрывы мин, без правок в местах попадания.
+    const resistance = (this.isBig[i] === 1 ? CONFIG.enemies.big : CONFIG.enemies.normal)
+      .damageResistance;
+    this.hp[i]! -= damage * resistance;
     // Единственная воронка урона по зомби (попадание пули и взрыв мины идут
     // через неё), поэтому таймеры полоски и вспышки ставятся здесь и только здесь.
     this.hpBarLeft[i] = CONFIG.ui.hpBar.showSeconds;

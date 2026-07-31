@@ -385,13 +385,27 @@ export class BarrelField {
         continue;
       }
 
-      this.hp[i]! -= damage;
-      if (this.hp[i]! <= 0) this.breakBarrel(i);
+      this.applyDamage(i, damage);
       return true;
     }
 
     return false;
   };
+
+  /**
+   * Наносит урон бочке i. Возвращает true, если она разбилась (и в её слот уже
+   * переехала последняя активная бочка).
+   *
+   * Единственная воронка урона по бочкам: и выстрелы, и взрывы мин идут через
+   * неё, поэтому сопротивление урону применяется в одном месте.
+   */
+  private applyDamage(i: number, damage: number): boolean {
+    this.hp[i]! -= damage * CONFIG.barrels.damageResistance;
+    if (this.hp[i]! > 0) return false;
+
+    this.breakBarrel(i);
+    return true;
+  }
 
   /**
    * Урон по площади (взрыв мины, ТЗ: «по всем зомби и объектам в зоне»).
@@ -413,12 +427,8 @@ export class BarrelField {
       }
 
       hit++;
-      this.hp[i]! -= damage;
-      if (this.hp[i]! <= 0) {
-        this.breakBarrel(i);
-        // i не увеличиваем: в этот слот переехала последняя активная бочка.
-        continue;
-      }
+      // i не увеличиваем при разрушении: в этот слот переехала последняя активная бочка.
+      if (this.applyDamage(i, damage)) continue;
 
       i++;
     }
