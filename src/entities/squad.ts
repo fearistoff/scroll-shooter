@@ -402,15 +402,18 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
   /**
    * Удар зомби (ТЗ раздел 5: «бьют ближайшего стрелка»).
    *
-   * Досягаемость проверяется только по горизонтали: зомби уже стоят на линии
-   * перед отрядом, то есть по глубине заведомо достают. По z выбирается, КОГО
-   * из попавших в полосу ударить — ближайшего по фактическому расстоянию,
-   * поэтому первым получает передний ряд, а не случайный боец.
+   * ОГРАНИЧЕНИЯ ПО РАССТОЯНИЮ НЕТ. Раньше был параметр reachX (1.5 units по
+   * горизонтали), и зомби у правого края дороги не достигал отряда у левого.
+   * Теперь удар всегда находит ближайшего стрелка: расстояние считается по обеим
+   * осям от (fromX, fromZ), поэтому первым получает передний ряд, а не случайный
+   * боец. Следствие для игры — уводом отряда поперёк дороги урон дошедшей толпы
+   * больше не обнуляется.
    *
    * ГЛАВНЫЙ ГЕРОЙ — ЦЕЛЬ ТОЛЬКО КОГДА ОН ОДИН. Пока в отряде есть хоть один
-   * союзник, удары достаются союзникам, а герой неуязвим для зомби. Если ни один
-   * союзник не попал в полосу досягаемости, удар уходит в никуда — на героя он НЕ
-   * переносится, иначе правило «только когда единственный» не соблюдалось бы.
+   * союзник, удары достаются союзникам, а герой неуязвим для зомби. Без reachX
+   * это правило стало безусловным: союзник в переборе есть всегда, когда он есть
+   * в строю, — прежней лазейки «все союзники вне полосы, значит удар в никуда»
+   * не осталось.
    *
    * Раньше герой получал вообще весь урон от зомби: союзники стоят позади него
    * по +Z, поэтому ближайшим к нападающему всегда оказывался он (замерено: 8.2
@@ -418,7 +421,7 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
    *
    * Бойцы за визуальным потолком недосягаемы: они позади всего строя.
    */
-  damageNearestShooter(fromX: number, fromZ: number, amount: number, reachX: number): boolean {
+  damageNearestShooter(fromX: number, fromZ: number, amount: number): boolean {
     const incoming = amount * CONFIG.player.damageTakenMultiplier;
     const squadX = this.x;
 
@@ -426,7 +429,7 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
     let bestDistanceSq = Infinity;
 
     const heroDx = squadX - fromX;
-    if (this.allies.length === 0 && Math.abs(heroDx) <= reachX) {
+    if (this.allies.length === 0) {
       const heroDz = 0 - fromZ;
       bestIndex = -1;
       bestDistanceSq = heroDx * heroDx + heroDz * heroDz;
@@ -436,8 +439,6 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
     for (let i = 0; i < visible; i++) {
       this.allyOffset(i);
       const dx = squadX + this.offsetX - fromX;
-      if (Math.abs(dx) > reachX) continue;
-
       const dz = this.offsetZ - fromZ;
       const distanceSq = dx * dx + dz * dz;
       if (distanceSq < bestDistanceSq) {

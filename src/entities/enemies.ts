@@ -25,16 +25,14 @@ export interface SquadTarget {
   readonly shooterCount: number;
 
   /**
-   * Наносит урон ближайшему стрелку.
+   * Наносит урон ближайшему стрелку — без ограничения по расстоянию: нападающий
+   * уже стоит на линии перед отрядом, и «ближайший» считается по фактическому
+   * расстоянию до (fromX, fromZ), поэтому первым получает передний ряд.
    *
-   * Досягаемость проверяется по горизонтали (reachX): нападающий уже стоит на
-   * линии перед отрядом, то есть по глубине заведомо достаёт. Координата fromZ
-   * нужна не для отбора, а для выбора цели среди попавших в полосу — ближайшим
-   * по фактическому расстоянию оказывается передний ряд.
-   *
-   * Возвращает true, если удар кого-то достал.
+   * Возвращает true, если удар кого-то достал. False теперь означает только
+   * «стрелков не осталось»: раньше так же сообщалось о промахе по досягаемости.
    */
-  damageNearestShooter(fromX: number, fromZ: number, amount: number, reachX: number): boolean;
+  damageNearestShooter(fromX: number, fromZ: number, amount: number): boolean;
 }
 
 /**
@@ -211,7 +209,7 @@ export class EnemyPool {
   update(dt: number, squad: SquadTarget): void {
     this.spawnStream(dt, squad);
 
-    const { normal, big, extraSpeed, attackInterval, attackReachX, attackAnim } = CONFIG.enemies;
+    const { normal, big, extraSpeed, attackInterval, attackAnim } = CONFIG.enemies;
     const { worldSpeed, despawnZ } = CONFIG.world;
     // Зомби идут сами плюс их несёт наезжающий мир.
     const step = (worldSpeed + extraSpeed) * dt;
@@ -239,12 +237,7 @@ export class EnemyPool {
           this.attackTimer[i]! -= attackInterval;
           // Замах кончился ударом — дальше сжатие обратно.
           this.recoverLeft[i] = attackAnim.recoverSeconds;
-          squad.damageNearestShooter(
-            this.posX[i]!,
-            this.posZ[i]!,
-            stats.damagePerHit,
-            attackReachX,
-          );
+          squad.damageNearestShooter(this.posX[i]!, this.posZ[i]!, stats.damagePerHit);
         }
       }
 
