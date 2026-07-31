@@ -73,16 +73,22 @@ export class LabelLayer {
 
   /**
    * Полоска HP над точкой (x, y, z) мира. fraction — доля запаса, 0…1.
+   * scale — множитель размера: у обычных зомби полоска мельче (см. конфиг).
    *
    * Заливка масштабируется по X, а не меняет width: transform не вызывает
    * пересчёт раскладки, а полосок в кадре может быть под сотню.
    */
-  addBar(x: number, y: number, z: number, fraction: number): void {
+  addBar(x: number, y: number, z: number, fraction: number, scale = 1): void {
     if (!this.project(x, y, z)) return;
 
     const clamped = fraction < 0 ? 0 : fraction > 1 ? 1 : fraction;
     const element = this.acquireBar();
     element.style.transform = `translate(${this.screenX}px, ${this.screenY}px) translate(-50%, -100%)`;
+
+    // Размер выставляется на КАЖДОМ вызове, а не при создании: элементы берутся
+    // из общего пула, и тот же самый мог в прошлом кадре обслуживать цель другого
+    // размера. Пишем только при изменении — иначе лишний пересчёт раскладки.
+    LabelLayer.applyBarSize(element, scale);
 
     const fill = element.firstElementChild as HTMLElement;
     // Округляем до процента: доля меняется каждый кадр, а разница ниже процента
@@ -140,16 +146,23 @@ export class LabelLayer {
     return element;
   }
 
+  /** Размер полоски по множителю. Дробные пиксели сохраняются (см. конфиг). */
+  private static applyBarSize(element: HTMLElement, scale: number): void {
+    const key = String(scale);
+    if (element.dataset.scale === key) return;
+
+    const { width, height } = CONFIG.ui.hpBar;
+    element.style.width = `${width * scale}px`;
+    element.style.height = `${height * scale}px`;
+    element.dataset.scale = key;
+  }
+
   private acquireBar(): HTMLElement {
     let element = this.barPool[this.barsUsed];
 
     if (element === undefined) {
-      const { width, height } = CONFIG.ui.hpBar;
-
       element = document.createElement('div');
       element.className = 'world-bar';
-      element.style.width = `${width}px`;
-      element.style.height = `${height}px`;
 
       const fill = document.createElement('div');
       fill.className = 'world-bar__fill';

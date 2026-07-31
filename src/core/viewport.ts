@@ -4,15 +4,21 @@ import { CONFIG } from '../config';
 /**
  * Портретный холст под телефон.
  *
- * Холст не растягивается на всё окно: соотношение сторон зажимается в диапазон
- * реальных телефонов (viewport.minAspect … maxAspect), результат вписывается в
- * окно и центрируется, по бокам остаются тёмные поля. Так игра выглядит
- * одинаково и на телефоне, и в широком окне браузера на десктопе.
+ * Соотношение сторон зажато в диапазон реальных телефонов
+ * (viewport.minAspect … maxAspect), результат вписывается в видимую область и
+ * центрируется, по бокам остаются тёмные поля. Так игра выглядит одинаково и на
+ * телефоне, и в широком окне браузера на десктопе.
  *
- * Отслеживание размера — через ResizeObserver, а не событие resize: оно приходит
- * не на всякое изменение вьюпорта (сворачивание адресной строки в мобильном
- * Safari, эмуляция устройства в devtools). ResizeObserver ловит изменение бокса
- * напрямую.
+ * РАЗМЕР СЧИТАЕТ CSS, А НЕ ЭТОТ КЛАСС. Здесь только передаются границы аспекта в
+ * CSS-переменные и читается получившийся бокс холста. Так сделано после ошибки на
+ * iOS: в standalone-режиме window.innerHeight отдаёт не ту величину, из которой
+ * CSS раскладывает страницу, поэтому посчитанный в JS холст не совпадал с
+ * разметкой и снизу оставалась чёрная полоса. Пока размер вычислялся в двух
+ * местах, такой рассинхрон был возможен; теперь источник истины один.
+ *
+ * Отслеживание — ResizeObserver на самом холсте, а не событие resize: оно приходит
+ * не на всякое изменение вьюпорта (сворачивание адресной строки, эмуляция
+ * устройства в devtools), а бокс элемента наблюдатель ловит напрямую.
  */
 export class Viewport {
   private width = 0;
@@ -20,23 +26,31 @@ export class Viewport {
 
   private readonly observer: ResizeObserver;
   private readonly onOrientationChange = () => this.apply();
-  /** Изменения самой видимой области: адресная строка, клавиатура, вход в PWA. */
-  private readonly onVisualResize = () => this.apply();
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
     private readonly renderer: WebGLRenderer,
     private readonly camera: PerspectiveCamera,
   ) {
+    Viewport.publishAspectBounds();
     this.apply();
 
+    // Наблюдаем за холстом: его бокс — это и есть результат CSS-раскладки.
     this.observer = new ResizeObserver(() => this.apply());
-    this.observer.observe(document.documentElement);
+    this.observer.observe(this.canvas);
 
     window.addEventListener('orientationchange', this.onOrientationChange);
-    // ResizeObserver на documentElement не ловит изменения visualViewport, а
-    // размер холста считается теперь по нему — подписываемся отдельно.
-    window.visualViewport?.addEventListener('resize', this.onVisualResize);
+  }
+
+  /**
+   * Отдаёт границы аспекта из конфига в CSS: формулу letterbox'а считает
+   * #stage, а числа обязаны жить в одном месте — CONFIG.viewport.
+   */
+  private static publishAspectBounds(): void {
+    const { minAspect, maxAspect } = CONFIG.viewport;
+    const root = document.documentElement;
+    root.style.setProperty('--min-aspect', String(minAspect));
+    root.style.setProperty('--max-aspect', String(maxAspect));
   }
 
   /** Ширина холста в CSS-пикселях. */
@@ -54,51 +68,15 @@ export class Viewport {
     return this.canvas;
   }
 
-  /**
-   * Доступная область в CSS-пикселях.
-   *
-   * Берётся из visualViewport, а не из window.innerHeight: в standalone-режиме на
-   * iOS innerHeight отдаёт БОЛЬШУЮ величину, чем видимая область, и холст, посчитанный
-   * от неё, не совпадал с тем, что раскладывает CSS, — снизу оставалась чёрная полоса.
-   * visualViewport совпадает с единицей dvh, которой задана высота body.
-   *
-   * documentElement.clientHeight — запас для браузеров без visualViewport.
-   */
-  private static availableSize(): { width: number; height: number } {
-    const visual = window.visualViewport;
-    if (visual !== null && visual !== undefined && visual.width > 0 && visual.height > 0) {
-      return { width: visual.width, height: visual.height };
-    }
-    const root = document.documentElement;
-    return {
-      width: root.clientWidth || window.innerWidth,
-      height: root.clientHeight || window.innerHeight,
-    };
-  }
-
   private apply(): void {
-    const { minAspect, maxAspect, maxPixelRatio } = CONFIG.viewport;
+    const { maxPixelRatio, narrowWidthPx } = CONFIG.viewport;
 
-    const { width: availWidth, height: availHeight } = Viewport.availableSize();
-    if (availWidth <= 0 || availHeight <= 0) return;
-
-    const windowAspect = availWidth / availHeight;
-    const aspect = Math.min(Math.max(windowAspect, minAspect), maxAspect);
-
-    let width: number;
-    let height: number;
-    if (windowAspect > aspect) {
-      // Окно шире, чем допустимо — упираемся в высоту, срезаем ширину.
-      height = availHeight;
-      width = height * aspect;
-    } else {
-      // Окно уже допустимого — упираемся в ширину, срезаем высоту.
-      width = availWidth;
-      height = width / aspect;
-    }
-
-    width = Math.round(width);
-    height = Math.round(height);
+    // Бокс, который выдал CSS. getBoundingClientRect, а не clientWidth: дробные
+    // размеры (dvh на 852.5 px) округляются здесь один раз и согласованно.
+    const rect = this.canvas.getBoundingClientRect();
+    const width = Math.round(rect.width);
+    const height = Math.round(rect.height);
+    if (width <= 0 || height <= 0) return;
 
     // Лишние setSize роняют производительность: ResizeObserver может дёргаться.
     if (width === this.width && height === this.height) return;
@@ -106,20 +84,15 @@ export class Viewport {
     this.width = width;
     this.height = height;
 
-    // Контейнер холста тянем следом, иначе HUD поверх него разъедется с картинкой.
-    const stage = this.canvas.parentElement;
-    if (stage !== null) {
-      stage.style.width = `${width}px`;
-      stage.style.height = `${height}px`;
-
-      // Класс для узкого холста: HUD по нему опускает полосу волны под верхнюю
-      // строку. Медиа-запрос здесь не подошёл бы — он смотрит на окно, а размер
-      // холста задаётся letterbox'ом и может быть заметно меньше окна.
-      stage.classList.toggle('narrow', width < CONFIG.viewport.narrowWidthPx);
-    }
+    // Класс для узкого холста: HUD по нему опускает полосу волны под верхнюю
+    // строку. Медиа-запрос здесь не подошёл бы — он смотрит на окно, а холст
+    // из-за letterbox'а бывает заметно меньше окна.
+    this.canvas.parentElement?.classList.toggle('narrow', width < narrowWidthPx);
 
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, maxPixelRatio));
-    this.renderer.setSize(width, height, true);
+    // updateStyle = false: размером холста распоряжается CSS, и перезапись
+    // style.width/height вернула бы прежний рассинхрон.
+    this.renderer.setSize(width, height, false);
 
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
@@ -128,6 +101,5 @@ export class Viewport {
   dispose(): void {
     this.observer.disconnect();
     window.removeEventListener('orientationchange', this.onOrientationChange);
-    window.visualViewport?.removeEventListener('resize', this.onVisualResize);
   }
 }

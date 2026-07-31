@@ -353,16 +353,27 @@ export class EnemyPool {
    * ui.hpBar.showSeconds секунд. Босса здесь нет — он вообще не зомби, у него
    * своя многослойная полоса в HUD.
    */
-  forEachHpBar(visit: (x: number, y: number, z: number, fraction: number) => void): void {
+  forEachHpBar(
+    visit: (x: number, y: number, z: number, fraction: number, scale: number) => void,
+  ): void {
     const { normal, big } = CONFIG.enemies;
-    const offsetY = CONFIG.ui.hpBar.offsetY;
+    const { offsetY, normalZombieScale } = CONFIG.ui.hpBar;
 
     for (let i = 0; i < this.count; i++) {
       if (this.hpBarLeft[i]! <= 0) continue;
 
-      const stats = this.isBig[i] === 1 ? big : normal;
+      const bigOne = this.isBig[i] === 1;
+      const stats = bigOne ? big : normal;
       const top = stats.capsule.length + stats.capsule.radius * 2;
-      visit(this.posX[i]!, top + offsetY, this.posZ[i]!, this.hp[i]! / stats.hp);
+      // Полоска обычного зомби мельче: их на дороге до 200, и полный размер у
+      // каждого забивает кадр. У крупного размер базовый.
+      visit(
+        this.posX[i]!,
+        top + offsetY,
+        this.posZ[i]!,
+        this.hp[i]! / stats.hp,
+        bigOne ? 1 : normalZombieScale,
+      );
     }
   }
 

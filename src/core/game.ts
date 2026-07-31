@@ -299,9 +299,17 @@ export class Game {
     variant: string,
   ): void => this.labels.add(x, y, z, value, icon, variant);
 
-  /** Одна ссылка на всю игру — полоски собираются каждый кадр. */
-  private readonly addHpBar = (x: number, y: number, z: number, fraction: number): void =>
-    this.labels.addBar(x, y, z, fraction);
+  /**
+   * Одна ссылка на всю игру — полоски собираются каждый кадр.
+   * scale по умолчанию 1: стрелки его не передают, размер у них базовый.
+   */
+  private readonly addHpBar = (
+    x: number,
+    y: number,
+    z: number,
+    fraction: number,
+    scale = 1,
+  ): void => this.labels.addBar(x, y, z, fraction, scale);
 
   private render(): void {
     this.renderer.render(this.scene, this.camera);
