@@ -20,8 +20,13 @@ import { MetaProgress } from './meta';
 import { RunState } from './run';
 import { Viewport } from './viewport';
 
-/** Фаза приложения: идёт забег, показан результат или экран прокачки. */
-export type GamePhase = 'running' | 'result' | 'upgrade';
+/**
+ * Фаза приложения: идёт забег, герой падает, показан результат или экран прокачки.
+ *
+ * 'dying' — сцена прощания между смертью героя и экраном результата: ходьба
+ * остановлена, шагает только анимация падения (см. update).
+ */
+export type GamePhase = 'running' | 'dying' | 'result' | 'upgrade';
 
 /**
  * Корень игры: владеет сценой, рендером, камерой и подсистемами.
@@ -63,6 +68,9 @@ export class Game {
    * его есть на что потратить. Забег начинается кнопкой «Начать забег».
    */
   private phase: GamePhase = 'upgrade';
+
+  /** Сколько ещё длится сцена прощания. Тикает только в фазе 'dying'. */
+  private deathLeft = 0;
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new WebGLRenderer({
@@ -173,11 +181,30 @@ export class Game {
     // Отряд встаёт в центр, а не туда, где курсор остался с прошлого забега.
     this.input.targetPercent = 50;
 
+    this.deathLeft = 0;
     this.phase = 'running';
     this.screens.hide();
   }
 
   private update(dt: number): void {
+    /*
+     * СЦЕНА ПРОЩАНИЯ. Герой мёртв, но экрана результата ещё нет: сначала ходьба
+     * останавливается, потом капсула падает (deathAnim.fallSeconds), потом
+     * выдерживается пауза (deathAnim.resultDelaySeconds).
+     *
+     * Из всей игры шагает ровно одна вещь — падение героя. Мир, зомби, пули,
+     * часы забега и HUD стоят: «остановить ходьбу» означает буквально стоп-кадр,
+     * иначе смерть терялась бы в продолжающемся движении дороги. Заодно герой
+     * гарантированно не получает урона после смерти и время забега на экране
+     * результата остаётся тем, что было в момент гибели.
+     */
+    if (this.phase === 'dying') {
+      this.squad.updateHeroDeath(dt);
+      this.deathLeft -= dt;
+      if (this.deathLeft <= 0) this.finishRun();
+      return;
+    }
+
     // На экранах игровой шаг не идёт, но рендер продолжается: сцена видна за
     // оверлеем, и переход не выглядит зависанием.
     if (this.phase !== 'running') return;
@@ -210,6 +237,7 @@ export class Game {
       specials: this.squad.specialWeaponCount,
       enemies: this.enemies.activeCount,
       bigEnemies: this.enemies.bigActiveCount,
+      corpses: this.enemies.corpseCount,
       bullets: this.bullets.activeCount,
       killed: this.enemies.killed,
       barrels: this.barrels.activeCount,
@@ -237,9 +265,16 @@ export class Game {
   /**
    * Проверка конца забега. Идёт после обновления HUD, чтобы на экране результата
    * за оверлеем осталась последняя корректная картина забега.
+   *
+   * Экран результата открывается не здесь, а в конце сцены прощания (см. update):
+   * смерть героя сначала показывается падением капсулы.
    */
   private checkRunEnd(): void {
-    if (this.squad.heroHp <= 0) this.finishRun();
+    if (this.squad.heroHp > 0) return;
+
+    this.phase = 'dying';
+    this.deathLeft = CONFIG.deathAnim.fallSeconds + CONFIG.deathAnim.resultDelaySeconds;
+    this.squad.startHeroDeath();
   }
 
   /**
@@ -261,7 +296,8 @@ export class Game {
   private updateBossPhase(): void {
     if (this.boss.currentPhase === 'dead') {
       this.run.startNextWave();
-      this.boss.reset();
+      // Не reset(): он убрал бы тело босса в том же кадре, в котором оно легло.
+      this.boss.prepareNextWave();
     }
 
     const shouldSpawn =

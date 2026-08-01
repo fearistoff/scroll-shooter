@@ -20,6 +20,8 @@ export interface HudState {
   specials: number;
   enemies: number;
   bigEnemies: number;
+  /** Тел на дороге: они занимают слоты того же пула, что и живые зомби. */
+  corpses: number;
   bullets: number;
   killed: number;
   barrels: number;
@@ -130,10 +132,11 @@ export class Hud {
     const hidden = state.hiddenShooters > 0 ? ` (+${state.hiddenShooters} скрыто)` : '';
     const specials = state.specials > 0 ? ` · особое ×${state.specials}` : '';
     const big = state.bigEnemies > 0 ? ` (крупных ${state.bigEnemies})` : '';
+    const corpses = state.corpses > 0 ? ` · тел ${state.corpses}` : '';
     const mines = state.mines > 0 ? ` · мины ${state.mines} (взвед. ${state.minesArmed})` : '';
     const debug =
       `отряд ${state.shooters}${hidden} · ${state.weapon}${specials} · ` +
-      `зомби ${state.enemies}${big} · убито ${state.killed} · пули ${state.bullets} · ` +
+      `зомби ${state.enemies}${big}${corpses} · убито ${state.killed} · пули ${state.bullets} · ` +
       `бочки ${state.barrels} (разбито ${state.barrelsBroken})${mines} · ` +
       `кристаллы ${state.crystals}`;
     this.setText(this.debugElement, debug, 'lastDebug');

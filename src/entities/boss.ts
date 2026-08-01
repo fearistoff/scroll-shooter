@@ -45,6 +45,15 @@ export interface BossTarget {
  */
 export class Boss {
   private readonly mesh: Mesh;
+  /**
+   * Тело убитого босса. ОТДЕЛЬНЫЙ меш, хотя геометрия та же самая: живой босс
+   * умирает и в тот же кадр волна сменяется (Game.updateBossPhase), а тело должно
+   * доехать до края экрана уже после этого. Один меш на две роли пришлось бы
+   * делить по времени, и любой сброс между волнами гасил бы тело.
+   *
+   * Материал тоже свой: у живого он мигает вспышкой урона, телу это не нужно.
+   */
+  private readonly corpseMesh: Mesh;
   /** Кольцо-телеграф AoE. Лежит на земле, видно только во время замаха. */
   private readonly telegraph: Mesh;
 
@@ -76,6 +85,14 @@ export class Boss {
 
   /** Остаток вспышки от урона (ui.damageFlash). Тает по игровому dt. */
   private flashLeft = 0;
+  /** Лежит ли на дороге тело босса — оно живёт своей жизнью после его смерти. */
+  private corpseActive = false;
+  /** Остаток падения тела, секунды (deathAnim.fallSeconds). */
+  private corpseFallLeft = 0;
+  /** Куда валится тело: +1 вправо, −1 влево. */
+  private corpseDir = 1;
+  /** Где сейчас тело: едет с миром, пока не скроется за нижним краем экрана. */
+  private corpseZ = 0;
   /**
    * Остаток сжатия после удара, секунды. Как у зомби: замах считается из таймеров
    * атак, а сжатие — нет, потому что после удара таймер уже перезаряжен.
@@ -100,12 +117,18 @@ export class Boss {
     const { capsule, color, telegraph } = CONFIG.boss;
 
     this.material = new MeshStandardMaterial({ color, roughness: 0.75, metalness: 0.05 });
-    this.mesh = new Mesh(
-      new CapsuleGeometry(capsule.radius, capsule.length, 6, 16),
-      this.material,
-    );
+    // Геометрия одна на живого и на тело: капсула у них та же самая.
+    const capsuleGeometry = new CapsuleGeometry(capsule.radius, capsule.length, 6, 16);
+    this.mesh = new Mesh(capsuleGeometry, this.material);
     this.mesh.visible = false;
     scene.add(this.mesh);
+
+    this.corpseMesh = new Mesh(
+      capsuleGeometry,
+      new MeshStandardMaterial({ color, roughness: 0.75, metalness: 0.05 }),
+    );
+    this.corpseMesh.visible = false;
+    scene.add(this.corpseMesh);
 
     const circle = new CircleGeometry(CONFIG.boss.attacks.aoe.radius, 32);
     circle.rotateX(-Math.PI / 2);
@@ -187,8 +210,25 @@ export class Boss {
     return this.allHitsTotal;
   }
 
-  /** Возвращает босса в исходное состояние: нового забега он ещё не видел. */
+  /**
+   * Возвращает босса в исходное состояние: нового забега он ещё не видел.
+   * В отличие от prepareNextWave, убирает и ТЕЛО — на пустой дороге нового забега
+   * ему делать нечего.
+   */
   reset(): void {
+    this.prepareNextWave();
+    this.corpseActive = false;
+    this.corpseFallLeft = 0;
+    this.corpseZ = 0;
+    this.corpseMesh.visible = false;
+  }
+
+  /**
+   * Готовит босса к следующей волне. Зовётся сразу после его смерти, поэтому
+   * ТЕЛО НЕ ТРОГАЕТ: оно должно доехать до края экрана уже во время новой волны.
+   * Всё остальное обнуляется — следующий босс выйдет с чистого листа.
+   */
+  prepareNextWave(): void {
     this.phase = 'absent';
     this.hp = 0;
     this.maxHp = 0;
@@ -236,6 +276,8 @@ export class Boss {
 
   /** Движение к точке остановки и атаки. */
   update(dt: number): void {
+    // Тело — первым и вне проверки isActive: живого босса уже нет, а тело едет.
+    this.updateCorpse(dt);
     if (!this.isActive) return;
 
     const { capsule, stopZ, approachSpeed } = CONFIG.boss;
@@ -261,6 +303,35 @@ export class Boss {
     // мешем и не масштабируется: он размечает область урона, а не тело.
     const y = (capsule.length / 2 + capsule.radius) * scale;
     this.mesh.position.set(0, y, this.posZ);
+  }
+
+  /**
+   * Тело убитого босса: падает набок за deathAnim.fallSeconds и едет с миром,
+   * пока не скроется за нижним краем экрана. Правило то же, что у зомби (босс —
+   * тоже зомби): сам он больше не идёт, уносит его дорога.
+   */
+  private updateCorpse(dt: number): void {
+    if (!this.corpseActive) return;
+
+    const { capsule } = CONFIG.boss;
+    const fallSeconds = CONFIG.deathAnim.fallSeconds;
+
+    if (this.corpseFallLeft > 0) this.corpseFallLeft = Math.max(0, this.corpseFallLeft - dt);
+    this.corpseZ += CONFIG.world.worldSpeed * dt;
+
+    if (this.corpseZ > CONFIG.world.despawnZ) {
+      this.corpseActive = false;
+      this.corpseMesh.visible = false;
+      return;
+    }
+
+    const done = fallSeconds > 0 ? 1 - this.corpseFallLeft / fallSeconds : 1;
+    const eased = done * done;
+    const standY = capsule.length / 2 + capsule.radius;
+
+    this.corpseMesh.rotation.z = this.corpseDir * (Math.PI / 2) * eased;
+    // Лёжа центр капсулы стоит на высоте радиуса — тело лежит НА дороге.
+    this.corpseMesh.position.set(0, standY + (capsule.radius - standY) * eased, this.corpseZ);
   }
 
   /**
@@ -395,6 +466,17 @@ export class Boss {
     this.telegraph.visible = false;
     this.telegraphIn = 0;
 
+    // Живой меш прячется, а на его место встаёт тело — с той же точки, где босса
+    // застала смерть. Масштаб замаха телу не передаётся: оно падает в свой размер.
+    const { capsule } = CONFIG.boss;
+    this.corpseActive = true;
+    this.corpseFallLeft = CONFIG.deathAnim.fallSeconds;
+    this.corpseDir = Math.random() < 0.5 ? -1 : 1;
+    this.corpseZ = this.posZ;
+    this.corpseMesh.rotation.z = 0;
+    this.corpseMesh.position.set(0, capsule.length / 2 + capsule.radius, this.posZ);
+    this.corpseMesh.visible = true;
+
     // Босс осыпается кристаллами: он один стоит целой волны.
     const drops = Math.max(1, CONFIG.boss.layerCount);
     for (let n = 0; n < drops; n++) {
@@ -420,7 +502,11 @@ export class Boss {
     allHitIn: number;
     recoverLeft: number;
     scale: number;
+    corpse: { active: boolean; z: number; fallLeft: number; tiltDegrees: number };
   } {
+    const fallSeconds = CONFIG.deathAnim.fallSeconds;
+    const done = fallSeconds > 0 ? 1 - this.corpseFallLeft / fallSeconds : 1;
+
     return {
       phase: this.phase,
       hp: +this.hp.toFixed(2),
@@ -436,6 +522,13 @@ export class Boss {
       recoverLeft: +this.recoverLeft.toFixed(3),
       // Фактический масштаб меша — по нему проверяется анимация атаки.
       scale: +this.mesh.scale.x.toFixed(3),
+      // Тело: наклон 0 — стоит, ±90 — лежит; знак повторяет сторону падения.
+      corpse: {
+        active: this.corpseActive,
+        z: +this.corpseZ.toFixed(2),
+        fallLeft: +this.corpseFallLeft.toFixed(3),
+        tiltDegrees: this.corpseActive ? +(this.corpseDir * 90 * done * done).toFixed(1) : 0,
+      },
     };
   }
 }

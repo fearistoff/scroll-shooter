@@ -43,8 +43,17 @@ export interface SquadTarget {
  * остаются лишь InstancedMesh — по одному на вид, потому что геометрия капсулы
  * у них разного размера.
  *
- * Данные в Float32Array, гашение через swap-remove, активные непрерывно
- * в [0, count) — как у пуль и кристаллов.
+ * Данные в Float32Array, гашение через swap-remove — как у пуль и кристаллов.
+ *
+ * ПУЛ РАЗБИТ НА ДВЕ НЕПРЕРЫВНЫЕ ОБЛАСТИ, и это главное отличие от остальных пулов:
+ *   [0, aliveCount)      — живые: идут, бьют, ловят пули;
+ *   [aliveCount, count)  — ТЕЛА: падают набок (deathAnim), дальше просто едут с
+ *                          миром до нижнего края экрана.
+ * Тело — не отдельный пул, потому что слот у него тот же самый, и «зомби плюс
+ * тела» ограничены одним числом (enemies.poolSize). Разделение на области, а не
+ * флаг «мёртв» в общем массиве, выбрано затем, чтобы горячие циклы (попадания
+ * пуль, взрывы, полоски HP) остались простыми `i < aliveCount` без проверки на
+ * труп в каждой итерации.
  */
 export class EnemyPool {
   private readonly normalMesh: InstancedMesh;
@@ -86,6 +95,25 @@ export class EnemyPool {
    * а вот сжатие — нет, потому что после удара таймер обнуляется.
    */
   private readonly recoverLeft: Float32Array;
+  /**
+   * Остаток падения тела, секунды. Ставится в момент смерти, убывает по игровому
+   * dt; при <= 0 тело уже лежит. У живых всегда 0 — поле осмысленно только в
+   * области тел.
+   */
+  private readonly fallLeft: Float32Array;
+  /** Куда валится тело: +1 вправо, −1 влево. Разыгрывается в момент смерти. */
+  private readonly fallDir: Int8Array;
+
+  /**
+   * Все массивы данных слота одним списком.
+   *
+   * Перестановки слотов (гибель, освобождение, спавн поверх тела) идут ЧЕРЕЗ ЭТОТ
+   * СПИСОК, а не поимённым присваиванием, ровно по причине из CLAUDE.md: забытый
+   * в переносе массив дарит новому объекту таймер предыдущего — так уже ловились
+   * ложные полоски HP и вспышки. Мест переноса теперь три, и держать их
+   * синхронными руками нереально. Добавили поле — добавьте его сюда.
+   */
+  private readonly slots: Array<Float32Array | Uint8Array | Int8Array>;
 
   /** Цвета для instanceColor. Заведены один раз: в цикле отрисовки нельзя мусорить. */
   private readonly normalColor = new Color(CONFIG.enemies.normal.color);
@@ -94,7 +122,10 @@ export class EnemyPool {
   private readonly normalFlash = makeFlashColor(CONFIG.enemies.normal.color);
   private readonly bigFlash = makeFlashColor(CONFIG.enemies.big.color);
 
+  /** Занятых слотов всего: живые плюс тела. */
   private count = 0;
+  /** Из них живых — они лежат в начале, в [0, aliveCount). */
+  private aliveCount = 0;
   private spawnTimer = 0;
   /** Первый зомби забега выходит сразу, а не через интервал. Ставится в reset. */
   private primeFirstSpawn = true;
@@ -131,6 +162,24 @@ export class EnemyPool {
     this.hpBarLeft = new Float32Array(poolSize);
     this.flashLeft = new Float32Array(poolSize);
     this.recoverLeft = new Float32Array(poolSize);
+    this.fallLeft = new Float32Array(poolSize);
+    this.fallDir = new Int8Array(poolSize);
+
+    this.slots = [
+      this.posX,
+      this.posZ,
+      this.hp,
+      this.maxHp,
+      this.damage,
+      this.attackTimer,
+      this.stopAt,
+      this.isBig,
+      this.hpBarLeft,
+      this.flashLeft,
+      this.recoverLeft,
+      this.fallLeft,
+      this.fallDir,
+    ];
   }
 
   private static createMesh(
@@ -156,7 +205,22 @@ export class EnemyPool {
     return mesh;
   }
 
+  /**
+   * ЖИВЫЕ зомби на дороге. Тела сюда не входят намеренно: по этому числу Game
+   * решает, что волна зачищена и пора выпускать босса, — лежащие тела зачистке не
+   * мешают. По той же причине его показывает счётчик «зомби» в отладочной строке.
+   */
   get activeCount(): number {
+    return this.aliveCount;
+  }
+
+  /** Тел на дороге — они доедут до нижнего края экрана и освободят слоты. */
+  get corpseCount(): number {
+    return this.count - this.aliveCount;
+  }
+
+  /** Занято слотов пула всего: живые плюс тела. Именно это упирается в capacity. */
+  get usedSlots(): number {
     return this.count;
   }
 
@@ -176,10 +240,10 @@ export class EnemyPool {
     return this.bigSpawnedTotal;
   }
 
-  /** Сколько крупных зомби сейчас на поле. */
+  /** Сколько крупных ЖИВЫХ зомби сейчас на поле. */
   get bigActiveCount(): number {
     let total = 0;
-    for (let i = 0; i < this.count; i++) {
+    for (let i = 0; i < this.aliveCount; i++) {
       if (this.isBig[i] === 1) total++;
     }
     return total;
@@ -197,7 +261,13 @@ export class EnemyPool {
 
     const { stopZ, stopLineJitter, attackInterval, firstAttackDelay } = CONFIG.enemies;
     const stats = kind === 'big' ? CONFIG.enemies.big : CONFIG.enemies.normal;
-    const i = this.count++;
+    // Живой встаёт в конец своей области, а не в конец пула: сразу за ним лежат
+    // тела. Занявшее это место тело уезжает в первый свободный слот — обе области
+    // остаются непрерывными.
+    const i = this.aliveCount;
+    if (this.count > this.aliveCount) this.swapSlots(i, this.count);
+    this.aliveCount++;
+    this.count++;
 
     this.posX[i] = x;
     this.posZ[i] = CONFIG.world.spawnZ;
@@ -220,6 +290,10 @@ export class EnemyPool {
     this.hpBarLeft[i] = 0;
     this.flashLeft[i] = 0;
     this.recoverLeft[i] = 0;
+    // Падение — из того же ряда: слот только что мог обслуживать тело, и без
+    // обнуления новый зомби вышел бы на дорогу заваленным набок.
+    this.fallLeft[i] = 0;
+    this.fallDir[i] = 0;
 
     this.spawnedTotal++;
     if (kind === 'big') this.bigSpawnedTotal++;
@@ -237,7 +311,7 @@ export class EnemyPool {
     let normalDrawn = 0;
     let bigDrawn = 0;
 
-    for (let i = 0; i < this.count; ) {
+    for (let i = 0; i < this.aliveCount; ) {
       const bigOne = this.isBig[i] === 1;
       const stats = bigOne ? big : normal;
 
@@ -263,9 +337,10 @@ export class EnemyPool {
 
       const scale = this.instanceScale(i);
 
-      // Страховка: за камеру зомби уходить не должен, но если уйдёт — в пул.
+      // Страховка: за камеру ЖИВОЙ зомби уходить не должен, но если уйдёт — в пул
+      // сразу, минуя область тел: падать ему уже негде, он за нижним краем экрана.
       if (this.posZ[i]! > despawnZ) {
-        this.recycle(i);
+        this.removeAlive(i);
         continue;
       }
 
@@ -286,6 +361,58 @@ export class EnemyPool {
       } else {
         this.normalMesh.setMatrixAt(normalDrawn, this.matrix);
         this.normalMesh.setColorAt(normalDrawn, flashing ? this.normalFlash : this.normalColor);
+        normalDrawn++;
+      }
+
+      i++;
+    }
+
+    /*
+     * ТЕЛА. Едут ТОЛЬКО с миром: мёртвый зомби своих ног больше не переставляет
+     * (в этом и смысл «после смерти перестают двигаться»), но дорога под ним
+     * продолжает наезжать на камеру — так тело и уходит за нижний край экрана,
+     * где его забирает despawnZ. Стоять на месте оно не может: тогда труп остался
+     * бы перед отрядом навсегда и слот не вернулся бы в пул.
+     *
+     * Ни ударов, ни таймеров полоски и вспышки здесь нет: тело только падает и
+     * едет. Рисуется в те же InstancedMesh следом за живыми, счётчики инстансов
+     * продолжаются — поэтому цикл стоит между живыми и записью mesh.count.
+     */
+    const carry = worldSpeed * dt;
+    const fallSeconds = CONFIG.deathAnim.fallSeconds;
+
+    for (let i = this.aliveCount; i < this.count; ) {
+      if (this.fallLeft[i]! > 0) this.fallLeft[i]! -= dt;
+      this.posZ[i]! += carry;
+
+      if (this.posZ[i]! > despawnZ) {
+        this.removeCorpse(i);
+        continue;
+      }
+
+      const bigOne = this.isBig[i] === 1;
+      const capsule = (bigOne ? big : normal).capsule;
+      // Доля падения 0…1. Возведение в квадрат — ускорение: тело подсекает, а не
+      // опускает. При fallSeconds = 0 анимации нет, тело сразу лежит.
+      const done = fallSeconds > 0 ? 1 - Math.max(this.fallLeft[i]!, 0) / fallSeconds : 1;
+      const eased = done * done;
+
+      const standY = capsule.length / 2 + capsule.radius;
+      // Лёжа центр капсулы стоит на высоте радиуса — тело лежит НА дороге, а не в ней.
+      const y = standY + (capsule.radius - standY) * eased;
+
+      // Поворот вокруг Z валит капсулу вбок, поперёк дороги. Масштаба у тела нет:
+      // makeRotationZ даёт единичный, и замах, застигнутый смертью, обрывается.
+      this.matrix.makeRotationZ(this.fallDir[i]! * (Math.PI / 2) * eased);
+      this.matrix.setPosition(this.posX[i]!, y, this.posZ[i]!);
+
+      if (bigOne) {
+        this.bigMesh.setMatrixAt(bigDrawn, this.matrix);
+        this.bigMesh.setColorAt(bigDrawn, this.bigColor);
+        bigDrawn++;
+      } else {
+        this.normalMesh.setMatrixAt(normalDrawn, this.matrix);
+        this.normalMesh.setColorAt(normalDrawn, this.normalColor);
         normalDrawn++;
       }
 
@@ -325,7 +452,8 @@ export class EnemyPool {
     const hitboxScale = CONFIG.enemies.hitboxScale;
     let anyHit = false;
 
-    for (let i = 0; i < this.count; ) {
+    // Только живые: тело пуля прошивает насквозь, добивать труп нечем и незачем.
+    for (let i = 0; i < this.aliveCount; ) {
       const reach =
         (this.isBig[i] === 1 ? CONFIG.enemies.big : CONFIG.enemies.normal).capsule.radius *
           hitboxScale +
@@ -353,11 +481,14 @@ export class EnemyPool {
     return anyHit;
   };
 
-  /** Есть ли живой зомби в круге — по этому взводится детонация мин. */
+  /**
+   * Есть ли живой зомби в круге — по этому взводится детонация мин.
+   * Тела мину не взводят: подрываться на трупе она не должна.
+   */
   hasEnemyInRadius(x: number, z: number, radius: number): boolean {
     const radiusSq = radius * radius;
 
-    for (let i = 0; i < this.count; i++) {
+    for (let i = 0; i < this.aliveCount; i++) {
       const dx = this.posX[i]! - x;
       const dz = this.posZ[i]! - z;
       if (dx * dx + dz * dz <= radiusSq) return true;
@@ -374,7 +505,9 @@ export class EnemyPool {
     const radiusSq = radius * radius;
     let hit = 0;
 
-    for (let i = 0; i < this.count; ) {
+    // Только живые: взрыв разбрасывал бы уже лежащие тела, а считать их в
+    // «задетых» — врать статистике мин.
+    for (let i = 0; i < this.aliveCount; ) {
       const dx = this.posX[i]! - x;
       const dz = this.posZ[i]! - z;
 
@@ -412,7 +545,8 @@ export class EnemyPool {
     const { normal, big } = CONFIG.enemies;
     const { offsetY, normalZombieScale } = CONFIG.ui.hpBar;
 
-    for (let i = 0; i < this.count; i++) {
+    // Только живые: у тела запас показывать нечем и не за чем следить.
+    for (let i = 0; i < this.aliveCount; i++) {
       if (this.hpBarLeft[i]! <= 0) continue;
 
       const bigOne = this.isBig[i] === 1;
@@ -433,7 +567,7 @@ export class EnemyPool {
   /** Сколько полосок HP сейчас показано — для отладки и проверок. */
   get hpBarsVisible(): number {
     let total = 0;
-    for (let i = 0; i < this.count; i++) {
+    for (let i = 0; i < this.aliveCount; i++) {
       if (this.hpBarLeft[i]! > 0) total++;
     }
     return total;
@@ -490,7 +624,8 @@ export class EnemyPool {
     const value = this.isBig[i] === 1 ? CONFIG.exp.perBigZombie : CONFIG.exp.perNormalZombie;
     this.crystals.spawn(this.posX[i]!, this.posZ[i]!, value);
 
-    this.recycle(i);
+    // Слот не освобождается: зомби становится телом и уезжает с дорогой.
+    this.kill(i);
     this.killedTotal++;
     this.run.registerZombieKill();
     return true;
@@ -574,9 +709,10 @@ export class EnemyPool {
     }
   }
 
-  /** Чистит поле и статистику: новый забег начинается с пустой дороги. */
+  /** Чистит поле и статистику: новый забег начинается с пустой дороги — и без тел. */
   reset(): void {
     this.count = 0;
+    this.aliveCount = 0;
     this.spawnTimer = 0;
     this.primeFirstSpawn = true;
     this.spawnEnabled = true;
@@ -589,28 +725,58 @@ export class EnemyPool {
     this.bigMesh.instanceMatrix.needsUpdate = true;
   }
 
-  /** Убирает зомби i, переставляя на его место последнего активного. */
-  private recycle(i: number): void {
-    const last = this.count - 1;
+  /*
+   * Ниже — ВСЯ работа со слотами пула. Обе области непрерывны, поэтому любое
+   * изменение состава сводится к перестановкам, а не к сдвигам.
+   */
 
-    if (i !== last) {
-      this.posX[i] = this.posX[last]!;
-      this.posZ[i] = this.posZ[last]!;
-      this.hp[i] = this.hp[last]!;
-      this.maxHp[i] = this.maxHp[last]!;
-      this.damage[i] = this.damage[last]!;
-      this.attackTimer[i] = this.attackTimer[last]!;
-      this.stopAt[i] = this.stopAt[last]!;
-      this.isBig[i] = this.isBig[last]!;
-      this.hpBarLeft[i] = this.hpBarLeft[last]!;
-      this.flashLeft[i] = this.flashLeft[last]!;
-      this.recoverLeft[i] = this.recoverLeft[last]!;
+  /** Меняет местами данные слотов a и b — по всему списку slots. */
+  private swapSlots(a: number, b: number): void {
+    if (a === b) return;
+
+    for (const data of this.slots) {
+      const kept = data[a]!;
+      data[a] = data[b]!;
+      data[b] = kept;
     }
+  }
 
+  /**
+   * Убитый зомби i переходит в тела: его слот уезжает в начало области тел, на
+   * освободившееся место в живых встаёт последний живой.
+   */
+  private kill(i: number): void {
+    const last = this.aliveCount - 1;
+    this.swapSlots(i, last);
+    this.aliveCount--;
+
+    // last === aliveCount после уменьшения, то есть это уже первое тело.
+    this.fallLeft[last] = CONFIG.deathAnim.fallSeconds;
+    this.fallDir[last] = Math.random() < 0.5 ? -1 : 1;
+  }
+
+  /**
+   * Убирает ЖИВОГО зомби i совсем, без стадии тела.
+   *
+   * Две перестановки, а не одна: слот сначала уходит в конец живых, потом
+   * меняется местами с последним телом — только так обе области остаются
+   * непрерывными. Когда тел нет, вторая перестановка вырождается в пустую.
+   */
+  private removeAlive(i: number): void {
+    const lastAlive = this.aliveCount - 1;
+    this.swapSlots(i, lastAlive);
+    this.swapSlots(lastAlive, this.count - 1);
+    this.aliveCount--;
     this.count--;
   }
 
-  /** Состояние зомби — для отладки и проверок. */
+  /** Убирает тело i: оно скрылось за нижним краем экрана. */
+  private removeCorpse(i: number): void {
+    this.swapSlots(i, this.count - 1);
+    this.count--;
+  }
+
+  /** Состояние ЖИВЫХ зомби — для отладки и проверок. Тела — в debugCorpses. */
   debugSnapshot(): Array<{
     x: number;
     z: number;
@@ -625,7 +791,7 @@ export class EnemyPool {
     scale: number;
   }> {
     const out = [];
-    for (let i = 0; i < this.count; i++) {
+    for (let i = 0; i < this.aliveCount; i++) {
       out.push({
         x: this.posX[i]!,
         z: this.posZ[i]!,
@@ -641,6 +807,37 @@ export class EnemyPool {
         scale: +this.instanceScale(i).toFixed(3),
       });
     }
+    return out;
+  }
+
+  /**
+   * Состояние ТЕЛ — для отладки и проверок анимации смерти.
+   *
+   * tiltDegrees — фактический наклон капсулы (0 — стоит, ±90 — лежит), знак
+   * повторяет сторону падения. Считается тут же по той же формуле, что и в
+   * отрисовке: иначе проверять пришлось бы глазами.
+   */
+  debugCorpses(): Array<{
+    x: number;
+    z: number;
+    kind: ZombieKind;
+    fallLeft: number;
+    tiltDegrees: number;
+  }> {
+    const fallSeconds = CONFIG.deathAnim.fallSeconds;
+    const out = [];
+
+    for (let i = this.aliveCount; i < this.count; i++) {
+      const done = fallSeconds > 0 ? 1 - Math.max(this.fallLeft[i]!, 0) / fallSeconds : 1;
+      out.push({
+        x: +this.posX[i]!.toFixed(3),
+        z: +this.posZ[i]!.toFixed(3),
+        kind: (this.isBig[i] === 1 ? 'big' : 'normal') as ZombieKind,
+        fallLeft: +this.fallLeft[i]!.toFixed(3),
+        tiltDegrees: +(this.fallDir[i]! * 90 * done * done).toFixed(1),
+      });
+    }
+
     return out;
   }
 }

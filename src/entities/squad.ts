@@ -64,6 +64,14 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
   /** Остаток вспышки героя от урона (ui.damageFlash). */
   private heroFlashLeft = 0;
 
+  /**
+   * Остаток падения героя, секунды. Ставится в startHeroDeath и убывает только в
+   * updateHeroDeath: обычный update в это время уже не зовут — отряд не ходит.
+   */
+  private heroDeathLeft = 0;
+  /** Куда валится герой: +1 вправо, −1 влево. Разыгрывается в момент смерти. */
+  private heroDeathDir = 1;
+
   private readonly allyMesh: InstancedMesh;
   private readonly matrix = new Matrix4();
   private readonly allies: Ally[] = [];
@@ -116,7 +124,7 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
     );
     // Капсула центрируется по середине: поднимаем на пол-высоты, чтобы ноги
     // стояли на дороге (y = 0).
-    this.heroMesh.position.set(0, heroCapsule.length / 2 + heroCapsule.radius, 0);
+    this.heroMesh.position.set(0, Squad.heroStandY, 0);
     scene.add(this.heroMesh);
 
     this.allyMesh = new InstancedMesh(
@@ -231,6 +239,59 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
     this.allyMesh.count = 0;
     this.allyMesh.instanceMatrix.needsUpdate = true;
     this.heroMesh.position.x = 0;
+    // Герой прошлого забега остался лежать: меш один на всю игру, и без явного
+    // подъёма новый забег начался бы с капсулы на боку.
+    this.heroDeathLeft = 0;
+    this.heroDeathDir = 1;
+    this.heroMesh.rotation.z = 0;
+    this.heroMesh.position.y = Squad.heroStandY;
+  }
+
+  /** Высота центра стоящей капсулы героя: подошвы на дороге, y = 0. */
+  private static get heroStandY(): number {
+    const { heroCapsule } = CONFIG.player;
+    return heroCapsule.length / 2 + heroCapsule.radius;
+  }
+
+  /**
+   * Начинает падение героя. Зовётся из Game в момент, когда его HP дошло до нуля:
+   * забег там же переходит в фазу прощания, и с этого шага отряд больше не ходит
+   * и не стреляет — двигается только эта капсула.
+   */
+  startHeroDeath(): void {
+    this.heroDeathLeft = CONFIG.deathAnim.fallSeconds;
+    this.heroDeathDir = Math.random() < 0.5 ? -1 : 1;
+    this.applyHeroFall();
+  }
+
+  /**
+   * Шаг падения героя. Отдельный метод, а не часть update: в фазе прощания
+   * игровой шаг не идёт вовсе — ни ввода, ни стрельбы, ни регенерации.
+   */
+  updateHeroDeath(dt: number): void {
+    if (this.heroDeathLeft > 0) this.heroDeathLeft = Math.max(0, this.heroDeathLeft - dt);
+    this.applyHeroFall();
+  }
+
+  /** Идёт ли ещё падение героя — для отладки и проверок. */
+  get heroFalling(): boolean {
+    return this.heroDeathLeft > 0;
+  }
+
+  /**
+   * Поза падения по остатку таймера: поворот вокруг Z валит капсулу вбок, центр
+   * при этом опускается с роста до радиуса — тело ложится НА дорогу, а не в неё.
+   * Формула общая с телами зомби (EnemyPool.update), включая ускорение падения.
+   */
+  private applyHeroFall(): void {
+    const { radius } = CONFIG.player.heroCapsule;
+    const fallSeconds = CONFIG.deathAnim.fallSeconds;
+    const done = fallSeconds > 0 ? 1 - this.heroDeathLeft / fallSeconds : 1;
+    const eased = done * done;
+    const standY = Squad.heroStandY;
+
+    this.heroMesh.rotation.z = this.heroDeathDir * (Math.PI / 2) * eased;
+    this.heroMesh.position.y = standY + (radius - standY) * eased;
   }
 
   /** Двигает отряд за вводом, раскладывает строй и стреляет. */
