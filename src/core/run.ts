@@ -104,8 +104,16 @@ export class RunState {
     const growth = this.budgetMultiplier;
     // Округляем каждый вид отдельно: иначе соотношение обычных к крупным
     // (88/12) уплывало бы с ростом волны.
-    this.normalLeft = Math.round(CONFIG.run.normalZombieCount * growth);
-    this.bigLeft = Math.round(CONFIG.run.bigZombieCount * growth);
+    const normalBudget = Math.round(CONFIG.run.normalZombieCount * growth);
+    const bigBudget = Math.round(CONFIG.run.bigZombieCount * growth);
+
+    // Крупные входят в бюджет не раньше своей волны (CONFIG.run.bigZombieFromWave),
+    // а до неё их доля ОТДАЁТСЯ ОБЫЧНЫМ, а не пропадает: число единиц в волне
+    // одинаково при любом составе, поэтому ранняя волна не оказывается короче
+    // прочих просто из-за того, что в ней нет крупных.
+    const bigThisWave = this.wave >= CONFIG.run.bigZombieFromWave;
+    this.normalLeft = normalBudget + (bigThisWave ? 0 : bigBudget);
+    this.bigLeft = bigThisWave ? bigBudget : 0;
     // Итог волны запоминается, а не пересчитывается: полоса волны и бюджет спавна
     // обязаны совпадать, а два независимых округления могли бы разойтись.
     this.waveTotal = this.normalLeft + this.bigLeft + (CONFIG.run.hasBoss ? 1 : 0);
@@ -181,20 +189,12 @@ export class RunState {
    * тогда крупные равномерно рассеяны по всему забегу и не сваливаются в конец.
    */
   takeNextZombie(): ZombieKind | null {
-    // Крупные до своей секунды не выпускаются: их бюджет просто ждёт. Обычные
-    // при этом расходуются как обычно, поэтому ранняя волна целиком из обычных.
-    //
-    // НО ЗАМОК УСТУПАЕТ, КОГДА ИНАЧЕ ВОЛНА ВСТАЁТ. Если обычные кончились, а
-    // крупные ещё закрыты, выпускаем крупных досрочно. Без этого получалась дыра,
-    // которую и видно на скриншоте: сильный отряд выбивал все 264 обычных к 65-й
-    // секунде, а 36 крупных ждали 120-й — на дороге больше минуты не было НИКОГО,
-    // полоса волны при этом показывала 37 оставшихся. Правило «не простаивать»
-    // важнее правила «крупные не раньше двух минут»: разблокировка нужна, чтобы
-    // крупные не встретились в первые секунды, а не чтобы игра замирала.
-    const bigAllowed = this.isUnlocked(CONFIG.run.unlocks.bigZombie);
-    const bigAvailable = bigAllowed || this.normalLeft <= 0 ? this.bigLeft : 0;
-
-    const total = this.normalLeft + bigAvailable;
+    // Никаких запретов по ходу волны здесь НЕТ, и это важно: состав бюджета
+    // определяется один раз, в resetWaveBudget. Раньше крупные держались замком до
+    // 120-й секунды забега, и волна распадалась надвое — сначала ~270 обычных, а
+    // потом, когда обычные кончались и замок уступал, толпа из 30 крупных подряд.
+    // Гейт переехал на номер волны именно поэтому: внутри волны запирать нечего.
+    const total = this.normalLeft + this.bigLeft;
     if (total <= 0) return null;
 
     if (Math.random() * total < this.normalLeft) {
