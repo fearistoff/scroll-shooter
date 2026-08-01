@@ -358,7 +358,8 @@ export class Game {
     this.barrels.forEachLabel(this.addLabel);
     this.gates.forEachLabel(this.addLabel);
     // У зомби подписей нет: их запас показывают только полоски ниже.
-    // Полоски HP: только те, кто получал урон в последние ui.hpBar.showSeconds.
+    // Полоски HP: зомби — те, кому досталось в последние ui.hpBar.showSeconds,
+    // стрелки — все с неполным запасом (см. ui.hpBar).
     // Босс сюда не входит — у него своя многослойная полоса в HUD.
     this.enemies.forEachHpBar(this.addHpBar);
     this.squad.forEachHpBar(this.addHpBar);

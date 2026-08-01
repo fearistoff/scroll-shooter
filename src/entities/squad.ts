@@ -28,8 +28,8 @@ import {
 interface Ally {
   hp: number;
   weapon: WeaponState;
-  /** Сколько секунд ещё показывать полоску HP. Ставится при уроне. */
-  hpBarLeft: number;
+  /** Сколько секунд регенерация ещё запрещена. Ставится при уроне. */
+  regenDelayLeft: number;
   /** Остаток вспышки от урона (ui.damageFlash). Ставится там же. */
   flashLeft: number;
 }
@@ -59,8 +59,8 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
   /** Оружие главного героя. */
   readonly heroWeapon: WeaponState;
 
-  /** Сколько секунд ещё показывать полоску HP героя. */
-  private heroHpBarLeft = 0;
+  /** Сколько секунд регенерация героя ещё запрещена (player.regen). */
+  private heroRegenDelayLeft = 0;
   /** Остаток вспышки героя от урона (ui.damageFlash). */
   private heroFlashLeft = 0;
 
@@ -225,7 +225,7 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
     this.percent = 50;
     this.aimX = null;
     this.aimZ = null;
-    this.heroHpBarLeft = 0;
+    this.heroRegenDelayLeft = 0;
     this.heroFlashLeft = 0;
     this.heroMaterial.color.copy(this.heroColor);
     this.allyMesh.count = 0;
@@ -237,12 +237,12 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
   update(dt: number, targetPercent: number): void {
     this.percent += (targetPercent - this.percent) * CONFIG.player.followLerp;
 
-    // Таймеры полосок и вспышек тают по игровому dt: на экранах результата и
-    // прокачки игровой шаг не идёт, поэтому там они не гаснут.
-    if (this.heroHpBarLeft > 0) this.heroHpBarLeft -= dt;
+    // Таймеры вспышек и паузы регенерации тают по игровому dt: на экранах
+    // результата и прокачки игровой шаг не идёт, поэтому там они не тают.
+    if (this.heroRegenDelayLeft > 0) this.heroRegenDelayLeft -= dt;
     if (this.heroFlashLeft > 0) this.heroFlashLeft -= dt;
     for (const ally of this.allies) {
-      if (ally.hpBarLeft > 0) ally.hpBarLeft -= dt;
+      if (ally.regenDelayLeft > 0) ally.regenDelayLeft -= dt;
       if (ally.flashLeft > 0) ally.flashLeft -= dt;
     }
 
@@ -264,9 +264,13 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
    * squad.update), поэтому добить героя удар может и в тот же шаг, в который
    * прошло начисление: лечение не отменяет урон, а только опережает его.
    *
-   * Полоску HP регенерация не зажигает намеренно: полоска по ТЗ — отметка
-   * «получил урон», а от непрерывного лечения она висела бы над каждым задетым
-   * бойцом до конца забега. Пока полоска показана после урона, рост на ней виден.
+   * Пауза после урона (regen.delayAfterDamageSeconds) считается КАЖДОМУ стрелку
+   * своя: союзника задело взрывом босса — лечится только он, остальные
+   * продолжают. Таймер тает в update, здесь он только читается.
+   *
+   * Полоску HP регенерация не прячет и не зажигает: у стрелков полоска висит,
+   * пока запас не полный, поэтому рост виден сам собой и гаснет она ровно в тот
+   * момент, когда HP отыгралось.
    */
   private regenerate(dt: number): void {
     const { regen, heroHp, allyHp } = CONFIG.player;
@@ -275,9 +279,12 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
     const gain = (regen.hpPerInterval / regen.intervalSeconds) * dt;
 
     // Мёртвый герой не отыгрывается: забег закончится в этот же шаг.
-    if (this.heroHp > 0) this.heroHp = Math.min(heroHp, this.heroHp + gain);
+    if (this.heroHp > 0 && this.heroRegenDelayLeft <= 0) {
+      this.heroHp = Math.min(heroHp, this.heroHp + gain);
+    }
 
     for (const ally of this.allies) {
+      if (ally.regenDelayLeft > 0) continue;
       ally.hp = Math.min(allyHp, ally.hp + gain);
     }
   }
@@ -565,7 +572,7 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
   private hurtHero(amount: number): void {
     const incoming = amount * CONFIG.player.heroMultipliers.damageTakenMultiplier;
     this.heroHp = Math.max(0, this.heroHp - incoming);
-    this.heroHpBarLeft = CONFIG.ui.hpBar.showSeconds;
+    this.heroRegenDelayLeft = CONFIG.player.regen.delayAfterDamageSeconds;
     this.heroFlashLeft = CONFIG.ui.damageFlash.seconds;
   }
 
@@ -575,7 +582,7 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
     if (ally === undefined) return;
 
     ally.hp -= amount * CONFIG.player.allyMultipliers.damageTakenMultiplier;
-    ally.hpBarLeft = CONFIG.ui.hpBar.showSeconds;
+    ally.regenDelayLeft = CONFIG.player.regen.delayAfterDamageSeconds;
     ally.flashLeft = CONFIG.ui.damageFlash.seconds;
 
     if (ally.hp <= 0) {
@@ -603,8 +610,8 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
         hp: CONFIG.player.allyHp,
         // Случайная фаза: одинаковые накопители у всех дали бы залпы вместо потока.
         weapon: new WeaponState(this.commonWeapon, 'ally', Math.random()),
-        // Новый боец урона не получал — ни полоски, ни вспышки у него быть не должно.
-        hpBarLeft: 0,
+        // Новый боец урона не получал — ни паузы регенерации, ни вспышки.
+        regenDelayLeft: 0,
         flashLeft: 0,
       });
     }
@@ -690,8 +697,11 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
   }
 
   /**
-   * Перечисляет полоски HP: герой и видимые союзники, получавшие урон в последние
-   * ui.hpBar.showSeconds секунд.
+   * Перечисляет полоски HP: герой и видимые союзники с НЕПОЛНЫМ запасом.
+   *
+   * Таймера показа у стрелков нет, в отличие от зомби: полоска зажигается при
+   * уроне сама (запас перестал быть полным) и гаснет, когда регенерация его
+   * доберёт. Промежуточного состояния «урон был, а полоски уже нет» не остаётся.
    *
    * Бойцы за визуальным потолком пропущены: у них нет своего места в строю, рисовать
    * полоску не над чем.
@@ -701,7 +711,7 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
     const offsetY = CONFIG.ui.hpBar.offsetY;
     const squadX = this.x;
 
-    if (this.heroHpBarLeft > 0) {
+    if (this.heroHp < heroHp) {
       const top = heroCapsule.length + heroCapsule.radius * 2;
       visit(squadX, top + offsetY, 0, this.heroHp / heroHp);
     }
@@ -710,7 +720,7 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
     const visible = this.visibleAllyCount;
     for (let i = 0; i < visible; i++) {
       const ally = this.allies[i]!;
-      if (ally.hpBarLeft <= 0) continue;
+      if (ally.hp >= allyHp) continue;
 
       this.allyOffset(i);
       visit(squadX + this.offsetX, allyTop + offsetY, this.offsetZ, ally.hp / allyHp);
@@ -719,10 +729,11 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
 
   /** Сколько полосок HP сейчас показано — для отладки и проверок. */
   get hpBarsVisible(): number {
-    let total = this.heroHpBarLeft > 0 ? 1 : 0;
+    const { heroHp, allyHp } = CONFIG.player;
+    let total = this.heroHp < heroHp ? 1 : 0;
     const visible = this.visibleAllyCount;
     for (let i = 0; i < visible; i++) {
-      if (this.allies[i]!.hpBarLeft > 0) total++;
+      if (this.allies[i]!.hp < allyHp) total++;
     }
     return total;
   }
@@ -753,9 +764,9 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
       visible: boolean;
       weapon: WeaponId;
       special: boolean;
-      hpBarLeft: number;
+      regenDelayLeft: number;
     }>;
-    heroHpBarLeft: number;
+    heroRegenDelayLeft: number;
   } {
     const squadX = this.x;
     const allies = this.allies.map((ally, index) => {
@@ -768,7 +779,7 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
         visible: index < Squad.visibleAllyCapacity,
         weapon: ally.weapon.weaponId,
         special: isSpecialWeapon(ally.weapon.weaponId),
-        hpBarLeft: +ally.hpBarLeft.toFixed(3),
+        regenDelayLeft: +ally.regenDelayLeft.toFixed(3),
       };
     });
 
@@ -781,7 +792,7 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
       visible: this.visibleAllyCount,
       hidden: this.hiddenAllyCount,
       allies,
-      heroHpBarLeft: +this.heroHpBarLeft.toFixed(3),
+      heroRegenDelayLeft: +this.heroRegenDelayLeft.toFixed(3),
     };
   }
 }
