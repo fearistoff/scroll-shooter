@@ -137,12 +137,17 @@ export class Game {
    *
    * EXP уходит в банк: копить за проигрыш нормально для rogue-like, иначе
    * неудачный забег не даёт вообще ничего.
+   *
+   * ЗДЕСЬ ЖЕ СРАБАТЫВАЕТ МНОЖИТЕЛЬ ОПЫТА (run.expEarned): во время забега счётчик
+   * показывает собранное как есть, а прокачка прибавляет один раз на выходе.
+   * Экран результата получает оба числа, чтобы объяснить разницу.
    */
   private finishRun(): void {
-    const earned = this.run.exp;
+    const collected = this.run.exp;
+    const earned = this.run.expEarned;
     this.meta.deposit(earned);
     this.phase = 'result';
-    this.screens.showResult(earned, this.run.elapsedSeconds, this.run.waveNumber);
+    this.screens.showResult(collected, earned, this.run.elapsedSeconds, this.run.waveNumber);
   }
 
   private openUpgrade(): void {

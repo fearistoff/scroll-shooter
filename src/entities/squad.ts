@@ -102,7 +102,7 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
     const { heroCapsule, allyCapsule, colors, startWeapon } = CONFIG.player;
 
     this.commonWeapon = startWeapon as WeaponId;
-    this.heroWeapon = new WeaponState(this.commonWeapon);
+    this.heroWeapon = new WeaponState(this.commonWeapon, 'hero');
 
     // Материал героя держим ссылкой: его цвет переключается на вспышку при уроне.
     this.heroMaterial = new MeshStandardMaterial({
@@ -359,9 +359,10 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
     const heroShots = this.heroWeapon.tick(dt);
     if (heroShots > 0) {
       const heroWeapon = this.heroWeapon.weaponId;
-      // Урон и дальность — через аксессоры: они учитывают мета-прокачку.
-      const damage = weaponDamage(heroWeapon);
-      const range = weaponRange(heroWeapon);
+      // Урон и дальность — через аксессоры: они учитывают мета-прокачку, причём
+      // именно ветку героя (у доп. стрелков ниже она своя).
+      const damage = weaponDamage(heroWeapon, 'hero');
+      const range = weaponRange(heroWeapon, 'hero');
       for (let shot = 0; shot < heroShots; shot++) {
         this.bullets.spawn(squadX, 0, damage, range, heroWeapon, aimX, aimZ);
       }
@@ -376,10 +377,11 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
       if (shots === 0) continue;
 
       const allyWeapon = ally.weapon.weaponId;
-      // Союзник бьёт долей от героя (formation.allyDamageFactor): темп огня и
-      // число пуль те же, слабее только каждый снаряд.
-      const damage = weaponDamage(allyWeapon) * CONFIG.formation.allyDamageFactor;
-      const range = weaponRange(allyWeapon);
+      // Союзник бьёт долей от героя (formation.allyDamageFactor): число пуль то
+      // же, слабее только каждый снаряд. Доля считается от БАЗЫ оружия, поверх
+      // неё ложится ветка прокачки стрелков — темп и дальность тоже её.
+      const damage = weaponDamage(allyWeapon, 'ally') * CONFIG.formation.allyDamageFactor;
+      const range = weaponRange(allyWeapon, 'ally');
       this.allyOffset(i);
       // Невидимые бойцы стреляют из последнего видимого ряда и по множителю из
       // конфига — это и есть «плотность огня растёт за потолком».
@@ -424,7 +426,6 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
    * Бойцы за визуальным потолком недосягаемы: они позади всего строя.
    */
   damageNearestShooter(fromX: number, fromZ: number, amount: number): boolean {
-    const incoming = amount * CONFIG.player.damageTakenMultiplier;
     const squadX = this.x;
 
     let bestIndex = -2; // -2 — никого, -1 — герой, >= 0 — индекс союзника
@@ -452,11 +453,11 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
     if (bestIndex === -2) return false;
 
     if (bestIndex === -1) {
-      this.hurtHero(incoming);
+      this.hurtHero(amount);
       return true;
     }
 
-    this.hurtAlly(bestIndex, incoming);
+    this.hurtAlly(bestIndex, amount);
     return true;
   }
 
@@ -467,7 +468,6 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
    * успел уйти, попавших не окажется. Возвращает число задетых стрелков.
    */
   damageShootersInCircle(x: number, z: number, radius: number, damage: number): number {
-    const incoming = damage * CONFIG.player.damageTakenMultiplier;
     const radiusSq = radius * radius;
     const squadX = this.x;
     let hit = 0;
@@ -475,7 +475,7 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
     const heroDx = squadX - x;
     const heroDz = 0 - z;
     if (heroDx * heroDx + heroDz * heroDz <= radiusSq) {
-      this.hurtHero(incoming);
+      this.hurtHero(damage);
       hit++;
     }
 
@@ -488,7 +488,7 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
       if (dx * dx + dz * dz > radiusSq) continue;
 
       hit++;
-      this.hurtAlly(i, incoming);
+      this.hurtAlly(i, damage);
     }
 
     return hit;
@@ -507,12 +507,11 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
    * Возвращает число задетых стрелков.
    */
   damageShootersInBand(centerX: number, halfWidth: number, damage: number): number {
-    const incoming = damage * CONFIG.player.damageTakenMultiplier;
     const squadX = this.x;
     let hit = 0;
 
     if (Math.abs(squadX - centerX) <= halfWidth) {
-      this.hurtHero(incoming);
+      this.hurtHero(damage);
       hit++;
     }
 
@@ -523,7 +522,7 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
       if (Math.abs(squadX + this.offsetX - centerX) > halfWidth) continue;
 
       hit++;
-      this.hurtAlly(i, incoming);
+      this.hurtAlly(i, damage);
     }
 
     return hit;
@@ -537,13 +536,12 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
    * от неё нельзя. Возвращает число задетых стрелков.
    */
   damageAllShooters(damage: number): number {
-    const incoming = damage * CONFIG.player.damageTakenMultiplier;
     let hit = 1;
-    this.hurtHero(incoming);
+    this.hurtHero(damage);
 
     for (let i = this.allies.length - 1; i >= 0; i--) {
       hit++;
-      this.hurtAlly(i, incoming);
+      this.hurtAlly(i, damage);
     }
 
     return hit;
@@ -556,20 +554,27 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
    * требование «полоска показывается после изменения значения» невозможно было
    * выполнить надёжно: одну точку рано или поздно пропустишь. Теперь таймер
    * полоски ставится здесь и попадает во все источники урона сразу.
+   *
+   * СЮДА ЖЕ ПЕРЕЕХАЛ МНОЖИТЕЛЬ ПОЛУЧАЕМОГО УРОНА. Раньше источники урона
+   * умножали сами и передавали уже готовое число — это работало, пока множитель
+   * был один на весь отряд. Теперь у героя и у союзника свои ветки прокачки, и
+   * решать, чей множитель применить, может только та точка, которая знает, кому
+   * достался удар. Все четыре метода выше передают СЫРОЙ урон.
    */
 
-  private hurtHero(incoming: number): void {
+  private hurtHero(amount: number): void {
+    const incoming = amount * CONFIG.player.heroMultipliers.damageTakenMultiplier;
     this.heroHp = Math.max(0, this.heroHp - incoming);
     this.heroHpBarLeft = CONFIG.ui.hpBar.showSeconds;
     this.heroFlashLeft = CONFIG.ui.damageFlash.seconds;
   }
 
   /** Наносит урон союзнику index; выбитый покидает строй. */
-  private hurtAlly(index: number, incoming: number): void {
+  private hurtAlly(index: number, amount: number): void {
     const ally = this.allies[index];
     if (ally === undefined) return;
 
-    ally.hp -= incoming;
+    ally.hp -= amount * CONFIG.player.allyMultipliers.damageTakenMultiplier;
     ally.hpBarLeft = CONFIG.ui.hpBar.showSeconds;
     ally.flashLeft = CONFIG.ui.damageFlash.seconds;
 
@@ -597,7 +602,7 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
       this.allies.push({
         hp: CONFIG.player.allyHp,
         // Случайная фаза: одинаковые накопители у всех дали бы залпы вместо потока.
-        weapon: new WeaponState(this.commonWeapon, Math.random()),
+        weapon: new WeaponState(this.commonWeapon, 'ally', Math.random()),
         // Новый боец урона не получал — ни полоски, ни вспышки у него быть не должно.
         hpBarLeft: 0,
         flashLeft: 0,

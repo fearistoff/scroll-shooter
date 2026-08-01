@@ -26,6 +26,12 @@ export function getWeapon(id: WeaponId): WeaponStats {
   return CONFIG.weapons[id];
 }
 
+/**
+ * Кто держит ствол. Главный герой и доп. стрелок качаются РАЗНЫМИ ветками
+ * мета-прокачки, поэтому одна и та же таблица оружия даёт им разные числа.
+ */
+export type ShooterKind = 'hero' | 'ally';
+
 /*
  * Ниже — характеристики С УЧЁТОМ мета-прокачки (ТЗ раздел 11).
  *
@@ -35,16 +41,25 @@ export function getWeapon(id: WeaponId): WeaponStats {
  *
  * Возвращаются числа, а не собранный объект: эти функции вызываются в горячем
  * цикле стрельбы на каждый выстрел каждого бойца, и объект там был бы мусором.
+ *
+ * kind обязателен во всех трёх аксессорах, значения по умолчанию нет намеренно:
+ * умолчание «герой» тихо давало бы союзникам чужие числа в любом месте, где о
+ * разделении забыли, — а забыть тут нечего, вызовов ровно четыре.
  */
 
+/** Множители того набора, который относится к этому типу стрелка. */
+function multipliersOf(kind: ShooterKind): typeof CONFIG.player.heroMultipliers {
+  return kind === 'hero' ? CONFIG.player.heroMultipliers : CONFIG.player.allyMultipliers;
+}
+
 /** Урон снаряда с учётом прокачки. */
-export function weaponDamage(id: WeaponId): number {
-  return CONFIG.weapons[id].damage * CONFIG.player.damageMultiplier;
+export function weaponDamage(id: WeaponId, kind: ShooterKind): number {
+  return CONFIG.weapons[id].damage * multipliersOf(kind).damageMultiplier;
 }
 
 /** Выстрелов в секунду с учётом прокачки. */
-export function weaponFireRate(id: WeaponId): number {
-  return CONFIG.weapons[id].fireRate * CONFIG.player.fireRateMultiplier;
+export function weaponFireRate(id: WeaponId, kind: ShooterKind): number {
+  return CONFIG.weapons[id].fireRate * multipliersOf(kind).fireRateMultiplier;
 }
 
 /**
@@ -54,8 +69,8 @@ export function weaponFireRate(id: WeaponId): number {
  * стрелковой, поэтому она ВЫВОДИТСЯ из стрелковой, а не масштабируется
  * самостоятельно. Иначе при росте прокачки соотношение из ТЗ разъехалось бы.
  */
-export function weaponRange(id: WeaponId): number {
-  const multiplier = CONFIG.player.rangeMultiplier;
+export function weaponRange(id: WeaponId, kind: ShooterKind): number {
+  const multiplier = multipliersOf(kind).rangeMultiplier;
 
   if (id === 'flamethrower') {
     return (CONFIG.weapons.pistol.range * multiplier) / 2;
@@ -127,6 +142,10 @@ export class WeaponState {
   private lastInterval: number;
 
   /**
+   * kind — чьей веткой прокачки считается темп огня этого ствола. Хранится в
+   * состоянии, а не передаётся в tick(): владелец ствола не меняется за всю
+   * жизнь бойца, а tick зовётся каждый кадр у каждого.
+   *
    * initialFraction — начальная заполненность накопителя, 0…1.
    * 1 (по умолчанию) — первый выстрел уходит сразу, иначе стрелок молчит первый
    * интервал. Случайное значение разносит фазы бойцов отряда: при одинаковом
@@ -134,6 +153,7 @@ export class WeaponState {
    */
   constructor(
     private currentWeapon: WeaponId,
+    private readonly kind: ShooterKind,
     initialFraction = 1,
   ) {
     this.accumulator = this.interval * initialFraction;
@@ -156,7 +176,7 @@ export class WeaponState {
 
   private get interval(): number {
     // Через аксессор, а не напрямую из таблицы: темп должен учитывать прокачку.
-    const fireRate = weaponFireRate(this.currentWeapon);
+    const fireRate = weaponFireRate(this.currentWeapon, this.kind);
     return fireRate > 0 ? 1 / fireRate : Number.POSITIVE_INFINITY;
   }
 

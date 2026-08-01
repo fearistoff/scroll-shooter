@@ -1,23 +1,107 @@
 import { CONFIG } from '../config';
 
 /** Ключи улучшений. Совпадают с ключами CONFIG.meta.upgrades. */
-export type UpgradeId = 'damage' | 'fireRate' | 'range' | 'damageTaken' | 'exp';
+export type UpgradeId =
+  | 'heroDamage'
+  | 'heroFireRate'
+  | 'heroRange'
+  | 'heroDamageTaken'
+  | 'allyDamage'
+  | 'allyFireRate'
+  | 'allyRange'
+  | 'allyDamageTaken'
+  | 'exp';
 
-export const UPGRADE_IDS: readonly UpgradeId[] = [
-  'damage',
-  'fireRate',
-  'range',
-  'damageTaken',
-  'exp',
+/** Вкладка экрана прокачки: кого качаем. */
+export type UpgradeTrackId = 'hero' | 'ally' | 'common';
+
+export interface UpgradeTrack {
+  id: UpgradeTrackId;
+  /** Подпись на кнопке таббара. Коротко: три вкладки делят ширину экрана. */
+  title: string;
+  ids: readonly UpgradeId[];
+}
+
+/**
+ * Ветки прокачки. Боевые характеристики существуют в двух экземплярах — свой
+ * набор у главного героя и свой у доп. стрелков, — и качаются независимо.
+ *
+ * Опыт вынесен в третью вкладку, а не приписан к одной из двух: он относится к
+ * забегу целиком и не является характеристикой стрелка. Приписать его герою
+ * значило бы, что «вкладка героя» — это на самом деле «герой и ещё экономика».
+ *
+ * Порядок вкладок и строк внутри них берётся отсюда: экран собирает разметку по
+ * этому списку, руками там ничего не размечено.
+ */
+export const UPGRADE_TRACKS: readonly UpgradeTrack[] = [
+  {
+    id: 'hero',
+    title: 'Герой',
+    ids: ['heroDamage', 'heroFireRate', 'heroRange', 'heroDamageTaken'],
+  },
+  {
+    id: 'ally',
+    title: 'Стрелки',
+    ids: ['allyDamage', 'allyFireRate', 'allyRange', 'allyDamageTaken'],
+  },
+  {
+    id: 'common',
+    title: 'Общее',
+    ids: ['exp'],
+  },
 ];
 
-/** Человеческие названия и описание эффекта — для экрана прокачки. */
+/** Плоский список всех улучшений — для сохранения, сброса и отладки. */
+export const UPGRADE_IDS: readonly UpgradeId[] = UPGRADE_TRACKS.flatMap((track) => track.ids);
+
+/**
+ * Человеческие названия и описание эффекта — для экрана прокачки.
+ *
+ * Заголовки одинаковые у обеих веток намеренно: кого качаем, сказано вкладкой,
+ * и дублировать это в каждой строке значит гонять по экрану лишние слова. А вот
+ * описание эффекта разное — по нему видно, что множители правда разные.
+ */
 export const UPGRADE_LABELS: Record<UpgradeId, { title: string; effect: string }> = {
-  damage: { title: 'Урон', effect: 'урон снаряда' },
-  fireRate: { title: 'Скорострельность', effect: 'выстрелов в секунду' },
-  range: { title: 'Дальность стрельбы', effect: 'дальность полёта' },
-  damageTaken: { title: 'Получаемый урон', effect: 'урон по отряду' },
+  heroDamage: { title: 'Урон', effect: 'урон снаряда героя' },
+  heroFireRate: { title: 'Скорострельность', effect: 'выстрелов в секунду у героя' },
+  heroRange: { title: 'Дальность стрельбы', effect: 'дальность полёта у героя' },
+  heroDamageTaken: { title: 'Получаемый урон', effect: 'урон по герою' },
+
+  allyDamage: { title: 'Урон', effect: 'урон снаряда стрелка' },
+  allyFireRate: { title: 'Скорострельность', effect: 'выстрелов в секунду у стрелка' },
+  allyRange: { title: 'Дальность стрельбы', effect: 'дальность полёта у стрелка' },
+  allyDamageTaken: { title: 'Получаемый урон', effect: 'урон по доп. стрелкам' },
+
   exp: { title: 'Получаемый опыт', effect: 'опыт за забег' },
+};
+
+/**
+ * Улучшения, которые множитель УМЕНЬШАЮТ, а не увеличивают. Список, а не
+ * проверка имени по подстроке: подстрока сломалась бы на первом же улучшении,
+ * в названии которого случайно окажется «Taken».
+ */
+const REDUCING_UPGRADES: ReadonlySet<UpgradeId> = new Set<UpgradeId>([
+  'heroDamageTaken',
+  'allyDamageTaken',
+]);
+
+/** true — уровни этого улучшения множитель снижают (получаемый урон). */
+export function isReducingUpgrade(id: UpgradeId): boolean {
+  return REDUCING_UPGRADES.has(id);
+}
+
+/**
+ * Ключи из сохранений версии с ЕДИНЫМ набором улучшений на весь отряд, и куда
+ * они переезжают. Уровень старой ветки получают ОБЕ новые — иначе разделение
+ * стало бы скрытым нерфом: раньше одна покупка усиливала и героя, и союзников,
+ * а после переноса в одну ветку союзники внезапно откатились бы к нулю.
+ */
+const LEGACY_UPGRADE_IDS: Readonly<Record<string, readonly UpgradeId[]>> = {
+  damage: ['heroDamage', 'allyDamage'],
+  fireRate: ['heroFireRate', 'allyFireRate'],
+  range: ['heroRange', 'allyRange'],
+  damageTaken: ['heroDamageTaken', 'allyDamageTaken'],
+  // exp ключ не сменил — читается общим циклом нового формата.
 };
 
 interface SavedProgress {
@@ -28,8 +112,13 @@ interface SavedProgress {
 /**
  * Мета-прогрессия между забегами (ТЗ раздел 11).
  *
- * Держит уровни пяти улучшений и банк EXP, считает цены, продаёт уровни,
+ * Держит уровни улучшений и банк EXP, считает цены, продаёт уровни,
  * сохраняется в localStorage и применяет результат к CONFIG.
+ *
+ * Улучшения разложены по веткам (UPGRADE_TRACKS): свой набор боевых
+ * характеристик у главного героя, свой у доп. стрелков, опыт общий. Сам класс о
+ * ветках не знает — для него это просто плоский список ключей; деление нужно
+ * только экрану прокачки и applyTo().
  *
  * Улучшения затрагивают ТОЛЬКО характеристики игрока — множители урона, темпа,
  * дальности, получаемого урона и опыта. Генерация мира (бочки, ворота, состав
@@ -150,18 +239,28 @@ export class MetaProgress {
     const { stepPercent } = CONFIG.meta.upgrades[id];
     const step = (stepPercent / 100) * this.level(id);
     // Получаемый урон единственное, что уменьшается.
-    return id === 'damageTaken' ? 1 - step : 1 + step;
+    return isReducingUpgrade(id) ? 1 - step : 1 + step;
   }
 
   /**
    * Переносит прогресс в конфиг. Значения записываются целиком, поэтому вызов
    * идемпотентен: применить дважды — то же, что применить один раз.
+   *
+   * Наборов множителей два — герой и доп. стрелки, — и они не пересекаются:
+   * ветка героя пишет только в heroMultipliers, ветка стрелков только в
+   * allyMultipliers. Опыт один на забег, поэтому лежит рядом, а не в наборе.
    */
   applyTo(config: typeof CONFIG = CONFIG): void {
-    config.player.damageMultiplier = this.multiplier('damage');
-    config.player.fireRateMultiplier = this.multiplier('fireRate');
-    config.player.rangeMultiplier = this.multiplier('range');
-    config.player.damageTakenMultiplier = this.multiplier('damageTaken');
+    config.player.heroMultipliers.damageMultiplier = this.multiplier('heroDamage');
+    config.player.heroMultipliers.fireRateMultiplier = this.multiplier('heroFireRate');
+    config.player.heroMultipliers.rangeMultiplier = this.multiplier('heroRange');
+    config.player.heroMultipliers.damageTakenMultiplier = this.multiplier('heroDamageTaken');
+
+    config.player.allyMultipliers.damageMultiplier = this.multiplier('allyDamage');
+    config.player.allyMultipliers.fireRateMultiplier = this.multiplier('allyFireRate');
+    config.player.allyMultipliers.rangeMultiplier = this.multiplier('allyRange');
+    config.player.allyMultipliers.damageTakenMultiplier = this.multiplier('allyDamageTaken');
+
     config.player.expMultiplier = this.multiplier('exp');
   }
 
@@ -203,15 +302,44 @@ export class MetaProgress {
         for (const id of UPGRADE_IDS) {
           const value = saved.levels[id];
           if (typeof value !== 'number' || !Number.isFinite(value)) continue;
-          // Зажимаем в допустимый диапазон: сохранение могло быть от версии
-          // с другим maxLevel или отредактировано вручную.
-          this.levels.set(id, Math.min(Math.max(Math.floor(value), 0), this.maxLevel(id)));
+          this.levels.set(id, this.clampLevel(id, value));
         }
+
+        this.migrateLegacy(saved.levels as Record<string, unknown>);
       }
     } catch {
       // Невалидный JSON — просто стартуем с нуля.
       this.levels.clear();
       this.bankValue = 0;
+    }
+  }
+
+  /**
+   * Зажимает уровень в допустимый диапазон: сохранение могло быть от версии
+   * с другим maxLevel или отредактировано вручную.
+   */
+  private clampLevel(id: UpgradeId, value: number): number {
+    return Math.min(Math.max(Math.floor(value), 0), this.maxLevel(id));
+  }
+
+  /**
+   * Сохранение из версии с ЕДИНЫМ набором улучшений на весь отряд: раскладывает
+   * старые ключи по обеим новым веткам (см. LEGACY_UPGRADE_IDS).
+   *
+   * Ключ localStorage при разделении веток не менялся, поэтому в файле могут
+   * лежать оба формата разом — например, если игрок успел зайти в прокачку уже
+   * на новой версии. Новый формат главнее: уже прочитанную ветку перенос не
+   * трогает, иначе он затирал бы свежие покупки старым числом.
+   */
+  private migrateLegacy(levels: Record<string, unknown>): void {
+    for (const [legacyId, targets] of Object.entries(LEGACY_UPGRADE_IDS)) {
+      const value = levels[legacyId];
+      if (typeof value !== 'number' || !Number.isFinite(value)) continue;
+
+      for (const id of targets) {
+        if (this.levels.has(id)) continue;
+        this.levels.set(id, this.clampLevel(id, value));
+      }
     }
   }
 
