@@ -276,6 +276,20 @@
       .world-label__icon {
         font-size: 17px;
         line-height: 1;
+        color: #fff;
+      }
+
+      /* Нарисованные иконки стволов (barrels.ts). Высота задана здесь, ширину
+         каждая иконка берёт из своего viewBox — короткий мини-автомат и длинный
+         пулемёт отличаются ещё и габаритом. Тень вместо обводки: она ложится по
+         контуру всей группы, а обводка у каждой фигуры отдельно расчертила бы
+         силуэт швами. */
+      .world-label__icon svg {
+        display: block;
+        height: 16px;
+        width: auto;
+        filter: drop-shadow(0 0 1.5px rgba(0, 0, 0, 0.85))
+          drop-shadow(0 1px 1px rgba(0, 0, 0, 0.6));
       }
 
       .world-label__value {

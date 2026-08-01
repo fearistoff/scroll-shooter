@@ -63,7 +63,14 @@ export class LabelLayer {
     const valueElement = element.lastElementChild as HTMLElement;
 
     // DOM трогаем только при изменении — иначе лишние пересчёты раскладки.
-    if (iconElement.textContent !== icon) iconElement.textContent = icon;
+    // Иконка бывает и текстом (эмодзи), и разметкой SVG (стволы), поэтому
+    // сравнение идёт по dataset, а не по textContent: у SVG он пустой, и разметка
+    // перебиралась бы каждый кадр. Разметка своя, не пользовательская.
+    if (iconElement.dataset.icon !== icon) {
+      if (icon.startsWith('<svg')) iconElement.innerHTML = icon;
+      else iconElement.textContent = icon;
+      iconElement.dataset.icon = icon;
+    }
     if (valueElement.textContent !== value) valueElement.textContent = value;
     if (element.dataset.variant !== variant) {
       element.className = `world-label world-label--${variant}`;

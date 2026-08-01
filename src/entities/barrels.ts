@@ -34,8 +34,63 @@ export interface BonusReceiver {
   damageShootersInBand(centerX: number, halfWidth: number, damage: number): number;
 }
 
-/** Иконки особого оружия — по ним видно, что именно лежит в бочке. */
-const SPECIAL_ICONS: Partial<Record<WeaponId, string>> = {
+/**
+ * Обёртка нарисованной иконки. Высоту задаёт CSS, ширину — viewBox: чем длиннее
+ * ствол, тем шире иконка, и разница в длине видна ещё до того, как разглядишь
+ * силуэт. Цвет наследуется от подписи (`currentColor`), поэтому иконка тускнеет
+ * вместе с ней, если у варианта задан свой цвет.
+ */
+function svgIcon(width: number, body: string): string {
+  return (
+    `<svg viewBox="0 0 ${width} 16" fill="currentColor"` +
+    ` xmlns="http://www.w3.org/2000/svg">${body}</svg>`
+  );
+}
+
+/**
+ * Иконки оружия — по ним видно, что именно лежит в бочке.
+ *
+ * Стрелковые ступени нарисованы, а не набраны эмодзи: пистолетный эмодзи в
+ * Unicode ровно один (и на Apple он вообще водяной), так что мини-автомат,
+ * автомат и пулемёт им не различить. Силуэты разведены по трём признакам,
+ * читаемым на 16 пикселях: длина ствола, форма магазина и сошки.
+ *   мини-автомат — короткий, магазин в рукояти, приклад сложен;
+ *   автомат      — длиннее, изогнутый магазин и приклад;
+ *   пулемёт      — самый длинный, рёбра на стволе, короб снизу и сошки.
+ * Особое оружие остаётся эмодзи: огонь и взрыв они передают лучше рисунка.
+ */
+const WEAPON_ICONS: Partial<Record<WeaponId, string>> = {
+  miniSmg: svgIcon(
+    22,
+    '<rect x="1.4" y="6.6" width="3.2" height="1.4" rx=".5"/>' +
+      '<rect x="4.2" y="4.9" width="10.6" height="4.2" rx=".8"/>' +
+      '<rect x="6" y="3.4" width="3.6" height="1.5" rx=".5"/>' +
+      '<rect x="14.4" y="6.3" width="6.6" height="1.9" rx=".6"/>' +
+      '<rect x="17.4" y="4.5" width="1.3" height="1.8"/>' +
+      '<path d="M6.9 9.1h4.2l-.8 5.9H6.2z"/>',
+  ),
+  rifle: svgIcon(
+    30,
+    '<path d="M1.6 6.3 8 5.5v4.1l-5.6.5z"/>' +
+      '<rect x="7.6" y="4.9" width="11" height="4.3" rx=".8"/>' +
+      '<rect x="17" y="7.7" width="6.2" height="2" rx=".7"/>' +
+      '<rect x="18.6" y="5.9" width="10.4" height="1.8" rx=".6"/>' +
+      '<rect x="25.8" y="3.8" width="1.5" height="2.2"/>' +
+      '<path d="M9.8 9.2h3.2l-1 4.4H8.9z"/>' +
+      '<path d="M14.4 9.2h4.4l-.4 3.3q-.3 2.2-2 2.2t-2.1-2.2z"/>',
+  ),
+  machineGun: svgIcon(
+    34,
+    '<path d="M1.4 5.3 7 4.8v4.9l-5.6.4z"/>' +
+      '<rect x="6.6" y="4.3" width="13.4" height="5.3" rx=".9"/>' +
+      '<rect x="7.9" y="9.5" width="6.6" height="4.5" rx=".7"/>' +
+      '<path d="M16 9.7h3.3l-.9 3.5h-2.9z"/>' +
+      '<rect x="19.4" y="5.5" width="13.2" height="2.6" rx=".7"/>' +
+      '<rect x="22.6" y="3.5" width="1.4" height="2.1"/>' +
+      '<rect x="25.6" y="3.5" width="1.4" height="2.1"/>' +
+      '<rect x="28.6" y="3.5" width="1.4" height="2.1"/>' +
+      '<path d="M25.2 8.1h1.6l3.2 6.7h-1.6L26 9.7l-2.4 5.1h-1.6z"/>',
+  ),
   flamethrower: '🔥',
   grenadeLauncher: '💥',
 };
@@ -43,13 +98,25 @@ const SPECIAL_ICONS: Partial<Record<WeaponId, string>> = {
 /**
  * Иконка содержимого над бочкой (ТЗ раздел 7).
  *
+ * weaponTier — ступень стрелкового, которую бочка выдаст. Она считается на
+ * месте вызова, а не хранится с момента спавна: бочка отдаёт ступень СЛЕДУЮЩУЮ
+ * за текущей на момент вскрытия, и посчитанная иконка совпадает с ней по
+ * построению. Запомненная — разошлась бы, подними отряд оружие иначе.
+ *
  * Для стрелков ТЗ задаёт особое правило: до 4 — просто N фигурок, свыше —
  * 4 фигурки и множитель «×N» поверх, иначе десяток фигурок не читается.
  */
-function contentIcon(content: BarrelContent, amount: number, special: WeaponId | null): string {
-  if (content === 'weapon') return '🔫';
+function contentIcon(
+  content: BarrelContent,
+  amount: number,
+  special: WeaponId | null,
+  weaponTier: WeaponId | null,
+): string {
+  if (content === 'weapon') {
+    return (weaponTier !== null ? WEAPON_ICONS[weaponTier] : undefined) ?? '🔫';
+  }
   if (content === 'mine') return '💣';
-  if (content === 'special') return (special !== null ? SPECIAL_ICONS[special] : undefined) ?? '✨';
+  if (content === 'special') return (special !== null ? WEAPON_ICONS[special] : undefined) ?? '✨';
 
   const { iconFigureLimit } = CONFIG.barrels.content;
   if (amount <= iconFigureLimit) return '🧍'.repeat(Math.max(1, amount));
@@ -489,6 +556,8 @@ export class BarrelField {
     visit: (x: number, y: number, z: number, value: string, icon: string, variant: string) => void,
   ): void {
     const labelY = CONFIG.barrels.labelY;
+    // Ступень одна на все бочки — оружие у отряда общее, считаем её один раз.
+    const tier = this.nextWeaponTier();
 
     for (let i = 0; i < this.count; i++) {
       visit(
@@ -496,7 +565,7 @@ export class BarrelField {
         labelY,
         this.posZ[i]!,
         String(Math.ceil(this.hp[i]!)),
-        contentIcon(this.content[i]!, Math.round(this.amount[i]!), this.special[i] ?? null),
+        contentIcon(this.content[i]!, Math.round(this.amount[i]!), this.special[i] ?? null, tier),
         this.variantFor(i),
       );
     }
@@ -589,6 +658,7 @@ export class BarrelField {
     icon: string;
   }> {
     const out = [];
+    const tier = this.nextWeaponTier();
     for (let i = 0; i < this.count; i++) {
       const amount = Math.round(this.amount[i]!);
       const special = this.special[i] ?? null;
@@ -601,7 +671,7 @@ export class BarrelField {
         content: this.content[i]!,
         amount,
         special,
-        icon: contentIcon(this.content[i]!, amount, special),
+        icon: contentIcon(this.content[i]!, amount, special, tier),
       });
     }
     return out;
