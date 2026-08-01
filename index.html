@@ -374,6 +374,21 @@
         cursor: default;
       }
 
+      /* Версия сборки. Абсолютом, а не последней строкой потока: экран
+         центрирован по вертикали, и обычный элемент встал бы вплотную к кнопкам
+         посреди экрана, а не внизу. Клики не перехватывает — под ней край экрана. */
+      .screen__version {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: calc(6px + var(--safe-bottom));
+        text-align: center;
+        font-size: 11px;
+        opacity: 0.35;
+        font-variant-numeric: tabular-nums;
+        pointer-events: none;
+      }
+
       /* Таббар прокачки: кого качаем — героя, доп. стрелков или общее.
          Ширина та же, что у списка улучшений: вкладки стоят ровно над ним. */
       #upgrade-tabs {
@@ -570,6 +585,8 @@
         <button id="upgrade-reset" class="screen__button screen__button--ghost" type="button">
           Сбросить прогресс
         </button>
+        <!-- Текст ставит screens.ts из __APP_VERSION__ (package.json) -->
+        <div id="upgrade-version" class="screen__version"></div>
       </div>
     </div>
     <script type="module" src="/src/main.ts"></script>

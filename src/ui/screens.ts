@@ -87,6 +87,10 @@ export class Screens {
       this.refreshUpgrades();
     });
 
+    // Версия ставится один раз: в течение сессии она не меняется.
+    const version = document.querySelector<HTMLElement>('#upgrade-version');
+    if (version !== null) version.textContent = `v${__APP_VERSION__}`;
+
     this.buildRows();
   }
 

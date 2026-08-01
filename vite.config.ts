@@ -227,10 +227,19 @@ self.addEventListener('fetch', (event) => {
 `;
 }
 
+/**
+ * Версия игры берётся из package.json — единственного места, где она записана.
+ * Продублируй её в коде, и два числа разъехались бы на первой же правке.
+ */
+const APP_VERSION: string = JSON.parse(readFileSync('package.json', 'utf8')).version;
+
 export default defineConfig({
   // './' — сборку можно открыть с файловой системы или из любой подпапки
   base: './',
   plugins: [precacheServiceWorker()],
+  define: {
+    __APP_VERSION__: JSON.stringify(APP_VERSION),
+  },
   server: {
     // host: true — можно открыть с телефона по IP машины в той же сети
     host: true,
