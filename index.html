@@ -2,6 +2,10 @@
 <html lang="ru">
   <head>
     <meta charset="UTF-8" />
+    <!-- user-scalable=no и maximum-scale=1 работают везде, КРОМЕ iOS: Safari их
+         игнорирует с 10-й версии. Там масштаб запрещается двумя другими путями —
+         щипок гасит src/core/zoomLock.ts, двойной тап — touch-action ниже.
+         viewport-fit=cover обязателен: без него env(safe-area-inset-*) пусты. -->
     <meta
       name="viewport"
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
@@ -38,6 +42,13 @@
         margin: 0;
         padding: 0;
         box-sizing: border-box;
+        /* Двойной тап не масштабирует страницу: manipulation оставляет прокрутку
+           экранов результата и прокачки, но снимает double-tap zoom (и заодно
+           300 мс задержки клика). Именно в универсальном селекторе, а не на body:
+           touch-action НЕ наследуется, с правилом на body у .screen и кнопок
+           оставалось auto — ЗАМЕРЕНО через getComputedStyle. Холст ниже
+           перекрывает это на none, у него специфичность выше. */
+        touch-action: manipulation;
       }
 
       html,

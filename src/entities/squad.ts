@@ -376,7 +376,9 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
       if (shots === 0) continue;
 
       const allyWeapon = ally.weapon.weaponId;
-      const damage = weaponDamage(allyWeapon);
+      // Союзник бьёт долей от героя (formation.allyDamageFactor): темп огня и
+      // число пуль те же, слабее только каждый снаряд.
+      const damage = weaponDamage(allyWeapon) * CONFIG.formation.allyDamageFactor;
       const range = weaponRange(allyWeapon);
       this.allyOffset(i);
       // Невидимые бойцы стреляют из последнего видимого ряда и по множителю из

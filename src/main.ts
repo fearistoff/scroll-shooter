@@ -1,11 +1,16 @@
 import { CONFIG } from './config';
 import { Game } from './core/game';
+import { lockZoom } from './core/zoomLock';
 
 const canvas = document.querySelector<HTMLCanvasElement>('#game-canvas');
 
 if (!canvas) {
   throw new Error('Не найден #game-canvas в index.html');
 }
+
+// До создания игры: щипок по холсту не должен масштабировать страницу с первого
+// же кадра, а слушатели документа от игры не зависят.
+const unlockZoom = lockZoom();
 
 const game = new Game(canvas);
 game.start();
@@ -16,9 +21,12 @@ if (import.meta.env.DEV) {
   Object.assign(window, { __game: game, __config: CONFIG });
 }
 
-// Правки в модулях не должны оставлять висящий game loop.
+// Правки в модулях не должны оставлять висящий game loop и дубли слушателей.
 if (import.meta.hot) {
-  import.meta.hot.dispose(() => game.dispose());
+  import.meta.hot.dispose(() => {
+    game.dispose();
+    unlockZoom();
+  });
 }
 
 /*
