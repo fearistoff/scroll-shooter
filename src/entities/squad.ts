@@ -71,6 +71,13 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
   private heroDeathLeft = 0;
   /** Куда валится герой: +1 вправо, −1 влево. Разыгрывается в момент смерти. */
   private heroDeathDir = 1;
+  /**
+   * Где герой стоял в момент смерти. Запоминается отдельно, потому что подошва
+   * при падении не двигается, а центр капсулы от неё уезжает — и обычный update,
+   * который каждый кадр возвращал бы heroMesh.position.x к позиции отряда, в фазе
+   * прощания уже не зовут.
+   */
+  private heroDeathX = 0;
 
   private readonly allyMesh: InstancedMesh;
   private readonly matrix = new Matrix4();
@@ -243,6 +250,7 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
     // подъёма новый забег начался бы с капсулы на боку.
     this.heroDeathLeft = 0;
     this.heroDeathDir = 1;
+    this.heroDeathX = 0;
     this.heroMesh.rotation.z = 0;
     this.heroMesh.position.y = Squad.heroStandY;
   }
@@ -261,6 +269,7 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
   startHeroDeath(): void {
     this.heroDeathLeft = CONFIG.deathAnim.fallSeconds;
     this.heroDeathDir = Math.random() < 0.5 ? -1 : 1;
+    this.heroDeathX = this.x;
     this.applyHeroFall();
   }
 
@@ -279,19 +288,21 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
   }
 
   /**
-   * Поза падения по остатку таймера: поворот вокруг Z валит капсулу вбок, центр
-   * при этом опускается с роста до радиуса — тело ложится НА дорогу, а не в неё.
-   * Формула общая с телами зомби (EnemyPool.update), включая ускорение падения.
+   * Поза падения по остатку таймера. Формула общая с телами зомби
+   * (EnemyPool.update): ось поворота у ПОДОШВЫ — центра нижней полусферы, точки
+   * (heroDeathX, radius). Она стоит на месте, а центр капсулы едет по дуге вокруг
+   * неё, поэтому меняются все три величины сразу: поворот, высота и x.
    */
   private applyHeroFall(): void {
-    const { radius } = CONFIG.player.heroCapsule;
+    const { radius, length } = CONFIG.player.heroCapsule;
     const fallSeconds = CONFIG.deathAnim.fallSeconds;
     const done = fallSeconds > 0 ? 1 - this.heroDeathLeft / fallSeconds : 1;
-    const eased = done * done;
-    const standY = Squad.heroStandY;
+    const angle = this.heroDeathDir * (Math.PI / 2) * done * done;
+    const half = length / 2;
 
-    this.heroMesh.rotation.z = this.heroDeathDir * (Math.PI / 2) * eased;
-    this.heroMesh.position.y = standY + (radius - standY) * eased;
+    this.heroMesh.rotation.z = angle;
+    this.heroMesh.position.x = this.heroDeathX - half * Math.sin(angle);
+    this.heroMesh.position.y = radius + half * Math.cos(angle);
   }
 
   /** Двигает отряд за вводом, раскладывает строй и стреляет. */

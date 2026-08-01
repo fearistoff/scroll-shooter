@@ -395,16 +395,27 @@ export class EnemyPool {
       // Доля падения 0…1. Возведение в квадрат — ускорение: тело подсекает, а не
       // опускает. При fallSeconds = 0 анимации нет, тело сразу лежит.
       const done = fallSeconds > 0 ? 1 - Math.max(this.fallLeft[i]!, 0) / fallSeconds : 1;
-      const eased = done * done;
+      const angle = this.fallDir[i]! * (Math.PI / 2) * done * done;
 
-      const standY = capsule.length / 2 + capsule.radius;
-      // Лёжа центр капсулы стоит на высоте радиуса — тело лежит НА дороге, а не в ней.
-      const y = standY + (capsule.radius - standY) * eased;
+      /*
+       * ОСЬ ПОВОРОТА — У ПОДОШВЫ, а не в центре капсулы: тело подсекает в ногах и
+       * заваливается, а не проворачивается на месте.
+       *
+       * Матрица инстанса вращает вокруг СВОЕГО начала (центра капсулы), поэтому
+       * ось переносится вручную: центр едет по дуге вокруг неподвижной подошвы.
+       * Подошва — центр нижней полусферы, точка (posX, radius): именно она катится
+       * по дороге, и при любом наклоне капсула касается асфальта, а не тонет в нём.
+       * Отсюда и смещение по x на половину длины: упавший лежит рядом с тем местом,
+       * где стоял, а не поперёк него.
+       */
+      const half = capsule.length / 2;
+      const y = capsule.radius + half * Math.cos(angle);
+      const x = this.posX[i]! - half * Math.sin(angle);
 
-      // Поворот вокруг Z валит капсулу вбок, поперёк дороги. Масштаба у тела нет:
-      // makeRotationZ даёт единичный, и замах, застигнутый смертью, обрывается.
-      this.matrix.makeRotationZ(this.fallDir[i]! * (Math.PI / 2) * eased);
-      this.matrix.setPosition(this.posX[i]!, y, this.posZ[i]!);
+      // Масштаба у тела нет: makeRotationZ даёт единичный, и замах, застигнутый
+      // смертью, обрывается.
+      this.matrix.makeRotationZ(angle);
+      this.matrix.setPosition(x, y, this.posZ[i]!);
 
       if (bigOne) {
         this.bigMesh.setMatrixAt(bigDrawn, this.matrix);
@@ -813,9 +824,10 @@ export class EnemyPool {
   /**
    * Состояние ТЕЛ — для отладки и проверок анимации смерти.
    *
-   * tiltDegrees — фактический наклон капсулы (0 — стоит, ±90 — лежит), знак
-   * повторяет сторону падения. Считается тут же по той же формуле, что и в
-   * отрисовке: иначе проверять пришлось бы глазами.
+   * x — НЕПОДВИЖНАЯ ПОДОШВА (где зомби стоял), bodyX и bodyY — фактический центр
+   * капсулы, уехавший по дуге вокруг неё. tiltDegrees — наклон (0 — стоит, ±90 —
+   * лежит), знак повторяет сторону падения. Всё считается по тем же формулам, что
+   * и в отрисовке: иначе проверять пришлось бы глазами.
    */
   debugCorpses(): Array<{
     x: number;
@@ -823,18 +835,27 @@ export class EnemyPool {
     kind: ZombieKind;
     fallLeft: number;
     tiltDegrees: number;
+    bodyX: number;
+    bodyY: number;
   }> {
     const fallSeconds = CONFIG.deathAnim.fallSeconds;
     const out = [];
 
     for (let i = this.aliveCount; i < this.count; i++) {
+      const bigOne = this.isBig[i] === 1;
+      const capsule = (bigOne ? CONFIG.enemies.big : CONFIG.enemies.normal).capsule;
+      const half = capsule.length / 2;
       const done = fallSeconds > 0 ? 1 - Math.max(this.fallLeft[i]!, 0) / fallSeconds : 1;
+      const angle = this.fallDir[i]! * (Math.PI / 2) * done * done;
+
       out.push({
         x: +this.posX[i]!.toFixed(3),
         z: +this.posZ[i]!.toFixed(3),
-        kind: (this.isBig[i] === 1 ? 'big' : 'normal') as ZombieKind,
+        kind: (bigOne ? 'big' : 'normal') as ZombieKind,
         fallLeft: +this.fallLeft[i]!.toFixed(3),
-        tiltDegrees: +(this.fallDir[i]! * 90 * done * done).toFixed(1),
+        tiltDegrees: +((angle * 180) / Math.PI).toFixed(1),
+        bodyX: +(this.posX[i]! - half * Math.sin(angle)).toFixed(3),
+        bodyY: +(capsule.radius + half * Math.cos(angle)).toFixed(3),
       });
     }
 

@@ -326,12 +326,17 @@ export class Boss {
     }
 
     const done = fallSeconds > 0 ? 1 - this.corpseFallLeft / fallSeconds : 1;
-    const eased = done * done;
-    const standY = capsule.length / 2 + capsule.radius;
+    const angle = this.corpseDir * (Math.PI / 2) * done * done;
+    const half = capsule.length / 2;
 
-    this.corpseMesh.rotation.z = this.corpseDir * (Math.PI / 2) * eased;
-    // Лёжа центр капсулы стоит на высоте радиуса — тело лежит НА дороге.
-    this.corpseMesh.position.set(0, standY + (capsule.radius - standY) * eased, this.corpseZ);
+    // Ось поворота у подошвы, как у зомби: она остаётся в x = 0, а центр капсулы
+    // уезжает по дуге вокруг неё (см. EnemyPool.update — там разбор формулы).
+    this.corpseMesh.rotation.z = angle;
+    this.corpseMesh.position.set(
+      -half * Math.sin(angle),
+      capsule.radius + half * Math.cos(angle),
+      this.corpseZ,
+    );
   }
 
   /**
@@ -468,14 +473,14 @@ export class Boss {
 
     // Живой меш прячется, а на его место встаёт тело — с той же точки, где босса
     // застала смерть. Масштаб замаха телу не передаётся: оно падает в свой размер.
-    const { capsule } = CONFIG.boss;
     this.corpseActive = true;
     this.corpseFallLeft = CONFIG.deathAnim.fallSeconds;
     this.corpseDir = Math.random() < 0.5 ? -1 : 1;
     this.corpseZ = this.posZ;
-    this.corpseMesh.rotation.z = 0;
-    this.corpseMesh.position.set(0, capsule.length / 2 + capsule.radius, this.posZ);
     this.corpseMesh.visible = true;
+    // Поза выставляется общей формулой, а не руками: иначе первый кадр тела
+    // рисовался бы по одной раскладке, а все следующие — по другой.
+    this.updateCorpse(0);
 
     // Босс осыпается кристаллами: он один стоит целой волны.
     const drops = Math.max(1, CONFIG.boss.layerCount);
@@ -502,7 +507,14 @@ export class Boss {
     allHitIn: number;
     recoverLeft: number;
     scale: number;
-    corpse: { active: boolean; z: number; fallLeft: number; tiltDegrees: number };
+    corpse: {
+      active: boolean;
+      z: number;
+      fallLeft: number;
+      tiltDegrees: number;
+      bodyX: number;
+      bodyY: number;
+    };
   } {
     const fallSeconds = CONFIG.deathAnim.fallSeconds;
     const done = fallSeconds > 0 ? 1 - this.corpseFallLeft / fallSeconds : 1;
@@ -523,11 +535,14 @@ export class Boss {
       // Фактический масштаб меша — по нему проверяется анимация атаки.
       scale: +this.mesh.scale.x.toFixed(3),
       // Тело: наклон 0 — стоит, ±90 — лежит; знак повторяет сторону падения.
+      // bodyX/bodyY — фактический центр капсулы, уехавший по дуге вокруг подошвы.
       corpse: {
         active: this.corpseActive,
         z: +this.corpseZ.toFixed(2),
         fallLeft: +this.corpseFallLeft.toFixed(3),
         tiltDegrees: this.corpseActive ? +(this.corpseDir * 90 * done * done).toFixed(1) : 0,
+        bodyX: +this.corpseMesh.position.x.toFixed(3),
+        bodyY: +this.corpseMesh.position.y.toFixed(3),
       },
     };
   }
