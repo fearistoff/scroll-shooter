@@ -77,6 +77,21 @@ export class RunState {
   }
 
   /**
+   * Какая ДОЛЯ бюджета этой волны — крупные зомби: 0 до bigZombieFromWave, дальше
+   * по bigZombieShareStep за волну (волна 2 — 10%, волна 3 — 20%, …) до
+   * bigZombieShareMax.
+   *
+   * Рост линейный, а не кумулятивный (см. CONFIG.run.bigZombieShareStep), и это
+   * доля от ОБЩЕГО числа единиц волны — состав меняется, количество нет.
+   */
+  get bigShare(): number {
+    const { bigZombieFromWave, bigZombieShareStep, bigZombieShareMax } = CONFIG.run;
+    if (this.wave < bigZombieFromWave) return 0;
+    const steps = this.wave - bigZombieFromWave + 1;
+    return Math.min(bigZombieShareMax, bigZombieShareStep * steps);
+  }
+
+  /**
    * Во сколько раз крепче противники этой волны по сравнению с первой:
    * 1, 1.2, 1.44, … (CONFIG.run.waveHpGrowth).
    *
@@ -101,19 +116,18 @@ export class RunState {
   }
 
   private resetWaveBudget(): void {
-    const growth = this.budgetMultiplier;
-    // Округляем каждый вид отдельно: иначе соотношение обычных к крупным
-    // (88/12) уплывало бы с ростом волны.
-    const normalBudget = Math.round(CONFIG.run.normalZombieCount * growth);
-    const bigBudget = Math.round(CONFIG.run.bigZombieCount * growth);
+    // Единиц в волне ровно столько при ЛЮБОМ составе: сначала считается общий
+    // бюджет, и только потом он делится на виды. Иначе доля крупных меняла бы
+    // длительность волны, хотя обязана менять только её состав.
+    const total = Math.round(CONFIG.run.waveZombieCount * this.budgetMultiplier);
 
     // Крупные входят в бюджет не раньше своей волны (CONFIG.run.bigZombieFromWave),
     // а до неё их доля ОТДАЁТСЯ ОБЫЧНЫМ, а не пропадает: число единиц в волне
     // одинаково при любом составе, поэтому ранняя волна не оказывается короче
     // прочих просто из-за того, что в ней нет крупных.
-    const bigThisWave = this.wave >= CONFIG.run.bigZombieFromWave;
-    this.normalLeft = normalBudget + (bigThisWave ? 0 : bigBudget);
-    this.bigLeft = bigThisWave ? bigBudget : 0;
+    const bigBudget = Math.round(total * this.bigShare);
+    this.normalLeft = total - bigBudget;
+    this.bigLeft = bigBudget;
     // Итог волны запоминается, а не пересчитывается: полоса волны и бюджет спавна
     // обязаны совпадать, а два независимых округления могли бы разойтись.
     this.waveTotal = this.normalLeft + this.bigLeft + (CONFIG.run.hasBoss ? 1 : 0);
@@ -256,6 +270,7 @@ export class RunState {
     killed: number;
     normalLeft: number;
     bigLeft: number;
+    bigShare: number;
     exp: number;
     expEarned: number;
     hasBoss: boolean;
@@ -271,6 +286,7 @@ export class RunState {
       killed: this.killed,
       normalLeft: this.normalLeft,
       bigLeft: this.bigLeft,
+      bigShare: +this.bigShare.toFixed(3),
       exp: this.expTotal,
       expEarned: +this.expEarned.toFixed(2),
       hasBoss: this.hasBoss,
