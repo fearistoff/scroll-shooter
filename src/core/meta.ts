@@ -6,10 +6,14 @@ export type UpgradeId =
   | 'heroFireRate'
   | 'heroRange'
   | 'heroDamageTaken'
+  | 'heroRegenRate'
+  | 'heroRegenDelay'
   | 'allyDamage'
   | 'allyFireRate'
   | 'allyRange'
   | 'allyDamageTaken'
+  | 'allyRegenRate'
+  | 'allyRegenDelay'
   | 'exp';
 
 /** Вкладка экрана прокачки: кого качаем. */
@@ -37,12 +41,12 @@ export const UPGRADE_TRACKS: readonly UpgradeTrack[] = [
   {
     id: 'hero',
     title: 'Герой',
-    ids: ['heroDamage', 'heroFireRate', 'heroRange', 'heroDamageTaken'],
+    ids: ['heroDamage', 'heroFireRate', 'heroRange', 'heroDamageTaken', 'heroRegenRate', 'heroRegenDelay'],
   },
   {
     id: 'ally',
     title: 'Стрелки',
-    ids: ['allyDamage', 'allyFireRate', 'allyRange', 'allyDamageTaken'],
+    ids: ['allyDamage', 'allyFireRate', 'allyRange', 'allyDamageTaken', 'allyRegenRate', 'allyRegenDelay'],
   },
   {
     id: 'common',
@@ -66,11 +70,15 @@ export const UPGRADE_LABELS: Record<UpgradeId, { title: string; effect: string }
   heroFireRate: { title: 'Скорострельность', effect: 'выстрелов в секунду у героя' },
   heroRange: { title: 'Дальность стрельбы', effect: 'дальность полёта у героя' },
   heroDamageTaken: { title: 'Получаемый урон', effect: 'урон по герою' },
+  heroRegenRate: { title: 'Восстановление HP', effect: 'скорость лечения героя' },
+  heroRegenDelay: { title: 'Задержка лечения', effect: 'пауза после урона у героя' },
 
   allyDamage: { title: 'Урон', effect: 'урон снаряда стрелка' },
   allyFireRate: { title: 'Скорострельность', effect: 'выстрелов в секунду у стрелка' },
   allyRange: { title: 'Дальность стрельбы', effect: 'дальность полёта у стрелка' },
   allyDamageTaken: { title: 'Получаемый урон', effect: 'урон по доп. стрелкам' },
+  allyRegenRate: { title: 'Восстановление HP', effect: 'скорость лечения стрелков' },
+  allyRegenDelay: { title: 'Задержка лечения', effect: 'пауза после урона у стрелков' },
 
   exp: { title: 'Получаемый опыт', effect: 'опыт за забег' },
 };
@@ -83,9 +91,12 @@ export const UPGRADE_LABELS: Record<UpgradeId, { title: string; effect: string }
 const REDUCING_UPGRADES: ReadonlySet<UpgradeId> = new Set<UpgradeId>([
   'heroDamageTaken',
   'allyDamageTaken',
+  // Задержку перед лечением прокачка сокращает: чем меньше, тем лучше игроку.
+  'heroRegenDelay',
+  'allyRegenDelay',
 ]);
 
-/** true — уровни этого улучшения множитель снижают (получаемый урон). */
+/** true — уровни этого улучшения множитель снижают (урон, задержка лечения). */
 export function isReducingUpgrade(id: UpgradeId): boolean {
   return REDUCING_UPGRADES.has(id);
 }
@@ -159,6 +170,23 @@ export class MetaProgress {
   }
 
   /**
+   * Знаменатель прогрессии цены у конкретного улучшения: своё поле, если задано,
+   * иначе общий CONFIG.meta.costGrowth.
+   *
+   * Своё нужно веткам с другим числом уровней: цена последнего уровня — это
+   * baseCost × costGrowth^(maxLevel−1), и при 15 уровнях вместо 50 общий
+   * знаменатель дал бы совсем другой потолок цены.
+   */
+  private costGrowth(id: UpgradeId): number {
+    // Тип выписан целиком, а не одним costGrowth?: TypeScript отвергает
+    // присваивание объекта типу, у которого ВСЕ поля необязательные и ни одно не
+    // совпадает («weak type»), — а поля costGrowth у боевых улучшений нет.
+    const spec: { maxLevel: number; baseCost: number; stepPercent: number; costGrowth?: number } =
+      CONFIG.meta.upgrades[id];
+    return spec.costGrowth ?? CONFIG.meta.costGrowth;
+  }
+
+  /**
    * Цена СЛЕДУЮЩЕГО уровня: baseCost × costGrowth^level.
    * Экспонента даёт дешёвое начало и дорогой хвост: первые уровни берутся
    * десятками за забег, последние стоят десятки забегов.
@@ -167,7 +195,7 @@ export class MetaProgress {
   nextCost(id: UpgradeId): number | null {
     if (this.isMaxed(id)) return null;
     const { baseCost } = CONFIG.meta.upgrades[id];
-    return Math.round(baseCost * CONFIG.meta.costGrowth ** this.level(id));
+    return Math.round(baseCost * this.costGrowth(id) ** this.level(id));
   }
 
   canBuy(id: UpgradeId): boolean {
@@ -196,9 +224,10 @@ export class MetaProgress {
     let bank = this.bankValue;
     let level = this.level(id);
     const { baseCost, maxLevel } = CONFIG.meta.upgrades[id];
+    const growth = this.costGrowth(id);
 
     while (count < limit && level < maxLevel) {
-      const cost = Math.round(baseCost * CONFIG.meta.costGrowth ** level);
+      const cost = Math.round(baseCost * growth ** level);
       if (bank < cost) break;
       bank -= cost;
       level++;
@@ -255,11 +284,15 @@ export class MetaProgress {
     config.player.heroMultipliers.fireRateMultiplier = this.multiplier('heroFireRate');
     config.player.heroMultipliers.rangeMultiplier = this.multiplier('heroRange');
     config.player.heroMultipliers.damageTakenMultiplier = this.multiplier('heroDamageTaken');
+    config.player.heroMultipliers.regenRateMultiplier = this.multiplier('heroRegenRate');
+    config.player.heroMultipliers.regenDelayMultiplier = this.multiplier('heroRegenDelay');
 
     config.player.allyMultipliers.damageMultiplier = this.multiplier('allyDamage');
     config.player.allyMultipliers.fireRateMultiplier = this.multiplier('allyFireRate');
     config.player.allyMultipliers.rangeMultiplier = this.multiplier('allyRange');
     config.player.allyMultipliers.damageTakenMultiplier = this.multiplier('allyDamageTaken');
+    config.player.allyMultipliers.regenRateMultiplier = this.multiplier('allyRegenRate');
+    config.player.allyMultipliers.regenDelayMultiplier = this.multiplier('allyRegenDelay');
 
     config.player.expMultiplier = this.multiplier('exp');
   }

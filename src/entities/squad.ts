@@ -338,26 +338,33 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
    *
    * Пауза после урона (regen.delayAfterDamageSeconds) считается КАЖДОМУ стрелку
    * своя: союзника задело взрывом босса — лечится только он, остальные
-   * продолжают. Таймер тает в update, здесь он только читается.
+   * продолжают. Таймер тает в update, здесь он только читается; ставится он в
+   * воронках урона, потому что длина паузы зависит от ветки прокачки того, кому
+   * достался удар (regenDelayMultiplier).
+   *
+   * СКОРОСТЬ ЛЕЧЕНИЯ ТОЖЕ РАЗНАЯ у героя и у союзников: базовое число одно
+   * (CONFIG.player.regen), но каждая половина отряда домножает его на свой
+   * regenRateMultiplier. Поэтому прибавка считается двумя числами, а не одним.
    *
    * Полоску HP регенерация не прячет и не зажигает: у стрелков полоска висит,
    * пока запас не полный, поэтому рост виден сам собой и гаснет она ровно в тот
    * момент, когда HP отыгралось.
    */
   private regenerate(dt: number): void {
-    const { regen, heroHp, allyHp } = CONFIG.player;
+    const { regen, heroHp, allyHp, heroMultipliers, allyMultipliers } = CONFIG.player;
     if (regen.intervalSeconds <= 0 || regen.hpPerInterval <= 0) return;
 
     const gain = (regen.hpPerInterval / regen.intervalSeconds) * dt;
 
     // Мёртвый герой не отыгрывается: забег закончится в этот же шаг.
     if (this.heroHp > 0 && this.heroRegenDelayLeft <= 0) {
-      this.heroHp = Math.min(heroHp, this.heroHp + gain);
+      this.heroHp = Math.min(heroHp, this.heroHp + gain * heroMultipliers.regenRateMultiplier);
     }
 
+    const allyGain = gain * allyMultipliers.regenRateMultiplier;
     for (const ally of this.allies) {
       if (ally.regenDelayLeft > 0) continue;
-      ally.hp = Math.min(allyHp, ally.hp + gain);
+      ally.hp = Math.min(allyHp, ally.hp + allyGain);
     }
   }
 
@@ -644,7 +651,9 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
   private hurtHero(amount: number): void {
     const incoming = amount * CONFIG.player.heroMultipliers.damageTakenMultiplier;
     this.heroHp = Math.max(0, this.heroHp - incoming);
-    this.heroRegenDelayLeft = CONFIG.player.regen.delayAfterDamageSeconds;
+    this.heroRegenDelayLeft =
+      CONFIG.player.regen.delayAfterDamageSeconds *
+      CONFIG.player.heroMultipliers.regenDelayMultiplier;
     this.heroFlashLeft = CONFIG.ui.damageFlash.seconds;
   }
 
@@ -654,7 +663,9 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
     if (ally === undefined) return;
 
     ally.hp -= amount * CONFIG.player.allyMultipliers.damageTakenMultiplier;
-    ally.regenDelayLeft = CONFIG.player.regen.delayAfterDamageSeconds;
+    ally.regenDelayLeft =
+      CONFIG.player.regen.delayAfterDamageSeconds *
+      CONFIG.player.allyMultipliers.regenDelayMultiplier;
     ally.flashLeft = CONFIG.ui.damageFlash.seconds;
 
     if (ally.hp <= 0) {
