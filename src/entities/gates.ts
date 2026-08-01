@@ -319,6 +319,11 @@ export class GateField {
    * Попадания внутри него ГАСЯТСЯ (возвращаем true — стена физически держит
    * пулю), но значение не растят: иначе темп роста равнялся бы скорости огня
    * отряда, а не времени, которое игрок держит стену в прицеле.
+   *
+   * Пробивающий снаряд (огнемёт) здесь ничем не отличается: сквозь зомби, босса
+   * и бочки пламя проходит, а стену типа A держит стена — она и остаётся
+   * единственным, обо что пламя гаснет. Поэтому параметра pierce у этой проверки
+   * нет, только фактическая ширина снаряда.
    */
   readonly tryHit = (
     xFrom: number,
@@ -326,10 +331,10 @@ export class GateField {
     xTo: number,
     zTo: number,
     _damage: number,
+    bulletRadius: number = CONFIG.weapons.bullet.radius,
   ): boolean => {
     const { shootIncrement, thickness, shootHitCooldown } = CONFIG.gates.typeA;
     const halfThickness = thickness / 2;
-    const bulletRadius = CONFIG.weapons.bullet.radius;
 
     for (let i = 0; i < this.count; i++) {
       if (this.kindIsB[i] === 1) continue;

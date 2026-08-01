@@ -1,6 +1,6 @@
 import { BoxGeometry, Mesh, MeshStandardMaterial, type Scene } from 'three';
 import { CONFIG } from '../config';
-import { segmentHitsCircle } from '../core/collision';
+import { segmentHitsCircle, segmentPassesCircle } from '../core/collision';
 import type { RunState } from '../core/run';
 import type { BonusSlot } from './bonusSlot';
 import type { CrystalPool } from './crystals';
@@ -379,19 +379,33 @@ export class BarrelField {
     xTo: number,
     zTo: number,
     damage: number,
+    bulletRadius: number = CONFIG.weapons.bullet.radius,
+    pierce = false,
   ): boolean => {
-    const reach = CONFIG.barrels.size.x / 2 + CONFIG.weapons.bullet.radius;
+    const reach = CONFIG.barrels.size.x / 2 + bulletRadius;
+    let anyHit = false;
 
-    for (let i = 0; i < this.count; i++) {
-      if (!segmentHitsCircle(this.posX[i]!, this.posZ[i]!, reach, xFrom, zFrom, xTo, zTo)) {
+    for (let i = 0; i < this.count; ) {
+      const touched = pierce
+        ? segmentPassesCircle(this.posX[i]!, this.posZ[i]!, reach, xFrom, zFrom, xTo, zTo)
+        : segmentHitsCircle(this.posX[i]!, this.posZ[i]!, reach, xFrom, zFrom, xTo, zTo);
+
+      if (!touched) {
+        i++;
         continue;
       }
 
-      this.applyDamage(i, damage);
-      return true;
+      if (!pierce) {
+        this.applyDamage(i, damage);
+        return true;
+      }
+
+      anyHit = true;
+      if (this.applyDamage(i, damage)) continue; // разбилась — в слот переехала другая
+      i++;
     }
 
-    return false;
+    return anyHit;
   };
 
   /**

@@ -8,7 +8,7 @@ import {
   type Scene,
 } from 'three';
 import { CONFIG } from '../config';
-import { segmentHitsCircle } from '../core/collision';
+import { segmentHitsCircle, segmentPassesCircle } from '../core/collision';
 import type { RunState } from '../core/run';
 import type { CrystalPool } from './crystals';
 import { makeFlashColor } from './flash';
@@ -344,6 +344,10 @@ export class Boss {
   /**
    * Попадание пули на отрезке её полёта (передаётся в BulletPool.update).
    * Босс — круг радиуса капсулы в плоскости XZ.
+   *
+   * Босс — тоже зомби, поэтому пробивающий снаряд (огнемёт) проходит и сквозь
+   * него: урон засчитывается один раз на пересечении, а снаряд летит дальше и
+   * достаёт тех, кто стоит за боссом.
    */
   readonly tryHit = (
     xFrom: number,
@@ -351,11 +355,16 @@ export class Boss {
     xTo: number,
     zTo: number,
     damage: number,
+    bulletRadius: number = CONFIG.weapons.bullet.radius,
+    pierce = false,
   ): boolean => {
     if (!this.isActive) return false;
 
-    const reach = CONFIG.boss.capsule.radius + CONFIG.weapons.bullet.radius;
-    if (!segmentHitsCircle(0, this.posZ, reach, xFrom, zFrom, xTo, zTo)) return false;
+    const reach = CONFIG.boss.capsule.radius + bulletRadius;
+    const touched = pierce
+      ? segmentPassesCircle(0, this.posZ, reach, xFrom, zFrom, xTo, zTo)
+      : segmentHitsCircle(0, this.posZ, reach, xFrom, zFrom, xTo, zTo);
+    if (!touched) return false;
 
     this.applyDamage(damage);
     return true;

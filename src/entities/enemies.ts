@@ -8,7 +8,7 @@ import {
   type Scene,
 } from 'three';
 import { CONFIG } from '../config';
-import { segmentHitsCircle } from '../core/collision';
+import { segmentHitsCircle, segmentPassesCircle } from '../core/collision';
 import type { RunState, ZombieKind } from '../core/run';
 import type { CrystalPool } from './crystals';
 import { makeFlashColor } from './flash';
@@ -304,6 +304,12 @@ export class EnemyPool {
    * Попадание пули на отрезке её полёта за шаг (передаётся в BulletPool.update).
    * Отрезок произвольного направления: во время боссфайта пули идут по диагонали.
    * Габарит берётся по виду зомби.
+   *
+   * Пробивающий снаряд (огнемёт) перебирает весь пул до конца и наносит урон
+   * КАЖДОМУ, кого пересёк, — и остаётся жив: возвращённый true для него значит
+   * лишь «кого-то задело». Проверка при этом другая, segmentPassesCircle: снаряд
+   * цель не гасит, висит в её габарите несколько кадров, и тест по расстоянию до
+   * отрезка сработал бы каждый из них.
    */
   readonly tryHit = (
     xFrom: number,
@@ -311,27 +317,40 @@ export class EnemyPool {
     xTo: number,
     zTo: number,
     damage: number,
+    bulletRadius: number = CONFIG.weapons.bullet.radius,
+    pierce = false,
   ): boolean => {
-    const bulletRadius = CONFIG.weapons.bullet.radius;
     // Хитбокс шире модели: попадания считаются по увеличенному радиусу, а капсула
     // рисуется прежнего размера.
     const hitboxScale = CONFIG.enemies.hitboxScale;
+    let anyHit = false;
 
-    for (let i = 0; i < this.count; i++) {
+    for (let i = 0; i < this.count; ) {
       const reach =
         (this.isBig[i] === 1 ? CONFIG.enemies.big : CONFIG.enemies.normal).capsule.radius *
           hitboxScale +
         bulletRadius;
 
-      if (!segmentHitsCircle(this.posX[i]!, this.posZ[i]!, reach, xFrom, zFrom, xTo, zTo)) {
+      const touched = pierce
+        ? segmentPassesCircle(this.posX[i]!, this.posZ[i]!, reach, xFrom, zFrom, xTo, zTo)
+        : segmentHitsCircle(this.posX[i]!, this.posZ[i]!, reach, xFrom, zFrom, xTo, zTo);
+
+      if (!touched) {
+        i++;
         continue;
       }
 
-      this.applyDamage(i, damage);
-      return true;
+      if (!pierce) {
+        this.applyDamage(i, damage);
+        return true;
+      }
+
+      anyHit = true;
+      if (this.applyDamage(i, damage)) continue; // погиб — в слот переехал другой
+      i++;
     }
 
-    return false;
+    return anyHit;
   };
 
   /** Есть ли живой зомби в круге — по этому взводится детонация мин. */

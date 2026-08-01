@@ -288,6 +288,12 @@ export class Game {
    * отрезке полёта за один шаг, попадание достанется первой по списку, хотя
    * правильнее ближайшей. Шаг пули 0.4 units против габаритов цели 0.6–1.2,
    * поэтому совпасть они могут только почти вплотную.
+   *
+   * Пробивающий снаряд (огнемёт) — единственное исключение из этого порядка:
+   * ему нельзя коротким замыканием || отдать первую цель, урон должен достаться
+   * ВСЕМ на отрезке. Поэтому цели опрашиваются подряд, а результат берётся
+   * только у ворот: стена типа A физически держит огонь, и она единственное,
+   * обо что пламя гаснет.
    */
   private readonly tryHitAnything = (
     xFrom: number,
@@ -295,11 +301,23 @@ export class Game {
     xTo: number,
     zTo: number,
     damage: number,
-  ): boolean =>
-    this.boss.tryHit(xFrom, zFrom, xTo, zTo, damage) ||
-    this.enemies.tryHit(xFrom, zFrom, xTo, zTo, damage) ||
-    this.barrels.tryHit(xFrom, zFrom, xTo, zTo, damage) ||
-    this.gates.tryHit(xFrom, zFrom, xTo, zTo, damage);
+    radius: number,
+    pierce: boolean,
+  ): boolean => {
+    if (pierce) {
+      this.boss.tryHit(xFrom, zFrom, xTo, zTo, damage, radius, true);
+      this.enemies.tryHit(xFrom, zFrom, xTo, zTo, damage, radius, true);
+      this.barrels.tryHit(xFrom, zFrom, xTo, zTo, damage, radius, true);
+      return this.gates.tryHit(xFrom, zFrom, xTo, zTo, damage, radius);
+    }
+
+    return (
+      this.boss.tryHit(xFrom, zFrom, xTo, zTo, damage, radius) ||
+      this.enemies.tryHit(xFrom, zFrom, xTo, zTo, damage, radius) ||
+      this.barrels.tryHit(xFrom, zFrom, xTo, zTo, damage, radius) ||
+      this.gates.tryHit(xFrom, zFrom, xTo, zTo, damage, radius)
+    );
+  };
 
   /** Собранный кристалл идёт в счётчик забега. Ссылка одна на всю игру. */
   private readonly collectExp = (value: number): void => this.run.addExp(value);

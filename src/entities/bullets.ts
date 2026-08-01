@@ -15,7 +15,13 @@ import { bulletStyleFor, type WeaponId } from './weapons';
 /**
  * Проверка попадания на ОТРЕЗКЕ полёта пули за один шаг.
  * Отрезок, а не точка: быстрая пуля иначе перескакивает цель между кадрами.
- * Возвращает true, если пуля во что-то попала (и должна погаснуть).
+ *
+ * radius — фактический радиус снаряда на этом шаге (у расширяющегося пламени он
+ * растёт по пути), pierce — снаряд пробивающий, цель его не гасит и урон нужно
+ * раздать всем задетым.
+ *
+ * Возвращает true, если пуля должна погаснуть. У пробивающего снаряда это НЕ
+ * «попал»: он гаснет только о то, что физически держит огонь (стена ворот).
  */
 export type BulletHitTest = (
   xFrom: number,
@@ -23,6 +29,8 @@ export type BulletHitTest = (
   xTo: number,
   zTo: number,
   damage: number,
+  radius: number,
+  pierce: boolean,
 ) => boolean;
 
 /** Ось поворота пули по направлению полёта. */
@@ -67,6 +75,10 @@ export class BulletPool {
   private readonly tintHex: Uint32Array;
   private readonly radiusScale: Float32Array;
   private readonly lengthScale: Float32Array;
+  /** Во сколько раз снаряд шире к концу дальности (1 — не расширяется). */
+  private readonly spread: Float32Array;
+  /** Пробивающий снаряд: цель его не гасит. 1/0 вместо boolean — тот же пул. */
+  private readonly pierce: Uint8Array;
 
   private count = 0;
 
@@ -103,6 +115,8 @@ export class BulletPool {
     this.tintHex = new Uint32Array(size);
     this.radiusScale = new Float32Array(size);
     this.lengthScale = new Float32Array(size);
+    this.spread = new Float32Array(size);
+    this.pierce = new Uint8Array(size);
 
     // Первый setColorAt создаёт буфер instanceColor — делаем это сразу, чтобы
     // он не появлялся посреди горячего цикла.
@@ -172,6 +186,8 @@ export class BulletPool {
     this.tintHex[i] = style.color;
     this.radiusScale[i] = style.radiusScale;
     this.lengthScale[i] = style.lengthScale;
+    this.spread[i] = style.spread ?? 1;
+    this.pierce[i] = style.pierce === true ? 1 : 0;
 
     // Матрицу и count выставляем сразу, а не ждём update(): иначе новая пуля не
     // рисуется до следующего шага, и вид зависит от порядка вызовов подсистем.
@@ -186,7 +202,7 @@ export class BulletPool {
    * свою дальность. tryHit получает отрезок полёта за этот шаг.
    */
   update(dt: number, tryHit?: BulletHitTest): void {
-    const { speed, muzzleY } = CONFIG.weapons.bullet;
+    const { speed, muzzleY, radius: bulletRadius } = CONFIG.weapons.bullet;
     const step = speed * dt;
 
     for (let i = 0; i < this.count; ) {
@@ -196,9 +212,22 @@ export class BulletPool {
       this.posZ[i]! += this.dirZ[i]! * step;
       this.travelled[i]! += step;
 
+      // Ширина считается ПОСЛЕ шага — та же, что будет нарисована, чтобы
+      // хитбокс пробивающего снаряда совпадал с картинкой.
+      const width = this.widthScale(i);
+      const piercing = this.pierce[i] === 1;
+
       if (
         tryHit !== undefined &&
-        tryHit(xFrom, zFrom, this.posX[i]!, this.posZ[i]!, this.damage[i]!)
+        tryHit(
+          xFrom,
+          zFrom,
+          this.posX[i]!,
+          this.posZ[i]!,
+          this.damage[i]!,
+          piercing ? bulletRadius * width : bulletRadius,
+          piercing,
+        )
       ) {
         this.recycle(i);
         continue;
@@ -210,7 +239,7 @@ export class BulletPool {
         continue;
       }
 
-      this.writeInstance(i, muzzleY);
+      this.writeInstance(i, muzzleY, width);
       i++;
     }
 
@@ -219,12 +248,24 @@ export class BulletPool {
     if (this.mesh.instanceColor !== null) this.mesh.instanceColor.needsUpdate = true;
   }
 
+  /**
+   * Множитель ширины снаряда i на его текущем месте пути: от radiusScale у дула
+   * до radiusScale × spread на конце дальности, линейно по пройденной доле.
+   */
+  private widthScale(i: number): number {
+    const range = this.range[i]!;
+    if (range <= 0) return this.radiusScale[i]!;
+
+    const progress = Math.min(this.travelled[i]! / range, 1);
+    return this.radiusScale[i]! * (1 + (this.spread[i]! - 1) * progress);
+  }
+
   /** Матрица и цвет одного инстанса: перенос, рыскание по курсу, вид по стволу. */
-  private writeInstance(i: number, muzzleY: number): void {
+  private writeInstance(i: number, muzzleY: number, width = this.widthScale(i)): void {
     this.position.set(this.posX[i]!, muzzleY, this.posZ[i]!);
     this.rotation.setFromAxisAngle(UP, this.angle[i]!);
     // Ось цилиндра запечена по Z, поэтому радиус — это X и Y, длина — Z.
-    this.scaleVector.set(this.radiusScale[i]!, this.radiusScale[i]!, this.lengthScale[i]!);
+    this.scaleVector.set(width, width, this.lengthScale[i]!);
     this.matrix.compose(this.position, this.rotation, this.scaleVector);
     this.mesh.setMatrixAt(i, this.matrix);
 
@@ -255,6 +296,8 @@ export class BulletPool {
       this.tintHex[i] = this.tintHex[last]!;
       this.radiusScale[i] = this.radiusScale[last]!;
       this.lengthScale[i] = this.lengthScale[last]!;
+      this.spread[i] = this.spread[last]!;
+      this.pierce[i] = this.pierce[last]!;
     }
 
     this.count--;
@@ -268,6 +311,8 @@ export class BulletPool {
     dirZ: number;
     travelled: number;
     damage: number;
+    width: number;
+    pierce: boolean;
   }> {
     const out = [];
     for (let i = 0; i < this.count; i++) {
@@ -278,6 +323,8 @@ export class BulletPool {
         dirZ: +this.dirZ[i]!.toFixed(3),
         travelled: this.travelled[i]!,
         damage: this.damage[i]!,
+        width: +this.widthScale(i).toFixed(3),
+        pierce: this.pierce[i] === 1,
       });
     }
     return out;
