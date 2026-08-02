@@ -220,8 +220,10 @@ export class GateField {
   update(dt: number): void {
     this.spawnStream(dt);
 
-    const { worldSpeed, despawnZ } = CONFIG.world;
-    const step = worldSpeed * dt;
+    const { despawnZ } = CONFIG.world;
+    // Своей скорости у ворот нет, их везёт дорога: на боссфайте она стоит, и
+    // недоехавшая створка дожидается конца боя на месте.
+    const step = this.run.worldSpeed * dt;
     const heroX = this.squad.x;
     const formationDepth = this.squad.formationDepth;
 

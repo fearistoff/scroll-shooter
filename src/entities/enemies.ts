@@ -346,7 +346,11 @@ export class EnemyPool {
     this.spawnStream(dt, squad);
 
     const { normal, big, extraSpeed, attackInterval, attackAnim } = CONFIG.enemies;
-    const { worldSpeed, despawnZ } = CONFIG.world;
+    const { despawnZ } = CONFIG.world;
+    // Скорость мира — текущая (run), а не номинальная: на боссфайте дорога стоит,
+    // и зомби на ней шёл бы только своими ногами. Живых зомби в этот момент нет
+    // (босс выходит на пустое поле), но правило одно на всех, кого везёт дорога.
+    const worldSpeed = this.run.worldSpeed;
     // Зомби идут сами плюс их несёт наезжающий мир.
     const step = (worldSpeed + extraSpeed) * dt;
 

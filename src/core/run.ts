@@ -31,6 +31,13 @@ export class RunState {
   private wave = 1;
   /** Итог текущей волны для полосы: обычные + крупные + босс. */
   private waveTotal = 0;
+  /**
+   * Едет ли мир — цель, к которой стремится worldSpeed. Переключается ровно из
+   * одного места, Game.updateBossPhase: на время боя с боссом дорога стоит.
+   */
+  private worldMoves = true;
+  /** Фактическая скорость наезда мира, units/сек. Догоняет цель, а не прыгает к ней. */
+  private worldSpeedNow = CONFIG.world.worldSpeed;
 
   constructor() {
     this.reset();
@@ -41,6 +48,10 @@ export class RunState {
     this.moneyTotal = 0;
     this.elapsed = 0;
     this.wave = 1;
+    // Забег начинается идущим миром: прошлый мог закончиться смертью героя прямо
+    // на боссфайте, то есть с остановленной дорогой.
+    this.worldMoves = true;
+    this.worldSpeedNow = CONFIG.world.worldSpeed;
     this.resetWaveBudget();
   }
 
@@ -148,9 +159,70 @@ export class RunState {
     return this.elapsed;
   }
 
-  /** Двигает часы забега. Вызывается игровым шагом длиной в кадр. */
+  /**
+   * Двигает часы забега и скорость мира. Вызывается игровым шагом длиной в кадр,
+   * первым в Game.update: по часам считается разгон плотности, по скорости —
+   * весь сдвиг мира на этом шаге.
+   */
   advance(dt: number): void {
     this.elapsed += dt;
+    this.easeWorldSpeed(dt);
+  }
+
+  /**
+   * СКОРОСТЬ НАЕЗДА МИРА прямо сейчас, units/сек. Её читают все, кого везёт
+   * дорога: декор, зомби и тела, бочки, ворота, мины, выходящий босс.
+   *
+   * Живёт в RunState, а не в World, потому что World видит только себя, а
+   * RunState уже роздан почти всем перечисленным. Флаг у World плюс копия у
+   * каждого поля — это несколько источников правды, и они разъехались бы при
+   * первой правке.
+   *
+   * Кристаллы и монеты сюда НЕ входят намеренно: их несёт не дорога, а притяжение
+   * к отряду (CONFIG.exp.speedScale), и застывший в воздухе кристалл читался бы
+   * как поломка, а не как остановка мира.
+   */
+  get worldSpeed(): number {
+    return this.worldSpeedNow;
+  }
+
+  /** Едет ли мир — цель, к которой стремится worldSpeed. */
+  get worldMoving(): boolean {
+    return this.worldMoves;
+  }
+
+  /**
+   * Останавливает мир и запускает его обратно. Единственный вызывающий —
+   * Game.updateBossPhase.
+   *
+   * Скорость меняется не рывком: фактическое значение доезжает до цели за
+   * CONFIG.world.stopEaseSeconds, поэтому звать можно каждый кадр — повторный
+   * вызов с тем же значением ничего не сбрасывает.
+   */
+  setWorldMoving(moving: boolean): void {
+    this.worldMoves = moving;
+  }
+
+  /**
+   * Разгон и торможение мира. Шаг считается от НОМИНАЛЬНОЙ скорости, а не от
+   * оставшейся разницы: так замедление постоянное и остановка занимает ровно
+   * stopEaseSeconds, тогда как «доля остатка за шаг» тянулась бы асимптотой и
+   * зависела бы ещё и от длины кадра (dt здесь непостоянный, см. core/loop.ts).
+   */
+  private easeWorldSpeed(dt: number): void {
+    const { worldSpeed, stopEaseSeconds } = CONFIG.world;
+    const target = this.worldMoves ? worldSpeed : 0;
+
+    if (stopEaseSeconds <= 0) {
+      this.worldSpeedNow = target;
+      return;
+    }
+
+    const step = (worldSpeed / stopEaseSeconds) * dt;
+    this.worldSpeedNow =
+      this.worldSpeedNow < target
+        ? Math.min(this.worldSpeedNow + step, target)
+        : Math.max(this.worldSpeedNow - step, target);
   }
 
   /**
@@ -298,6 +370,8 @@ export class RunState {
     hasBoss: boolean;
     elapsed: number;
     wave: number;
+    worldMoving: boolean;
+    worldSpeed: number;
     spawnRateMultiplier: number;
     hpMultiplier: number;
     damageMultiplier: number;
@@ -315,6 +389,9 @@ export class RunState {
       hasBoss: this.hasBoss,
       elapsed: +this.elapsed.toFixed(2),
       wave: this.wave,
+      // Мир: цель и фактическая скорость. На боссфайте оба уходят в ноль.
+      worldMoving: this.worldMoves,
+      worldSpeed: +this.worldSpeedNow.toFixed(3),
       spawnRateMultiplier: +this.spawnRateMultiplier.toFixed(3),
       hpMultiplier: +this.hpMultiplier.toFixed(3),
       damageMultiplier: +this.damageMultiplier.toFixed(3),

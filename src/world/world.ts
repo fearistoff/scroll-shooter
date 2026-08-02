@@ -15,12 +15,14 @@ import {
   Scene,
 } from 'three';
 import { CONFIG } from '../config';
+import type { RunState } from '../core/run';
 
 /**
  * Мир: дорога, земля, декор, свет, туман (ТЗ раздел 3).
  *
- * Отряд стоит на месте, а мир едет на него сверху вниз со скоростью worldSpeed —
- * именно это создаёт иллюзию движения вперёд. Полотно дороги и земля статичны
+ * Отряд стоит на месте, а мир едет на него сверху вниз со скоростью run.worldSpeed
+ * — именно это создаёт иллюзию движения вперёд, и именно поэтому остановленный мир
+ * читается как остановившийся отряд (боссфайт). Полотно дороги и земля статичны
  * (однотонные, движение по ним не читается), а едет декор: центральная разметка
  * и придорожные столбики. Оба набора лежат в InstancedMesh и раскладываются от
  * одного накопленного scrollOffset с заворотом по модулю — объекты не создаются
@@ -31,7 +33,7 @@ import { CONFIG } from '../config';
 export class World {
   readonly group = new Group();
 
-  /** Накопленный сдвиг декора, units. Растёт на worldSpeed за секунду. */
+  /** Накопленный сдвиг декора, units. Растёт на run.worldSpeed за секунду. */
   private offset = 0;
 
   private readonly markings: InstancedMesh;
@@ -47,7 +49,10 @@ export class World {
 
   private readonly matrix = new Matrix4();
 
-  constructor(scene: Scene) {
+  constructor(
+    scene: Scene,
+    private readonly run: RunState,
+  ) {
     const { world, camera, lights } = CONFIG;
 
     scene.background = new Color(camera.fogColor);
@@ -126,9 +131,14 @@ export class World {
     return this.offset;
   }
 
-  /** Двигает мир на игрока: декор едет вниз по экрану (в сторону +Z). */
+  /**
+   * Двигает мир на игрока: декор едет вниз по экрану (в сторону +Z).
+   *
+   * Скорость берётся из забега, а не из конфига: на боссфайте она ноль, и декор
+   * просто остаётся там, где стоял, — раскладка считается от того же offset.
+   */
   update(dt: number): void {
-    this.offset += CONFIG.world.worldSpeed * dt;
+    this.offset += this.run.worldSpeed * dt;
     this.layoutDecor();
   }
 

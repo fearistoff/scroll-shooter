@@ -128,6 +128,12 @@ export abstract class PickupPool {
     const { worldSpeed } = CONFIG.world;
     const { y, speedScale, magnetLerp, collectZ, spinPerSecond } = this.motion;
     // Предмет летит быстрее дороги: скорость мира, умноженная на speedScale.
+    //
+    // Скорость берётся НОМИНАЛЬНАЯ (конфиг), а не текущая скорость забега, и это
+    // единственное исключение среди всего, что движется к +Z. Предмет не едет с
+    // дорогой — его тянет к отряду, а дорога тут только мерка скорости. На
+    // остановленном мире (боссфайт) кристалл с расстрелянной бочки иначе повис бы
+    // в воздухе до конца боя, и это читалось бы как поломка, а не как остановка.
     const step = worldSpeed * speedScale * dt;
 
     this.spin = (this.spin + spinPerSecond * dt * Math.PI * 2) % (Math.PI * 2);

@@ -328,8 +328,11 @@ export class Boss {
     this.material.color.copy(this.flashLeft > 0 ? this.flashColor : this.baseColor);
 
     if (this.phase === 'entering') {
-      // Босс идёт сам плюс его несёт наезжающий мир.
-      this.posZ = Math.min(this.posZ + (CONFIG.world.worldSpeed + approachSpeed) * dt, stopZ);
+      // Босс идёт сам плюс его несёт наезжающий мир. Мир на выходе ещё едет и
+      // останавливается только с переходом в 'fighting' (Game.updateBossPhase) —
+      // иначе босс добирался бы до своей линии одной своей скоростью, и появление
+      // растянулось бы с 4 секунд до 10.
+      this.posZ = Math.min(this.posZ + (this.run.worldSpeed + approachSpeed) * dt, stopZ);
       if (this.posZ >= stopZ) this.phase = 'fighting';
     } else {
       this.updateAttacks(dt);
@@ -357,7 +360,9 @@ export class Boss {
     const { capsule } = CONFIG.boss;
 
     if (this.corpseFallLeft > 0) this.corpseFallLeft = Math.max(0, this.corpseFallLeft - dt);
-    this.corpseZ += CONFIG.world.worldSpeed * dt;
+    // Тело уносит дорога, и скорость у неё текущая: со смертью босса мир как раз
+    // трогается обратно, поэтому тело уезжает вместе с разгоняющейся дорогой.
+    this.corpseZ += this.run.worldSpeed * dt;
 
     if (this.corpseZ > CONFIG.world.despawnZ) {
       this.corpseActive = false;

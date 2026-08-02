@@ -97,7 +97,9 @@ export class Game {
     this.camera = createGameCamera(1);
     this.viewport = new Viewport(canvas, this.renderer, this.camera);
 
-    this.world = new World(this.scene);
+    // Миру нужен забег: скорость наезда дороги — его состояние, на боссфайте она
+    // ноль (см. RunState.worldSpeed).
+    this.world = new World(this.scene, this.run);
     this.bullets = new BulletPool(this.scene);
     this.crystals = new CrystalPool(this.scene);
     // Монеты создаются до зомби и босса: оба роняют их в своей воронке смерти.
@@ -105,7 +107,7 @@ export class Game {
     this.enemies = new EnemyPool(this.scene, this.run, this.crystals, this.money);
     // Порядок создания разрывает цикл зависимостей: мины знают зомби, отряд —
     // мины, бочки — отряд, и только потом бочки попадают в цели взрыва.
-    this.mines = new MineField(this.scene, this.enemies);
+    this.mines = new MineField(this.scene, this.enemies, this.run);
     this.squad = new Squad(this.scene, this.bullets, this.mines);
     // meta бочкам нужна как магазин: непокупленное оружие в них не появляется.
     this.barrels = new BarrelField(
@@ -399,7 +401,8 @@ export class Game {
    *
    * Босс появляется, когда волна зачищена: бюджет спавна исчерпан И на поле не
    * осталось зомби. Пока он на поле — бонусы и ворота не спавнятся, а отряд
-   * авто-наводит огонь на него.
+   * авто-наводит огонь на него. А как только он встаёт на свою линию, встаёт и
+   * мир: бой идёт на остановившейся дороге.
    *
    * Убитый босс не заканчивает забег, а открывает следующую волну: бюджет зомби
    * наполняется заново и поток становится плотнее. Босс при этом возвращается в
@@ -427,6 +430,20 @@ export class Game {
     const fighting = this.boss.isActive;
     this.barrels.spawnEnabled = !fighting;
     this.gates.spawnEnabled = !fighting;
+
+    /*
+     * МИР СТОИТ, ПОКА ИДЁТ БОЙ. Отряд закреплён в z = 0, вперёд его двигает только
+     * наезжающая дорога, поэтому остановка мира — это и есть «отряд остановился»:
+     * босс дошёл до своей линии, встал, и вместе с ним встают дорога, декор и всё,
+     * что она везёт. Камера неподвижна всегда, так что стоп-кадр получается общий.
+     *
+     * Условие именно 'fighting', а не isActive: на выходе (entering) дорога ещё
+     * едет — босса нужно ПРИВЕЗТИ, а не заставить дойти самому (см. Boss.update).
+     * Переключение опаздывает на один шаг логики, потому что в 'fighting' босс
+     * переходит внутри boss.update, то есть уже после этой функции; при 1/60 это
+     * 0.1 units хода дороги, а торможение и так занимает stopEaseSeconds.
+     */
+    this.run.setWorldMoving(this.boss.currentPhase !== 'fighting');
 
     // Авто-фокус огня: с боссом на поле пули идут в него, иначе — вперёд.
     const aimZ = this.boss.aimZ;

@@ -1,5 +1,6 @@
 import { CylinderGeometry, Mesh, MeshStandardMaterial, type Scene } from 'three';
 import { CONFIG } from '../config';
+import type { RunState } from '../core/run';
 
 /** Всё, что можно задеть взрывом (ТЗ: «по всем зомби и объектам в зоне»). */
 export interface AreaDamageReceiver {
@@ -46,6 +47,7 @@ export class MineField {
   constructor(
     scene: Scene,
     private readonly enemies: EnemyProbe,
+    private readonly run: RunState,
   ) {
     const { size, poolSize, colors } = CONFIG.mine;
 
@@ -135,9 +137,11 @@ export class MineField {
 
   /** Движение с миром, взведение, проверка подхода зомби. */
   update(dt: number): void {
-    const { worldSpeed, despawnZ } = CONFIG.world;
+    const { despawnZ } = CONFIG.world;
     const { radius, size } = CONFIG.mine;
-    const step = worldSpeed * dt;
+    // Мину везёт дорога, поэтому на боссфайте она замирает там, где лежит.
+    // Взведение при этом продолжается: таймер считает время, а не путь.
+    const step = this.run.worldSpeed * dt;
     const y = size.height / 2;
 
     let triggered = false;

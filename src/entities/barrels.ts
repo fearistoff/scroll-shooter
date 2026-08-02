@@ -345,11 +345,12 @@ export class BarrelField {
     this.spawnStream(dt);
 
     const { size } = CONFIG.barrels;
-    const { worldSpeed, despawnZ } = CONFIG.world;
+    const { despawnZ } = CONFIG.world;
     const heroRadius = CONFIG.player.heroCapsule.radius;
 
-    // Бочка «катится» вместе с миром — своей скорости у неё нет.
-    const step = worldSpeed * dt;
+    // Бочка «катится» вместе с миром — своей скорости у неё нет. Значит, и на
+    // боссфайте она стоит: не докатившаяся бочка дождётся конца боя на месте.
+    const step = this.run.worldSpeed * dt;
     // Зона контакта: полглубины бочки плюс радиус стрелка.
     const contactZ = size.z / 2 + heroRadius;
     const contactReachX = size.x / 2 + heroRadius;
