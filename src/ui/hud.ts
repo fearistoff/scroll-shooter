@@ -92,7 +92,10 @@ export class Hud {
   private lastBossMode: boolean | null = null;
   private lastFillColor = '';
 
-  constructor() {
+  /**
+   * @param onPauseClick нажатие на контейнер секундомера — он же кнопка паузы.
+   */
+  constructor(onPauseClick: () => void) {
     this.expElement = document.querySelector<HTMLElement>('#hud-exp');
     this.moneyElement = document.querySelector<HTMLElement>('#hud-money');
     this.waveElement = document.querySelector<HTMLElement>('#hud-wave');
@@ -103,7 +106,13 @@ export class Hud {
     this.waveNumberElement = document.querySelector<HTMLElement>('#hud-wave-number');
     this.debugElement = document.querySelector<HTMLElement>('#hud-debug');
     this.bottomElement = document.querySelector<HTMLElement>('#hud-bottom');
-    this.timerElement = document.querySelector<HTMLElement>('#hud-timer');
+    // Текст идёт в отдельный span, а не в сам контейнер: рядом с ним лежит
+    // значок паузы, и textContent на контейнере стирал бы его каждый кадр.
+    this.timerElement = document.querySelector<HTMLElement>('#hud-timer-value');
+
+    document.querySelector<HTMLElement>('#hud-timer')?.addEventListener('click', () => {
+      onPauseClick();
+    });
 
     if (!this.showDebug && this.bottomElement !== null) {
       this.bottomElement.style.display = 'none';

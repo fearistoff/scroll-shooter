@@ -23,6 +23,14 @@ export interface ScreenHandlers {
   openUpgrade(): void;
   /** Кнопка «Начать забег» — есть и на экране прокачки, и на экране результата. */
   startRun(): void;
+  /** Кнопка «Продолжить» на экране паузы. */
+  resume(): void;
+}
+
+/** Что показать на экране паузы: где именно забег остановлен. */
+export interface PauseInfo {
+  wave: number;
+  elapsedSeconds: number;
 }
 
 /** Итог забега для экрана результата. */
@@ -87,6 +95,8 @@ interface TrackView {
 export class Screens {
   private readonly resultElement: HTMLElement | null;
   private readonly upgradeElement: HTMLElement | null;
+  private readonly pauseElement: HTMLElement | null;
+  private readonly pauseInfo: HTMLElement | null;
   private readonly resultTitle: HTMLElement | null;
   private readonly resultTime: HTMLElement | null;
   private readonly resultExpCaption: HTMLElement | null;
@@ -112,6 +122,8 @@ export class Screens {
   ) {
     this.resultElement = document.querySelector<HTMLElement>('#screen-result');
     this.upgradeElement = document.querySelector<HTMLElement>('#screen-upgrade');
+    this.pauseElement = document.querySelector<HTMLElement>('#screen-pause');
+    this.pauseInfo = document.querySelector<HTMLElement>('#pause-info');
     this.resultTitle = document.querySelector<HTMLElement>('#result-title');
     this.resultTime = document.querySelector<HTMLElement>('#result-time');
     this.resultExpCaption = document.querySelector<HTMLElement>('#result-exp-caption');
@@ -124,6 +136,10 @@ export class Screens {
     document
       .querySelector<HTMLButtonElement>('#result-continue')
       ?.addEventListener('click', () => handlers.openUpgrade());
+
+    document
+      .querySelector<HTMLButtonElement>('#pause-resume')
+      ?.addEventListener('click', () => handlers.resume());
 
     // Один и тот же handlers.startRun() с двух экранов: путь в забег остаётся один.
     for (const selector of ['#upgrade-start', '#result-start']) {
@@ -190,10 +206,27 @@ export class Screens {
     this.toggle(this.upgradeElement, true);
   }
 
+  /**
+   * Экран паузы. Строкой под заголовком — где забег остановлен: на паузе HUD
+   * замирает под оверлеем, и без неё непонятно, к чему возвращаешься.
+   */
+  showPause(info: PauseInfo): void {
+    if (this.pauseInfo !== null) {
+      this.pauseInfo.textContent = `Волна ${info.wave} · ${formatRunTime(info.elapsedSeconds)}`;
+    }
+    this.toggle(this.pauseElement, true);
+  }
+
+  /** Снимает только паузу: результат и прокачка под ней оказаться не могут. */
+  hidePause(): void {
+    this.toggle(this.pauseElement, false);
+  }
+
   /** Скрывает всё: идёт забег. */
   hide(): void {
     this.toggle(this.resultElement, false);
     this.toggle(this.upgradeElement, false);
+    this.toggle(this.pauseElement, false);
   }
 
   /**

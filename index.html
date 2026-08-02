@@ -135,7 +135,8 @@
          бок о бок. Второй строкой их ставить не пришлось — ЗАМЕРЕНО на самом
          узком холсте (459 px, порог viewport.narrowWidthPx) с предельными
          числами «EXP 9999» и «$ 9999»: пара занимает 16…201 px, полоса волны в
-         режиме narrow начинается ниже (y 46 против 42), секундомер справа с 382.
+         режиме narrow начинается ниже (y 68 против 42), секундомер справа с 360
+         (был с 382 — кнопка паузы расширила его контейнер на 22 px влево).
          Плашка чуть ниже соседней и мельче её — деньги набираются реже опыта, и
          в глаза первым должен бросаться он. Цвет золотой, как у монет на дороге. */
       #hud-money {
@@ -240,17 +241,73 @@
         opacity: 0.8;
       }
 
-      /* Секундомер забега — правый верхний угол, симметрично EXP слева */
+      /* Секундомер забега — правый верхний угол, симметрично EXP слева.
+         Он же кнопка паузы: нажимается ВЕСЬ контейнер, а не значок в нём —
+         отдельная кнопка рядом с часами была бы вдвое мельче и промахивалась бы
+         под большим пальцем. Поэтому это button, а не div: клавиатура и
+         скринридер получают его бесплатно.
+         pointer-events: auto обязателен — родительский #hud касания не ловит. */
       #hud-timer {
         position: absolute;
         top: calc(14px + var(--safe-top));
         right: calc(16px + var(--safe-right));
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        /* font: inherit до остальных свойств шрифта: у кнопки свой системный
+           шрифт, и без сброса ни кегль, ни начертание ниже не помогли бы. */
+        font: inherit;
         padding: 3px 10px;
+        border: 0;
         border-radius: 6px;
         background: rgba(0, 0, 0, 0.45);
+        color: inherit;
         font-size: 17px;
         font-weight: 800;
+        line-height: 1.3;
         letter-spacing: 0.5px;
+        font-variant-numeric: tabular-nums;
+        pointer-events: auto;
+        cursor: pointer;
+      }
+
+      /* Мишень под палец больше самой плашки: сама она 83×28, а рекомендованный
+         минимум касания — 44. Расширяем невидимой областью, а не отступами:
+         отступы сделали бы плашку выше соседней EXP слева и разъехалась бы
+         верхняя строка. ЗАМЕРЕНО: мишень становится 95×46. */
+      #hud-timer::after {
+        content: '';
+        position: absolute;
+        inset: -9px -6px -9px -6px;
+      }
+
+      /* Значок паузы: две полосы, нарисованные CSS. Эмодзи ⏸ не подошло —
+         системы рисуют его по-разному, а на iOS оно приходит цветным и не
+         совпадает по кеглю с цифрами часов. */
+      #hud-timer-pause {
+        position: relative;
+        width: 13px;
+        height: 15px;
+        opacity: 0.85;
+      }
+
+      #hud-timer-pause::before,
+      #hud-timer-pause::after {
+        content: '';
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        width: 4px;
+        border-radius: 1px;
+        background: currentColor;
+      }
+
+      #hud-timer-pause::before {
+        left: 0;
+      }
+
+      #hud-timer-pause::after {
+        right: 0;
       }
 
       /* Строка счётчиков внизу: вверху место заняли EXP, полоса волны и
@@ -363,6 +420,12 @@
 
       .screen.visible {
         display: flex;
+      }
+
+      /* Пауза затемняет слабее результата и прокачки: за ней стоп-кадр забега, и
+         игрок должен видеть, в каком положении оставил отряд. */
+      .screen--pause {
+        background: rgba(8, 9, 12, 0.7);
       }
 
       .screen__title {
@@ -723,7 +786,11 @@
           </div>
           <div id="hud-wave-number"></div>
         </div>
-        <div id="hud-timer"></div>
+        <!-- Секундомер и кнопка паузы — один контейнер, нажимается целиком -->
+        <button id="hud-timer" type="button" aria-label="Пауза">
+          <span id="hud-timer-value"></span>
+          <span id="hud-timer-pause" aria-hidden="true"></span>
+        </button>
         <div id="hud-bottom">
           <div id="hud-debug"></div>
         </div>
@@ -761,6 +828,15 @@
         </button>
         <!-- Текст ставит screens.ts из __APP_VERSION__ (package.json) -->
         <div id="upgrade-version" class="screen__version"></div>
+      </div>
+
+      <!-- Пауза. Последней в разметке намеренно: экраны перекрывают друг друга
+           порядком, и если пауза когда-нибудь совпадёт с другим экраном, сверху
+           должна оказаться она. -->
+      <div id="screen-pause" class="screen screen--pause">
+        <div class="screen__title">Пауза</div>
+        <div id="pause-info" class="screen__row"></div>
+        <button id="pause-resume" class="screen__button" type="button">Продолжить</button>
       </div>
     </div>
     <script type="module" src="/src/main.ts"></script>

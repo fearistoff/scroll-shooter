@@ -75,6 +75,17 @@ export class Game {
   /** Сколько ещё длится сцена прощания. Тикает только в фазе 'dying'. */
   private deathLeft = 0;
 
+  /**
+   * Пауза. НЕ фаза, а отдельный признак поверх неё, и по двум причинам.
+   *
+   * Во-первых, с паузы возвращаются туда же, откуда ушли: и забег, и сцена
+   * прощания продолжаются с того же места, а фазой пришлось бы запоминать, куда
+   * возвращаться. Во-вторых, гасится ею только шаг ИЗ ЦИКЛА (см. конструктор
+   * GameLoop): прямой `__game.update(1 / 60)` из замерочных скриптов работает и
+   * на паузе, иначе случайная потеря фокуса тихо останавливала бы замер.
+   */
+  private paused = false;
+
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new WebGLRenderer({
       canvas,
@@ -114,12 +125,18 @@ export class Game {
     this.bonusSlot.add(this.barrels);
     this.bonusSlot.add(this.gates);
     this.input = new PointerInput(canvas);
-    this.hud = new Hud();
+    this.hud = new Hud(() => this.togglePause());
     this.labels = new LabelLayer();
     this.screens = new Screens(this.meta, {
       openUpgrade: () => this.openUpgrade(),
       startRun: () => this.startRun(),
+      resume: () => this.resume(),
     });
+
+    // Пауза с клавиатуры и по уходу приложения в фон.
+    window.addEventListener('keydown', this.onKeyDown);
+    window.addEventListener('blur', this.onWindowBlur);
+    document.addEventListener('visibilitychange', this.onVisibilityChange);
 
     // Купленное в прошлых сессиях должно действовать с первого забега.
     this.meta.applyTo();
@@ -129,7 +146,11 @@ export class Game {
     }
 
     this.loop = new GameLoop(
-      (dt) => this.update(dt),
+      (dt) => {
+        // Пауза гасит шаг здесь, а не внутри update: прямой вызов
+        // __game.update(1 / 60) должен шагать игру независимо от паузы.
+        if (!this.paused) this.update(dt);
+      },
       () => this.render(),
     );
 
@@ -151,6 +172,64 @@ export class Game {
     return this.phase;
   }
 
+  /** Стоит ли забег на паузе. */
+  get isPaused(): boolean {
+    return this.paused;
+  }
+
+  /**
+   * Пауза забега: шаг логики из цикла не идёт, рендер продолжается — за
+   * оверлеем виден стоп-кадр.
+   *
+   * Пауза возможна только там, где что-то тикает: на экранах результата и
+   * прокачки останавливать нечего, а лишний оверлей поверх них только сбивал бы.
+   * Сцена прощания паузу допускает — уход в фон не должен съедать смерть героя.
+   */
+  pause(): void {
+    if (this.paused) return;
+    if (this.phase !== 'running' && this.phase !== 'dying') return;
+
+    this.paused = true;
+    this.screens.showPause({
+      wave: this.run.waveNumber,
+      elapsedSeconds: this.run.elapsedSeconds,
+    });
+  }
+
+  /** Снятие паузы: забег продолжается ровно с того места, где остановлен. */
+  resume(): void {
+    if (!this.paused) return;
+
+    this.paused = false;
+    this.screens.hidePause();
+  }
+
+  togglePause(): void {
+    if (this.paused) this.resume();
+    else this.pause();
+  }
+
+  /** Esc ставит паузу и снимает её же — привычное поведение для клавиатуры. */
+  private readonly onKeyDown = (event: KeyboardEvent): void => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    this.togglePause();
+  };
+
+  /**
+   * Приложение потеряло фокус — пауза. Возврат фокуса паузу НЕ снимает: игрок
+   * возвращается к экрану, а не в гущу боя, и продолжает сам.
+   *
+   * Событий два, и они про разное: blur — уход фокуса в другое окно (игра при
+   * этом видна), visibilitychange — уход всей вкладки или приложения в фон.
+   * Второе на мобильных единственное, что вообще приходит.
+   */
+  private readonly onWindowBlur = (): void => this.pause();
+
+  private readonly onVisibilityChange = (): void => {
+    if (document.hidden) this.pause();
+  };
+
   /**
    * Конец забега — только смерть героя. Босс концом больше не является: после
    * него начинается следующая волна, поэтому исхода «победа» не существует, а
@@ -164,6 +243,12 @@ export class Game {
    * Экран результата получает оба числа, чтобы объяснить разницу.
    */
   private finishRun(): void {
+    // Штатно паузы здесь быть не может: на ней шаг из цикла не идёт, а значит и
+    // умереть герой не успевает. Снимаем ради ручного прогона замерочным
+    // скриптом — он шагает игру и на паузе, и оверлей паузы остался бы поверх
+    // экрана результата.
+    this.resume();
+
     const collected = this.run.exp;
     const earned = this.run.expEarned;
     this.meta.deposit(earned);
@@ -206,6 +291,8 @@ export class Game {
     this.input.targetPercent = 50;
 
     this.deathLeft = 0;
+    // Забег начинается идущим: паузу с прошлого забега тащить некуда.
+    this.paused = false;
     this.phase = 'running';
     this.screens.hide();
   }
@@ -463,6 +550,9 @@ export class Game {
 
   dispose(): void {
     this.stop();
+    window.removeEventListener('keydown', this.onKeyDown);
+    window.removeEventListener('blur', this.onWindowBlur);
+    document.removeEventListener('visibilitychange', this.onVisibilityChange);
     this.input.dispose();
     this.viewport.dispose();
     this.renderer.dispose();
