@@ -54,6 +54,11 @@ export class MoneyPool extends PickupPool {
    * темпом, что и его запас прочности (run.hpMultiplier). У обычных и крупных
    * зомби scale всегда 1, см. CONFIG.money.bossScalesWithHp.
    *
+   * Множитель прокачки (player.moneyMultiplier) применяется ЗДЕСЬ ЖЕ, в той же
+   * единственной воронке, и по той же причине: два места умножения разъехались
+   * бы. Он множит только размер находки — на бросок вероятности не влияет, так
+   * что прокачка делает монеты жирнее, а не частее.
+   *
    * Возвращает выпавшую сумму; 0 — бросок не прошёл. Возврат нужен замерочным
    * скриптам: по нему считается фактическая доходность забега.
    */
@@ -71,8 +76,10 @@ export class MoneyPool extends PickupPool {
     const min = range[0] ?? 1;
     const max = range[1] ?? min;
     const rolled = min + Math.floor(Math.random() * (max - min + 1));
-    // Округление ПОСЛЕ множителя: у босса он дробный (1.2^(волна−1)).
-    const amount = Math.max(1, Math.round(rolled * scale));
+    // Округление ПОСЛЕ обоих множителей, и они перемножаются до него: у босса
+    // scale дробный (1.2^(волна−1)), у прокачки шаг 2% — округли каждый по
+    // отдельности, и мелкие прибавки пропадали бы целиком.
+    const amount = Math.max(1, Math.round(rolled * scale * CONFIG.player.moneyMultiplier));
 
     this.spawn(x, z, amount);
     this.valueDropped += amount;
