@@ -19,7 +19,7 @@ import type { MoneyPool } from './money';
 export type BossPhase = 'absent' | 'entering' | 'fighting' | 'dead';
 
 /** Вид атаки босса. Одновременно идёт ровно одна — см. Boss.updateAttacks. */
-export type BossAttackKind = 'aoe' | 'allHit';
+export type BossAttackKind = 'aoe' | 'single';
 
 /** Отряд с точки зрения босса. */
 export interface BossTarget {
@@ -27,8 +27,11 @@ export interface BossTarget {
   readonly x: number;
   /** Урон всем стрелкам внутри круга (AoE). Возвращает число задетых. */
   damageShootersInCircle(x: number, z: number, radius: number, damage: number): number;
-  /** Урон всем стрелкам сразу (неуклоняемая атака). Возвращает число задетых. */
-  damageAllShooters(damage: number): number;
+  /**
+   * Урон одному стрелку, ближайшему к (fromX, fromZ) — тот же метод, которым бьёт
+   * толпа. Возвращает false, если бить оказалось некого.
+   */
+  damageNearestShooter(fromX: number, fromZ: number, amount: number): boolean;
 }
 
 /**
@@ -42,7 +45,9 @@ export interface BossTarget {
  *         кто в круге. Круг намечается по позиции отряда В МОМЕНТ ТЕЛЕГРАФА,
  *         поэтому уводом отряда урон можно избежать — это единственный
  *         «скилловый» момент забега по ТЗ.
- *   по всем — неуклоняемые 12.5 hp сразу всем стрелкам.
+ *   одиночный — неуклоняемый удар по ОДНОМУ стрелку, ближайшему к боссу. Цель
+ *         выбирает тот же damageNearestShooter, что и у толпы, поэтому и правило
+ *         «герой — цель, только пока он один» здесь общее с зомби.
  *
  * АТАКИ ПОСЛЕДОВАТЕЛЬНЫЕ, а не параллельные: таймер один на обе (nextIn), и вид
  * следующего удара выбирается броском (attacks.weight). Наложиться они поэтому не
@@ -129,7 +134,7 @@ export class Boss {
   private readonly flashColor = makeFlashColor(CONFIG.boss.color);
 
   private aoeHitsTotal = 0;
-  private allHitsTotal = 0;
+  private singleHitsTotal = 0;
   private aoeCastTotal = 0;
 
   constructor(
@@ -238,8 +243,8 @@ export class Boss {
     return this.aoeHitsTotal;
   }
 
-  get allHits(): number {
-    return this.allHitsTotal;
+  get singleHits(): number {
+    return this.singleHitsTotal;
   }
 
   /**
@@ -272,7 +277,7 @@ export class Boss {
     this.telegraphActive = false;
     this.telegraphX = 0;
     this.aoeHitsTotal = 0;
-    this.allHitsTotal = 0;
+    this.singleHitsTotal = 0;
     this.aoeCastTotal = 0;
     this.flashLeft = 0;
     this.recoverLeft = 0;
@@ -413,14 +418,14 @@ export class Boss {
    * случайность, а как поломка ритма.
    */
   private scheduleAttack(delay: number): void {
-    const { aoe, allHit, maxSameInRow } = CONFIG.boss.attacks;
+    const { aoe, single, maxSameInRow } = CONFIG.boss.attacks;
 
     let kind: BossAttackKind;
     if (this.sameKindInRow >= maxSameInRow) {
-      kind = this.nextKind === 'aoe' ? 'allHit' : 'aoe';
+      kind = this.nextKind === 'aoe' ? 'single' : 'aoe';
     } else {
-      const total = aoe.weight + allHit.weight;
-      kind = Math.random() * total < aoe.weight ? 'aoe' : 'allHit';
+      const total = aoe.weight + single.weight;
+      kind = Math.random() * total < aoe.weight ? 'aoe' : 'single';
     }
 
     this.sameKindInRow = kind === this.nextKind ? this.sameKindInRow + 1 : 1;
@@ -429,7 +434,7 @@ export class Boss {
   }
 
   private updateAttacks(dt: number): void {
-    const { aoe, allHit, interval } = CONFIG.boss.attacks;
+    const { aoe, single, interval } = CONFIG.boss.attacks;
 
     this.nextIn -= dt;
 
@@ -458,7 +463,13 @@ export class Boss {
       this.telegraph.visible = false;
       this.telegraphActive = false;
     } else {
-      this.allHitsTotal += this.squad.damageAllShooters(allHit.damage * this.damageMul);
+      // Бьёт от СВОЕЙ точки, а не от точки отряда: ближайшего выбирает squad, и
+      // при уводе отряда вбок удар достаётся тому, кто ближе к боссу, — ровно как
+      // у толпы. Уклониться всё равно нельзя: ограничения по расстоянию у выбора
+      // цели нет.
+      if (this.squad.damageNearestShooter(0, this.posZ, single.damage * this.damageMul)) {
+        this.singleHitsTotal++;
+      }
     }
 
     // Замах кончился ударом — дальше сжатие обратно.
