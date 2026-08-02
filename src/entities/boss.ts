@@ -11,7 +11,8 @@ import { CONFIG } from '../config';
 import { segmentHitsCircle, segmentPassesCircle } from '../core/collision';
 import type { RunState } from '../core/run';
 import type { CrystalPool } from './crystals';
-import { makeFlashColor } from './flash';
+import { FallPose } from './fall';
+import { makeCorpseColor, makeFlashColor } from './flash';
 import type { MoneyPool } from './money';
 
 /** Фаза боссфайта. */
@@ -90,8 +91,10 @@ export class Boss {
   private corpseActive = false;
   /** Остаток падения тела, секунды (deathAnim.fallSeconds). */
   private corpseFallLeft = 0;
-  /** Куда валится тело: +1 вправо, −1 влево. */
-  private corpseDir = 1;
+  /** Азимут падения тела, радианы: 0 — на +X, π/2 — на +Z. Любой из 360°. */
+  private corpseYaw = 0;
+  /** Поза падения тела. Одна на босса: пересчитывается каждый кадр. */
+  private readonly corpsePose = new FallPose();
   /** Где сейчас тело: едет с миром, пока не скроется за нижним краем экрана. */
   private corpseZ = 0;
   /**
@@ -125,9 +128,16 @@ export class Boss {
     this.mesh.visible = false;
     scene.add(this.mesh);
 
+    // У тела свой материал, и он сразу тёмный: цвет тела не меняется за его жизнь,
+    // а живой босс в это же время может мигать вспышкой — общий материал развёл бы
+    // эти два состояния по одному полю.
     this.corpseMesh = new Mesh(
       capsuleGeometry,
-      new MeshStandardMaterial({ color, roughness: 0.75, metalness: 0.05 }),
+      new MeshStandardMaterial({
+        color: makeCorpseColor(color),
+        roughness: 0.75,
+        metalness: 0.05,
+      }),
     );
     this.corpseMesh.visible = false;
     scene.add(this.corpseMesh);
@@ -316,7 +326,6 @@ export class Boss {
     if (!this.corpseActive) return;
 
     const { capsule } = CONFIG.boss;
-    const fallSeconds = CONFIG.deathAnim.fallSeconds;
 
     if (this.corpseFallLeft > 0) this.corpseFallLeft = Math.max(0, this.corpseFallLeft - dt);
     this.corpseZ += CONFIG.world.worldSpeed * dt;
@@ -327,18 +336,13 @@ export class Boss {
       return;
     }
 
-    const done = fallSeconds > 0 ? 1 - this.corpseFallLeft / fallSeconds : 1;
-    const angle = this.corpseDir * (Math.PI / 2) * done * done;
-    const half = capsule.length / 2;
-
-    // Ось поворота у подошвы, как у зомби: она остаётся в x = 0, а центр капсулы
-    // уезжает по дуге вокруг неё (см. EnemyPool.update — там разбор формулы).
-    this.corpseMesh.rotation.z = angle;
-    this.corpseMesh.position.set(
-      -half * Math.sin(angle),
-      capsule.radius + half * Math.cos(angle),
-      this.corpseZ,
-    );
+    // Поза — общая с зомби (босс тоже зомби), считает FallPose: подошва остаётся
+    // в (0, corpseZ), а центр капсулы уезжает по дуге вокруг неё в сторону
+    // corpseYaw. Наклон вокруг произвольной горизонтальной оси, поэтому rotation.z
+    // здесь больше не годится — ставится кватернион.
+    const pose = this.corpsePose.set(0, this.corpseZ, this.corpseYaw, this.corpseFallLeft, capsule);
+    this.corpseMesh.quaternion.setFromAxisAngle(pose.axis, pose.angle);
+    this.corpseMesh.position.set(pose.x, pose.y, pose.z);
   }
 
   /**
@@ -477,7 +481,7 @@ export class Boss {
     // застала смерть. Масштаб замаха телу не передаётся: оно падает в свой размер.
     this.corpseActive = true;
     this.corpseFallLeft = CONFIG.deathAnim.fallSeconds;
-    this.corpseDir = Math.random() < 0.5 ? -1 : 1;
+    this.corpseYaw = Math.random() * Math.PI * 2;
     this.corpseZ = this.posZ;
     this.corpseMesh.visible = true;
     // Поза выставляется общей формулой, а не руками: иначе первый кадр тела
@@ -521,13 +525,12 @@ export class Boss {
       z: number;
       fallLeft: number;
       tiltDegrees: number;
+      yawDegrees: number;
       bodyX: number;
       bodyY: number;
+      bodyZ: number;
     };
   } {
-    const fallSeconds = CONFIG.deathAnim.fallSeconds;
-    const done = fallSeconds > 0 ? 1 - this.corpseFallLeft / fallSeconds : 1;
-
     return {
       phase: this.phase,
       hp: +this.hp.toFixed(2),
@@ -543,15 +546,18 @@ export class Boss {
       recoverLeft: +this.recoverLeft.toFixed(3),
       // Фактический масштаб меша — по нему проверяется анимация атаки.
       scale: +this.mesh.scale.x.toFixed(3),
-      // Тело: наклон 0 — стоит, ±90 — лежит; знак повторяет сторону падения.
-      // bodyX/bodyY — фактический центр капсулы, уехавший по дуге вокруг подошвы.
+      // Тело: наклон 0 — стоит, 90 — лежит; yawDegrees — сторона падения (0 — на
+      // +X, 90 — на +Z). bodyX/bodyY/bodyZ — фактический центр капсулы, уехавший
+      // по дуге вокруг подошвы; z — сама подошва.
       corpse: {
         active: this.corpseActive,
         z: +this.corpseZ.toFixed(2),
         fallLeft: +this.corpseFallLeft.toFixed(3),
-        tiltDegrees: this.corpseActive ? +(this.corpseDir * 90 * done * done).toFixed(1) : 0,
+        tiltDegrees: this.corpseActive ? +this.corpsePose.tiltDegrees.toFixed(1) : 0,
+        yawDegrees: this.corpseActive ? +((this.corpseYaw * 180) / Math.PI).toFixed(1) : 0,
         bodyX: +this.corpseMesh.position.x.toFixed(3),
         bodyY: +this.corpseMesh.position.y.toFixed(3),
+        bodyZ: +this.corpseMesh.position.z.toFixed(3),
       },
     };
   }

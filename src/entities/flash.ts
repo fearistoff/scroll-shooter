@@ -26,3 +26,23 @@ const WHITE = new Color(0xffffff);
 export function makeFlashColor(baseHex: number): Color {
   return new Color(baseHex).lerp(WHITE, CONFIG.ui.damageFlash.lighten);
 }
+
+/** Чёрный — к нему подмешивается собственный цвет тела. Один на весь модуль. */
+const BLACK = new Color(0x000000);
+
+/**
+ * Цвет ТЕЛА: тёмный оттенок собственного цвета убитого (deathAnim.corpseDarken).
+ *
+ * Зачем: тела остаются лежать там, где юнит стоял, и в живом цвете куча трупов
+ * читается как толпа — взгляд принимает их за цели. Затемнение отделяет мёртвых
+ * от живых, не отбирая опознавательный цвет: крупный зомби остаётся коричневым,
+ * обычный — зелёным, просто тёмными.
+ *
+ * Умножению instanceColor это не мешает (в отличие от вспышки, которой белый
+ * материал нужен как потолок): затемнение гасит, а гасить умножение умеет.
+ *
+ * Считается ОДИН раз на цель при создании: в цикле отрисовки аллокации недопустимы.
+ */
+export function makeCorpseColor(baseHex: number): Color {
+  return new Color(baseHex).lerp(BLACK, CONFIG.deathAnim.corpseDarken);
+}

@@ -13,7 +13,8 @@ import type { BonusReceiver } from './barrels';
 import type { BossTarget } from './boss';
 import type { BulletPool } from './bullets';
 import type { SquadTarget } from './enemies';
-import { makeFlashColor } from './flash';
+import { FallPose } from './fall';
+import { makeCorpseColor, makeFlashColor } from './flash';
 import type { GateTarget } from './gates';
 import type { MineField } from './mines';
 import {
@@ -70,8 +71,8 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
    * updateHeroDeath: обычный update в это время уже не зовут — отряд не ходит.
    */
   private heroDeathLeft = 0;
-  /** Куда валится герой: +1 вправо, −1 влево. Разыгрывается в момент смерти. */
-  private heroDeathDir = 1;
+  /** Азимут падения героя, радианы: 0 — на +X, π/2 — на +Z. Любой из 360°. */
+  private heroDeathYaw = 0;
   /**
    * Где герой стоял в момент смерти. Запоминается отдельно, потому что подошва
    * при падении не двигается, а центр капсулы от неё уезжает — и обычный update,
@@ -79,6 +80,8 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
    * прощания уже не зовут.
    */
   private heroDeathX = 0;
+  /** Поза падения героя. Общая формула с телами зомби и босса (FallPose). */
+  private readonly heroFallPose = new FallPose();
 
   private readonly allyMesh: InstancedMesh;
   private readonly matrix = new Matrix4();
@@ -91,6 +94,8 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
   private readonly allyColor = new Color(CONFIG.player.colors.ally);
   // Вспышка — светлый оттенок СВОЕГО цвета, поэтому у героя и союзника разная.
   private readonly heroFlash = makeFlashColor(CONFIG.player.colors.hero);
+  /** Цвет мёртвого героя — тёмный оттенок своего, как у тел зомби. */
+  private readonly heroCorpseColor = makeCorpseColor(CONFIG.player.colors.hero);
   private readonly allyFlash = makeFlashColor(CONFIG.player.colors.ally);
 
   /** Общее стрелковое оружие отряда (ТЗ раздел 6: подобрал — у всех). */
@@ -250,10 +255,12 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
     // Герой прошлого забега остался лежать: меш один на всю игру, и без явного
     // подъёма новый забег начался бы с капсулы на боку.
     this.heroDeathLeft = 0;
-    this.heroDeathDir = 1;
+    this.heroDeathYaw = 0;
     this.heroDeathX = 0;
-    this.heroMesh.rotation.z = 0;
+    this.heroMesh.quaternion.identity();
     this.heroMesh.position.y = Squad.heroStandY;
+    // z тоже: упасть герой мог и вдоль дороги, а стоит он всегда в z = 0.
+    this.heroMesh.position.z = 0;
   }
 
   /** Высота центра стоящей капсулы героя: подошвы на дороге, y = 0. */
@@ -269,8 +276,12 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
    */
   startHeroDeath(): void {
     this.heroDeathLeft = CONFIG.deathAnim.fallSeconds;
-    this.heroDeathDir = Math.random() < 0.5 ? -1 : 1;
+    this.heroDeathYaw = Math.random() * Math.PI * 2;
     this.heroDeathX = this.x;
+    // Цвет ставится здесь и держится до конца забега: в фазе прощания update не
+    // зовут, и вернуть его на живой (как это делает строка вспышки) уже некому.
+    // Обратно материал переводит reset при старте следующего забега.
+    this.heroMaterial.color.copy(this.heroCorpseColor);
     this.applyHeroFall();
   }
 
@@ -289,21 +300,22 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
   }
 
   /**
-   * Поза падения по остатку таймера. Формула общая с телами зомби
-   * (EnemyPool.update): ось поворота у ПОДОШВЫ — центра нижней полусферы, точки
-   * (heroDeathX, radius). Она стоит на месте, а центр капсулы едет по дуге вокруг
-   * неё, поэтому меняются все три величины сразу: поворот, высота и x.
+   * Поза падения по остатку таймера. Считает FallPose — та же формула, что у тел
+   * зомби и босса: ось поворота у ПОДОШВЫ, точки (heroDeathX, radius, 0). Она
+   * стоит на месте, а центр капсулы едет по дуге вокруг неё, и валиться герой
+   * может в любую сторону из 360° — значит, двигаются все три координаты.
    */
   private applyHeroFall(): void {
-    const { radius, length } = CONFIG.player.heroCapsule;
-    const fallSeconds = CONFIG.deathAnim.fallSeconds;
-    const done = fallSeconds > 0 ? 1 - this.heroDeathLeft / fallSeconds : 1;
-    const angle = this.heroDeathDir * (Math.PI / 2) * done * done;
-    const half = length / 2;
+    const pose = this.heroFallPose.set(
+      this.heroDeathX,
+      0,
+      this.heroDeathYaw,
+      this.heroDeathLeft,
+      CONFIG.player.heroCapsule,
+    );
 
-    this.heroMesh.rotation.z = angle;
-    this.heroMesh.position.x = this.heroDeathX - half * Math.sin(angle);
-    this.heroMesh.position.y = radius + half * Math.cos(angle);
+    this.heroMesh.quaternion.setFromAxisAngle(pose.axis, pose.angle);
+    this.heroMesh.position.set(pose.x, pose.y, pose.z);
   }
 
   /** Двигает отряд за вводом, раскладывает строй и стреляет. */

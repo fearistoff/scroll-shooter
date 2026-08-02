@@ -11,7 +11,8 @@ import { CONFIG } from '../config';
 import { segmentHitsCircle, segmentPassesCircle } from '../core/collision';
 import type { RunState, ZombieKind } from '../core/run';
 import type { CrystalPool } from './crystals';
-import { makeFlashColor } from './flash';
+import { FallPose } from './fall';
+import { makeCorpseColor, makeFlashColor } from './flash';
 import type { MoneyPool } from './money';
 
 /**
@@ -60,6 +61,8 @@ export class EnemyPool {
   private readonly normalMesh: InstancedMesh;
   private readonly bigMesh: InstancedMesh;
   private readonly matrix = new Matrix4();
+  /** Поза падения. Одна на пул: тела считаются по очереди, мусорить нельзя. */
+  private readonly fallPose = new FallPose();
 
   private readonly posX: Float32Array;
   private readonly posZ: Float32Array;
@@ -102,8 +105,12 @@ export class EnemyPool {
    * области тел.
    */
   private readonly fallLeft: Float32Array;
-  /** Куда валится тело: +1 вправо, −1 влево. Разыгрывается в момент смерти. */
-  private readonly fallDir: Int8Array;
+  /**
+   * Азимут падения, радианы: куда в плоскости дороги заваливается тело. 0 — на
+   * +X, π/2 — на +Z (к камере), то есть полный круг, а не две стороны.
+   * Разыгрывается в момент смерти.
+   */
+  private readonly fallYaw: Float32Array;
 
   /**
    * Все массивы данных слота одним списком.
@@ -122,6 +129,9 @@ export class EnemyPool {
   // Вспышка — светлый оттенок СВОЕГО цвета, поэтому у каждого вида свой.
   private readonly normalFlash = makeFlashColor(CONFIG.enemies.normal.color);
   private readonly bigFlash = makeFlashColor(CONFIG.enemies.big.color);
+  // Тела — тёмный оттенок своего же цвета: мёртвые не должны читаться как толпа.
+  private readonly normalCorpse = makeCorpseColor(CONFIG.enemies.normal.color);
+  private readonly bigCorpse = makeCorpseColor(CONFIG.enemies.big.color);
 
   /** Занятых слотов всего: живые плюс тела. */
   private count = 0;
@@ -165,7 +175,7 @@ export class EnemyPool {
     this.flashLeft = new Float32Array(poolSize);
     this.recoverLeft = new Float32Array(poolSize);
     this.fallLeft = new Float32Array(poolSize);
-    this.fallDir = new Int8Array(poolSize);
+    this.fallYaw = new Float32Array(poolSize);
 
     this.slots = [
       this.posX,
@@ -180,7 +190,7 @@ export class EnemyPool {
       this.flashLeft,
       this.recoverLeft,
       this.fallLeft,
-      this.fallDir,
+      this.fallYaw,
     ];
   }
 
@@ -257,8 +267,38 @@ export class EnemyPool {
    * Проверка на полный пул оставлена как страховка для прямых вызовов (тесты,
    * отладка). Поток через spawnStream до неё не доходит: он сам ждёт свободный
    * слот, потому что иначе списанная единица бюджета исчезала бы без зомби.
+   *
+   * Порядок аргументов — КООРДИНАТА ПЕРВОЙ, как у всех spawn в проекте
+   * (crystals, money, bullets, barrels). У босса аргументов нет вовсе, и из
+   * замерочного скрипта легко позвать `spawn('normal', -2.5)` по памяти.
    */
   spawn(x: number, kind: ZombieKind = 'normal'): void {
+    /*
+     * Ошибка в порядке аргументов ТИХАЯ, и в этом всё дело: строка, записанная в
+     * Float32Array, превращается в NaN. Зомби при этом появляется, считается в
+     * счётчиках и живёт полный цикл, но стоит в posX = NaN — все сравнения с ним
+     * ложны, пули мимо, в отладочном снимке пусто. Скрипт молча меряет не то, а
+     * замерочный прогон в этом проекте и есть проверка поведения.
+     *
+     * Поэтому в dev вызов падает сразу. В прод-сборке весь блок вырезается
+     * (import.meta.env.DEV — константа на сборке), горячий путь спавна не
+     * трогается, а изнутри spawnStream аргументы всегда корректны.
+     */
+    if (import.meta.env.DEV) {
+      if (!Number.isFinite(x)) {
+        throw new TypeError(
+          `EnemyPool.spawn: первым аргументом идёт x (число), получено ${JSON.stringify(x)}. ` +
+            `Сигнатура — spawn(x, kind).`,
+        );
+      }
+      if (kind !== 'normal' && kind !== 'big') {
+        throw new TypeError(
+          `EnemyPool.spawn: вид зомби — 'normal' или 'big', получено ${JSON.stringify(kind)}. ` +
+            `Сигнатура — spawn(x, kind).`,
+        );
+      }
+    }
+
     if (this.count >= this.capacity) return;
 
     const { stopZ, stopLineJitter, attackInterval, firstAttackDelay } = CONFIG.enemies;
@@ -295,7 +335,7 @@ export class EnemyPool {
     // Падение — из того же ряда: слот только что мог обслуживать тело, и без
     // обнуления новый зомби вышел бы на дорогу заваленным набок.
     this.fallLeft[i] = 0;
-    this.fallDir[i] = 0;
+    this.fallYaw[i] = 0;
 
     this.spawnedTotal++;
     if (kind === 'big') this.bigSpawnedTotal++;
@@ -381,7 +421,6 @@ export class EnemyPool {
      * продолжаются — поэтому цикл стоит между живыми и записью mesh.count.
      */
     const carry = worldSpeed * dt;
-    const fallSeconds = CONFIG.deathAnim.fallSeconds;
 
     for (let i = this.aliveCount; i < this.count; ) {
       if (this.fallLeft[i]! > 0) this.fallLeft[i]! -= dt;
@@ -394,38 +433,29 @@ export class EnemyPool {
 
       const bigOne = this.isBig[i] === 1;
       const capsule = (bigOne ? big : normal).capsule;
-      // Доля падения 0…1. Возведение в квадрат — ускорение: тело подсекает, а не
-      // опускает. При fallSeconds = 0 анимации нет, тело сразу лежит.
-      const done = fallSeconds > 0 ? 1 - Math.max(this.fallLeft[i]!, 0) / fallSeconds : 1;
-      const angle = this.fallDir[i]! * (Math.PI / 2) * done * done;
+      // Поза целиком — в FallPose: наклон вокруг подошвы в произвольную сторону
+      // (там же разбор формулы). Тело валится в свою сторону из 360°, поэтому
+      // уезжает от места смерти и по x, и по z.
+      const pose = this.fallPose.set(
+        this.posX[i]!,
+        this.posZ[i]!,
+        this.fallYaw[i]!,
+        this.fallLeft[i]!,
+        capsule,
+      );
 
-      /*
-       * ОСЬ ПОВОРОТА — У ПОДОШВЫ, а не в центре капсулы: тело подсекает в ногах и
-       * заваливается, а не проворачивается на месте.
-       *
-       * Матрица инстанса вращает вокруг СВОЕГО начала (центра капсулы), поэтому
-       * ось переносится вручную: центр едет по дуге вокруг неподвижной подошвы.
-       * Подошва — центр нижней полусферы, точка (posX, radius): именно она катится
-       * по дороге, и при любом наклоне капсула касается асфальта, а не тонет в нём.
-       * Отсюда и смещение по x на половину длины: упавший лежит рядом с тем местом,
-       * где стоял, а не поперёк него.
-       */
-      const half = capsule.length / 2;
-      const y = capsule.radius + half * Math.cos(angle);
-      const x = this.posX[i]! - half * Math.sin(angle);
-
-      // Масштаба у тела нет: makeRotationZ даёт единичный, и замах, застигнутый
+      // Масштаба у тела нет: makeRotationAxis даёт единичный, и замах, застигнутый
       // смертью, обрывается.
-      this.matrix.makeRotationZ(angle);
-      this.matrix.setPosition(x, y, this.posZ[i]!);
+      this.matrix.makeRotationAxis(pose.axis, pose.angle);
+      this.matrix.setPosition(pose.x, pose.y, pose.z);
 
       if (bigOne) {
         this.bigMesh.setMatrixAt(bigDrawn, this.matrix);
-        this.bigMesh.setColorAt(bigDrawn, this.bigColor);
+        this.bigMesh.setColorAt(bigDrawn, this.bigCorpse);
         bigDrawn++;
       } else {
         this.normalMesh.setMatrixAt(normalDrawn, this.matrix);
-        this.normalMesh.setColorAt(normalDrawn, this.normalColor);
+        this.normalMesh.setColorAt(normalDrawn, this.normalCorpse);
         normalDrawn++;
       }
 
@@ -770,7 +800,10 @@ export class EnemyPool {
 
     // last === aliveCount после уменьшения, то есть это уже первое тело.
     this.fallLeft[last] = CONFIG.deathAnim.fallSeconds;
-    this.fallDir[last] = Math.random() < 0.5 ? -1 : 1;
+    // Сторона падения — любая из 360°, а не одна из двух: одинаковых поз в куче
+    // тел не остаётся, при этом ложиться телу всё равно некуда, кроме плоскости
+    // дороги, — вариативность бесплатная.
+    this.fallYaw[last] = Math.random() * Math.PI * 2;
   }
 
   /**
@@ -831,10 +864,11 @@ export class EnemyPool {
   /**
    * Состояние ТЕЛ — для отладки и проверок анимации смерти.
    *
-   * x — НЕПОДВИЖНАЯ ПОДОШВА (где зомби стоял), bodyX и bodyY — фактический центр
-   * капсулы, уехавший по дуге вокруг неё. tiltDegrees — наклон (0 — стоит, ±90 —
-   * лежит), знак повторяет сторону падения. Всё считается по тем же формулам, что
-   * и в отрисовке: иначе проверять пришлось бы глазами.
+   * x и z — НЕПОДВИЖНАЯ ПОДОШВА (где зомби стоял), bodyX/bodyY/bodyZ —
+   * фактический центр капсулы, уехавший по дуге вокруг неё. tiltDegrees — наклон
+   * (0 — стоит, 90 — лежит), yawDegrees — сторона падения (0 — на +X, 90 — на +Z).
+   * Всё считается тем же FallPose, что и в отрисовке: иначе проверять пришлось бы
+   * глазами.
    */
   debugCorpses(): Array<{
     x: number;
@@ -842,27 +876,29 @@ export class EnemyPool {
     kind: ZombieKind;
     fallLeft: number;
     tiltDegrees: number;
+    yawDegrees: number;
     bodyX: number;
     bodyY: number;
+    bodyZ: number;
   }> {
-    const fallSeconds = CONFIG.deathAnim.fallSeconds;
     const out = [];
 
     for (let i = this.aliveCount; i < this.count; i++) {
       const bigOne = this.isBig[i] === 1;
       const capsule = (bigOne ? CONFIG.enemies.big : CONFIG.enemies.normal).capsule;
-      const half = capsule.length / 2;
-      const done = fallSeconds > 0 ? 1 - Math.max(this.fallLeft[i]!, 0) / fallSeconds : 1;
-      const angle = this.fallDir[i]! * (Math.PI / 2) * done * done;
+      const yaw = this.fallYaw[i]!;
+      const pose = this.fallPose.set(this.posX[i]!, this.posZ[i]!, yaw, this.fallLeft[i]!, capsule);
 
       out.push({
         x: +this.posX[i]!.toFixed(3),
         z: +this.posZ[i]!.toFixed(3),
         kind: (bigOne ? 'big' : 'normal') as ZombieKind,
         fallLeft: +this.fallLeft[i]!.toFixed(3),
-        tiltDegrees: +((angle * 180) / Math.PI).toFixed(1),
-        bodyX: +(this.posX[i]! - half * Math.sin(angle)).toFixed(3),
-        bodyY: +(capsule.radius + half * Math.cos(angle)).toFixed(3),
+        tiltDegrees: +pose.tiltDegrees.toFixed(1),
+        yawDegrees: +((yaw * 180) / Math.PI).toFixed(1),
+        bodyX: +pose.x.toFixed(3),
+        bodyY: +pose.y.toFixed(3),
+        bodyZ: +pose.z.toFixed(3),
       });
     }
 
