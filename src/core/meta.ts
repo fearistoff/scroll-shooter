@@ -8,6 +8,7 @@ export type UpgradeId =
   | 'heroDamageTaken'
   | 'heroRegenRate'
   | 'heroRegenDelay'
+  | 'squadSize'
   | 'allyDamage'
   | 'allyFireRate'
   | 'allyRange'
@@ -15,6 +16,26 @@ export type UpgradeId =
   | 'allyRegenRate'
   | 'allyRegenDelay'
   | 'exp';
+
+/**
+ * Описание улучшения из CONFIG.meta.upgrades в едином виде.
+ *
+ * Тип выписан руками, а не выведен из конфига: набор полей у улучшений разный
+ * (свой costGrowth у веток регенерации, base/step у счётчиков), и обращение к
+ * такому полю по ключу-объединению иначе не проходит проверку типов.
+ * Необязательные поля читаются только там, где они по смыслу есть.
+ */
+interface UpgradeSpec {
+  maxLevel: number;
+  baseCost: number;
+  /** Прибавка множителя за уровень, % от базы. У счётчиков её нет. */
+  stepPercent?: number;
+  /** Знаменатель прогрессии цены. Нет — берётся общий CONFIG.meta.costGrowth. */
+  costGrowth?: number;
+  /** Счётчики: значение на нулевом уровне и прибавка за уровень. */
+  base?: number;
+  step?: number;
+}
 
 /** Вкладка экрана прокачки: кого качаем. */
 export type UpgradeTrackId = 'hero' | 'ally' | 'common';
@@ -30,9 +51,12 @@ export interface UpgradeTrack {
  * Ветки прокачки. Боевые характеристики существуют в двух экземплярах — свой
  * набор у главного героя и свой у доп. стрелков, — и качаются независимо.
  *
- * Опыт вынесен в третью вкладку, а не приписан к одной из двух: он относится к
- * забегу целиком и не является характеристикой стрелка. Приписать его герою
- * значило бы, что «вкладка героя» — это на самом деле «герой и ещё экономика».
+ * Опыт и размер отряда вынесены в третью вкладку, а не приписаны к одной из
+ * двух: ни то, ни другое не является характеристикой стрелка. Опыт относится к
+ * забегу целиком, размер отряда — к отряду, а не к бойцу в нём: он одинаково
+ * меняет и число союзников, и то, сколько всего стволов у игрока. Приписать
+ * такое герою значило бы, что «вкладка героя» — это на самом деле «герой и ещё
+ * экономика».
  *
  * Порядок вкладок и строк внутри них берётся отсюда: экран собирает разметку по
  * этому списку, руками там ничего не размечено.
@@ -50,36 +74,60 @@ export const UPGRADE_TRACKS: readonly UpgradeTrack[] = [
   },
   {
     id: 'common',
-    title: 'Общее',
-    ids: ['exp'],
+    title: 'Прочее',
+    // Размер отряда стоит первым: он решает, скольким бойцам достанутся строки
+    // вкладки стрелков, то есть покупается раньше них.
+    ids: ['squadSize', 'exp'],
   },
 ];
 
 /** Плоский список всех улучшений — для сохранения, сброса и отладки. */
 export const UPGRADE_IDS: readonly UpgradeId[] = UPGRADE_TRACKS.flatMap((track) => track.ids);
 
+interface UpgradeLabel {
+  title: string;
+  effect: string;
+}
+
 /**
- * Человеческие названия и описание эффекта — для экрана прокачки.
+ * Подписи БОЕВЫХ характеристик — одни на обе ветки.
  *
- * Заголовки одинаковые у обеих веток намеренно: кого качаем, сказано вкладкой,
- * и дублировать это в каждой строке значит гонять по экрану лишние слова. А вот
- * описание эффекта разное — по нему видно, что множители правда разные.
+ * Ветки героя и стрелков состоят из одних и тех же шести характеристик, поэтому
+ * и названия, и описания у них общие: кого качаем, сказано вкладкой, и повторять
+ * это в каждой строке значит гонять по экрану лишние слова. Формулировки поэтому
+ * безличные («скорость лечения», а не «скорость лечения героя») — одна и та же
+ * строка показывается на обеих вкладках.
+ *
+ * Ключи — характеристика без приставки; UPGRADE_LABELS ниже раздаёт их обеим
+ * веткам ссылкой на один объект, так что разойтись они уже не могут.
  */
-export const UPGRADE_LABELS: Record<UpgradeId, { title: string; effect: string }> = {
-  heroDamage: { title: 'Урон', effect: 'урон снаряда героя' },
-  heroFireRate: { title: 'Скорострельность', effect: 'выстрелов в секунду у героя' },
-  heroRange: { title: 'Дальность стрельбы', effect: 'дальность полёта у героя' },
-  heroDamageTaken: { title: 'Получаемый урон', effect: 'урон по герою' },
-  heroRegenRate: { title: 'Восстановление HP', effect: 'скорость лечения героя' },
-  heroRegenDelay: { title: 'Задержка лечения', effect: 'пауза после урона у героя' },
+const COMBAT_LABELS = {
+  damage: { title: 'Урон', effect: 'количество наносимого урона' },
+  fireRate: { title: 'Скорострельность', effect: 'выстрелов в секунду' },
+  range: { title: 'Дальность', effect: 'расстояние, которое может пройти пуля' },
+  damageTaken: { title: 'Защита', effect: 'уменьшение получаемого урона' },
+  regenRate: { title: 'Восстановление HP', effect: 'скорость лечения' },
+  regenDelay: { title: 'Задержка лечения', effect: 'пауза перед началом лечения' },
+} as const satisfies Record<string, UpgradeLabel>;
 
-  allyDamage: { title: 'Урон', effect: 'урон снаряда стрелка' },
-  allyFireRate: { title: 'Скорострельность', effect: 'выстрелов в секунду у стрелка' },
-  allyRange: { title: 'Дальность стрельбы', effect: 'дальность полёта у стрелка' },
-  allyDamageTaken: { title: 'Получаемый урон', effect: 'урон по доп. стрелкам' },
-  allyRegenRate: { title: 'Восстановление HP', effect: 'скорость лечения стрелков' },
-  allyRegenDelay: { title: 'Задержка лечения', effect: 'пауза после урона у стрелков' },
+/** Человеческие названия и описание эффекта — для экрана прокачки. */
+export const UPGRADE_LABELS: Record<UpgradeId, UpgradeLabel> = {
+  heroDamage: COMBAT_LABELS.damage,
+  heroFireRate: COMBAT_LABELS.fireRate,
+  heroRange: COMBAT_LABELS.range,
+  heroDamageTaken: COMBAT_LABELS.damageTaken,
+  heroRegenRate: COMBAT_LABELS.regenRate,
+  heroRegenDelay: COMBAT_LABELS.regenDelay,
 
+  allyDamage: COMBAT_LABELS.damage,
+  allyFireRate: COMBAT_LABELS.fireRate,
+  allyRange: COMBAT_LABELS.range,
+  allyDamageTaken: COMBAT_LABELS.damageTaken,
+  allyRegenRate: COMBAT_LABELS.regenRate,
+  allyRegenDelay: COMBAT_LABELS.regenDelay,
+
+  // Единственное улучшение-счётчик: в строке стоит не множитель, а «3 → 4».
+  squadSize: { title: 'Размер отряда', effect: 'стрелков в отряде' },
   exp: { title: 'Получаемый опыт', effect: 'опыт за забег' },
 };
 
@@ -99,6 +147,20 @@ const REDUCING_UPGRADES: ReadonlySet<UpgradeId> = new Set<UpgradeId>([
 /** true — уровни этого улучшения множитель снижают (урон, задержка лечения). */
 export function isReducingUpgrade(id: UpgradeId): boolean {
   return REDUCING_UPGRADES.has(id);
+}
+
+/**
+ * Улучшения-СЧЁТЧИКИ: уровень даёт не процент, а целую единицу (сейчас — бойца
+ * в отряд). Значение считается как base + step × level, множителя у них нет.
+ *
+ * Список, а не признак «в конфиге есть поле base»: так исключение видно в одном
+ * месте, и опечатка в конфиге не превращает боевое улучшение в счётчик молча.
+ */
+const COUNT_UPGRADES: ReadonlySet<UpgradeId> = new Set<UpgradeId>(['squadSize']);
+
+/** true — улучшение измеряется штуками, а не множителем (см. COUNT_UPGRADES). */
+export function isCountUpgrade(id: UpgradeId): boolean {
+  return COUNT_UPGRADES.has(id);
 }
 
 /**
@@ -132,8 +194,13 @@ interface SavedProgress {
  * только экрану прокачки и applyTo().
  *
  * Улучшения затрагивают ТОЛЬКО характеристики игрока — множители урона, темпа,
- * дальности, получаемого урона и опыта. Генерация мира (бочки, ворота, состав
- * зомби, скорость мира) не меняется ни на одном уровне прокачки.
+ * дальности, получаемого урона, опыта и предел размера отряда. Скорость мира,
+ * расстановка бочек и ворот, состав зомби от уровней не зависят.
+ *
+ * У размера отряда есть косвенные следствия в мире, и их стоит держать в уме:
+ * бочка со стрелками не спавнится при полном отряде, а поток зомби ускоряется от
+ * числа стволов (enemies.spawn.squadScale). То есть эта ветка — единственная,
+ * которая заодно поднимает сложность.
  *
  * applyTo() записывает множители ЦЕЛИКОМ, абсолютным значением. Поэтому вызывать
  * его можно сколько угодно раз — накопления не будет, и снимок исходного конфига
@@ -169,6 +236,11 @@ export class MetaProgress {
     return this.level(id) >= this.maxLevel(id);
   }
 
+  /** Описание улучшения из конфига (см. UpgradeSpec — почему тип выписан руками). */
+  private spec(id: UpgradeId): UpgradeSpec {
+    return CONFIG.meta.upgrades[id];
+  }
+
   /**
    * Знаменатель прогрессии цены у конкретного улучшения: своё поле, если задано,
    * иначе общий CONFIG.meta.costGrowth.
@@ -178,12 +250,7 @@ export class MetaProgress {
    * знаменатель дал бы совсем другой потолок цены.
    */
   private costGrowth(id: UpgradeId): number {
-    // Тип выписан целиком, а не одним costGrowth?: TypeScript отвергает
-    // присваивание объекта типу, у которого ВСЕ поля необязательные и ни одно не
-    // совпадает («weak type»), — а поля costGrowth у боевых улучшений нет.
-    const spec: { maxLevel: number; baseCost: number; stepPercent: number; costGrowth?: number } =
-      CONFIG.meta.upgrades[id];
-    return spec.costGrowth ?? CONFIG.meta.costGrowth;
+    return this.spec(id).costGrowth ?? CONFIG.meta.costGrowth;
   }
 
   /**
@@ -263,12 +330,29 @@ export class MetaProgress {
     this.save();
   }
 
-  /** Итоговый множитель улучшения — то, что попадёт в конфиг. */
-  multiplier(id: UpgradeId): number {
-    const { stepPercent } = CONFIG.meta.upgrades[id];
-    const step = (stepPercent / 100) * this.level(id);
+  /**
+   * Итоговый множитель улучшения — то, что попадёт в конфиг.
+   *
+   * level задаётся явно, когда нужен не текущий множитель, а следующий: экран
+   * прокачки показывает «×1.04 → ×1.08», и считать шаг он должен той же
+   * формулой, а не своей.
+   *
+   * У счётчиков (isCountUpgrade) stepPercent нет, и здесь они дадут ×1 —
+   * множителя у них не существует, спрашивать надо countValue.
+   */
+  multiplier(id: UpgradeId, level = this.level(id)): number {
+    const step = ((this.spec(id).stepPercent ?? 0) / 100) * level;
     // Получаемый урон единственное, что уменьшается.
     return isReducingUpgrade(id) ? 1 - step : 1 + step;
+  }
+
+  /**
+   * Значение улучшения-счётчика в штуках: база плюс уровень. Для множителей
+   * вернёт 0 — у них нет ни base, ни step.
+   */
+  countValue(id: UpgradeId, level = this.level(id)): number {
+    const spec = this.spec(id);
+    return (spec.base ?? 0) + (spec.step ?? 0) * level;
   }
 
   /**
@@ -295,6 +379,14 @@ export class MetaProgress {
     config.player.allyMultipliers.regenDelayMultiplier = this.multiplier('allyRegenDelay');
 
     config.player.expMultiplier = this.multiplier('exp');
+
+    // Размер отряда — единственное, что прокачка пишет ВНЕ player: предел живёт
+    // в formation, потому что его читают все источники бойцов через
+    // Squad.addShooters. Значение абсолютное, как и множители, поэтому повторный
+    // applyTo ничего не накапливает. Пул капсул союзников от него не зависит —
+    // он рассчитан на визуальный потолок строя, — так что покупка уровня прямо
+    // на экране прокачки безопасна и действует со следующего забега.
+    config.formation.maxShooters = this.countValue('squadSize');
   }
 
   /** Сбрасывает прогресс целиком (кнопка на экране прокачки). */

@@ -471,33 +471,57 @@
         visibility: visible;
       }
 
+      /* Три строки текста слева, кнопки справа во всю высоту строки: имя с
+         уровнем, описание эффекта и то, что даст следующая покупка. */
       .upgrade {
         display: grid;
         grid-template-columns: 1fr auto auto;
-        grid-template-areas: 'name buy batch' 'meta buy batch';
+        grid-template-areas: 'name buy batch' 'effect buy batch' 'next buy batch';
         align-items: center;
-        gap: 2px 8px;
-        padding: 8px 10px;
+        gap: 2px 6px;
+        padding: 8px;
         border-radius: 8px;
         background: rgba(255, 255, 255, 0.07);
       }
 
+      /* 14px, а не 15: в имени теперь стоит и уровень, а колонка узкая — самое
+         длинное имя с двузначным уровнем («Восстановление HP (ур. 15)») при 15px
+         не влезало в строку и переносилось. ЗАМЕРЕНО canvas-обмером всех имён
+         при фактическом шрифте: 190 px против 200 px колонки. */
       .upgrade__name {
         grid-area: name;
-        font-size: 15px;
+        font-size: 14px;
         font-weight: 700;
       }
 
-      .upgrade__meta {
-        grid-area: meta;
+      .upgrade__effect {
+        grid-area: effect;
         font-size: 12px;
         opacity: 0.7;
+      }
+
+      /* Описания в UPGRADE_LABELS написаны со строчной: в строке они идут
+         отдельным предложением, поэтому первую букву поднимает вёрстка, а не
+         дубль тех же слов с заглавной в коде. */
+      .upgrade__effect::first-letter {
+        text-transform: uppercase;
+      }
+
+      /* Строка «Сл. ур.» тусклее описания намеренно: это справка о ещё не
+         купленном, и в глаза первым должно бросаться название, а не цифры. */
+      .upgrade__next {
+        grid-area: next;
+        font-size: 12px;
+        opacity: 0.38;
         font-variant-numeric: tabular-nums;
       }
 
+      /* min-width, а не фиксированная ширина: «5000 EXP» кнопку расширит само.
+         68 и 40 вместо прежних 74 и 42 — уступка колонке имени, которой после
+         добавления уровня стало тесно. */
       .upgrade__buy {
         grid-area: buy;
-        min-width: 74px;
+        min-width: 68px;
         padding: 9px 8px;
         border: 0;
         border-radius: 6px;
@@ -512,7 +536,7 @@
 
       .upgrade__batch {
         grid-area: batch;
-        min-width: 42px;
+        min-width: 40px;
         padding: 9px 6px;
         border: 0;
         border-radius: 6px;

@@ -1,6 +1,6 @@
 import { CONFIG } from '../config';
 import {
-  isReducingUpgrade,
+  isCountUpgrade,
   UPGRADE_LABELS,
   UPGRADE_TRACKS,
   type MetaProgress,
@@ -18,7 +18,12 @@ export interface ScreenHandlers {
 }
 
 interface UpgradeRow {
-  meta: HTMLElement;
+  /** Название с текущим уровнем: «Урон (ур. 1)». Меняется после каждой покупки. */
+  name: HTMLElement;
+  /** Описание эффекта — единственная строка, которая не зависит от уровня. */
+  effect: HTMLElement;
+  /** Что даст следующая покупка: «Сл. ур.: ×1.00 → ×1.04». */
+  next: HTMLElement;
   buy: HTMLButtonElement;
   batch: HTMLButtonElement;
 }
@@ -176,12 +181,18 @@ export class Screens {
     const row = document.createElement('div');
     row.className = 'upgrade';
 
+    // Текст имени проставляется в refreshUpgrades: в нём стоит текущий уровень.
     const name = document.createElement('div');
     name.className = 'upgrade__name';
-    name.textContent = UPGRADE_LABELS[id].title;
 
-    const meta = document.createElement('div');
-    meta.className = 'upgrade__meta';
+    const effect = document.createElement('div');
+    effect.className = 'upgrade__effect';
+    // Описание от уровня не зависит — единственная строка, которую хватает
+    // проставить один раз. Первую букву поднимает CSS (::first-letter).
+    effect.textContent = UPGRADE_LABELS[id].effect;
+
+    const next = document.createElement('div');
+    next.className = 'upgrade__next';
 
     const buy = document.createElement('button');
     buy.className = 'upgrade__buy';
@@ -201,8 +212,8 @@ export class Screens {
       this.refreshUpgrades();
     });
 
-    row.append(name, meta, buy, batch);
-    this.rows.set(id, { meta, buy, batch });
+    row.append(name, effect, next, buy, batch);
+    this.rows.set(id, { name, effect, next, buy, batch });
     return row;
   }
 
@@ -233,22 +244,12 @@ export class Screens {
         if (row === undefined) continue;
 
         const level = this.meta.level(id);
-        const max = this.meta.maxLevel(id);
         const cost = this.meta.nextCost(id);
-        const current = this.meta.multiplier(id);
         const canBuy = this.meta.canBuy(id);
         ready ||= canBuy;
 
-        // Показываем не только текущий множитель, но и следующий: иначе при шаге
-        // в 1% непонятно, за что вообще платишь.
-        const step = CONFIG.meta.upgrades[id].stepPercent / 100;
-        const next = isReducingUpgrade(id) ? current - step : current + step;
-        const effect =
-          cost === null
-            ? `${UPGRADE_LABELS[id].effect} ×${current.toFixed(2)}`
-            : `${UPGRADE_LABELS[id].effect} ×${current.toFixed(2)} → ×${next.toFixed(2)}`;
-
-        row.meta.textContent = `${level}/${max} · ${effect}`;
+        row.name.textContent = `${UPGRADE_LABELS[id].title} (ур. ${level})`;
+        row.next.textContent = this.nextText(id, level, cost === null);
         row.buy.textContent = cost === null ? 'макс.' : `${cost} EXP`;
         row.buy.disabled = !canBuy;
 
@@ -261,6 +262,30 @@ export class Screens {
 
       this.tracks.get(track.id)?.tab.classList.toggle('upgrade-tab--ready', ready);
     }
+  }
+
+  /**
+   * Третья строка: что даст следующий уровень.
+   *
+   * Показана не для красоты — при шаге в 1% по одному текущему множителю
+   * непонятно, за что вообще платишь. На максимальном уровне стрелки нет:
+   * покупать больше нечего, поэтому там остаётся достигнутое значение.
+   */
+  private nextText(id: UpgradeId, level: number, maxed: boolean): string {
+    const current = this.valueText(id, level);
+    if (maxed) return `Максимум: ${current}`;
+    return `Сл. ур.: ${current} → ${this.valueText(id, level + 1)}`;
+  }
+
+  /**
+   * Значение улучшения на заданном уровне.
+   *
+   * Улучшения-счётчики (размер отряда) считаются в бойцах, поэтому у них «3»
+   * без знака умножения: «×1.33» о размере отряда не сказало бы ничего.
+   */
+  private valueText(id: UpgradeId, level: number): string {
+    if (isCountUpgrade(id)) return `${this.meta.countValue(id, level)}`;
+    return `×${this.meta.multiplier(id, level).toFixed(2)}`;
   }
 
   private toggle(element: HTMLElement | null, visible: boolean): void {
