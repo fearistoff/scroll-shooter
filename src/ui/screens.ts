@@ -83,6 +83,17 @@ interface TrackView {
 }
 
 /**
+ * Подписи кнопки сброса по числу нажатий подряд.
+ *
+ * Сброс необратим и стирает всё накопленное, поэтому между намерением и делом
+ * стоят два подтверждения — прямо на кнопке, а не отдельным окном: диалогов
+ * экран не знает, а одиночное нажатие по кнопке рядом с «Начать забег» иначе
+ * обошлось бы игроку в весь прогресс. Стирает последняя подпись в списке,
+ * длина списка и есть число нажатий.
+ */
+const RESET_LABELS: readonly string[] = ['Сбросить прогресс', 'Вы уверены?', 'Точно?'];
+
+/**
  * Экраны результата забега и прокачки (ТЗ раздел 11).
  *
  * DOM-оверлей поверх холста, как HUD и подписи: текст резкий на любом
@@ -105,6 +116,10 @@ export class Screens {
   private readonly resultBank: HTMLElement | null;
   private readonly upgradeBank: HTMLElement | null;
   private readonly upgradeMoney: HTMLElement | null;
+  private readonly upgradeReset: HTMLButtonElement | null;
+
+  /** Сколько раз кнопку сброса нажали подряд — индекс в RESET_LABELS. */
+  private resetStep = 0;
 
   private readonly rows = new Map<UpgradeId, UpgradeRow>();
   private readonly weaponRows = new Map<WeaponId, WeaponRow>();
@@ -132,6 +147,7 @@ export class Screens {
     this.resultBank = document.querySelector<HTMLElement>('#result-bank');
     this.upgradeBank = document.querySelector<HTMLElement>('#upgrade-bank');
     this.upgradeMoney = document.querySelector<HTMLElement>('#upgrade-money');
+    this.upgradeReset = document.querySelector<HTMLButtonElement>('#upgrade-reset');
 
     document
       .querySelector<HTMLButtonElement>('#result-continue')
@@ -148,7 +164,15 @@ export class Screens {
         ?.addEventListener('click', () => handlers.startRun());
     }
 
-    document.querySelector<HTMLButtonElement>('#upgrade-reset')?.addEventListener('click', () => {
+    // Промежуточные нажатия перерисовывают только саму кнопку: refreshUpgrades
+    // обнуляет счётчик подтверждений, и цепочка не дошла бы до конца.
+    this.upgradeReset?.addEventListener('click', () => {
+      this.resetStep++;
+      if (this.resetStep < RESET_LABELS.length) {
+        this.refreshReset();
+        return;
+      }
+
       this.meta.reset();
       this.refreshUpgrades();
     });
@@ -406,8 +430,17 @@ export class Screens {
     }
   }
 
-  /** Перерисовывает уровни, эффекты и цены после каждой покупки. */
+  /**
+   * Перерисовывает уровни, эффекты и цены после каждой покупки.
+   *
+   * Заодно снимает начатое подтверждение сброса: сюда приходят и вход на экран,
+   * и любая покупка, а между ними «Точно?» на кнопке висеть не должно — иначе
+   * два нажатия через полчаса игры стёрли бы прогресс без предупреждения.
+   */
   private refreshUpgrades(): void {
+    this.resetStep = 0;
+    this.refreshReset();
+
     if (this.upgradeBank !== null) {
       this.upgradeBank.textContent = `${this.meta.bankDisplay} EXP`;
     }
@@ -478,6 +511,22 @@ export class Screens {
     }
 
     this.tracks.get('weapons')?.tab.classList.toggle('upgrade-tab--ready', ready);
+  }
+
+  /**
+   * Кнопка сброса: подпись по текущему шагу подтверждения и показ по тому,
+   * есть ли что стирать.
+   *
+   * На пустом сохранении кнопки нет вовсе — до первой покупки она предлагала бы
+   * действие без последствий, а сразу после сброса ещё и осталась бы висеть
+   * подписью «Точно?». Прятание через hidden, а не класс: display у
+   * .screen__button не переопределён, и умолчания атрибута хватает.
+   */
+  private refreshReset(): void {
+    if (this.upgradeReset === null) return;
+
+    this.upgradeReset.hidden = !this.meta.hasProgress;
+    this.upgradeReset.textContent = RESET_LABELS[this.resetStep] ?? RESET_LABELS[0]!;
   }
 
   /**

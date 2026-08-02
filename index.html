@@ -823,9 +823,15 @@
         <div id="upgrade-tabs"></div>
         <div id="upgrade-list"></div>
         <button id="upgrade-start" class="screen__button" type="button">Начать забег</button>
-        <button id="upgrade-reset" class="screen__button screen__button--ghost" type="button">
-          Сбросить прогресс
-        </button>
+        <!-- Подпись и показ ставит screens.ts: кнопка есть только когда есть что
+             сбрасывать, а по нажатиям текст меняется на подтверждения. Скрыта
+             изначально, чтобы не мелькнуть на чистом сохранении. -->
+        <button
+          id="upgrade-reset"
+          class="screen__button screen__button--ghost"
+          type="button"
+          hidden
+        ></button>
         <!-- Текст ставит screens.ts из __APP_VERSION__ (package.json) -->
         <div id="upgrade-version" class="screen__version"></div>
       </div>
