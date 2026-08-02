@@ -18,6 +18,9 @@ import type { MoneyPool } from './money';
 /** Фаза боссфайта. */
 export type BossPhase = 'absent' | 'entering' | 'fighting' | 'dead';
 
+/** Вид атаки босса. Одновременно идёт ровно одна — см. Boss.updateAttacks. */
+export type BossAttackKind = 'aoe' | 'allHit';
+
 /** Отряд с точки зрения босса. */
 export interface BossTarget {
   /** Позиция отряда по x — по ней босс намечает AoE. */
@@ -34,12 +37,18 @@ export interface BossTarget {
  * светлым оттенком своего цвета), отличаются только числа и набор атак.
  *
  * Один на забег, выходит после того, как волна зачищена. Доезжает до ~1/3 экрана
- * снизу, останавливается и чередует две атаки:
+ * снизу, останавливается и бьёт двумя атаками:
  *   AoE — красный круг-телеграф на земле, через telegraphTime бьёт 50 hp по всем,
  *         кто в круге. Круг намечается по позиции отряда В МОМЕНТ ТЕЛЕГРАФА,
  *         поэтому уводом отряда урон можно избежать — это единственный
  *         «скилловый» момент забега по ТЗ.
  *   по всем — неуклоняемые 12.5 hp сразу всем стрелкам.
+ *
+ * АТАКИ ПОСЛЕДОВАТЕЛЬНЫЕ, а не параллельные: таймер один на обе (nextIn), и вид
+ * следующего удара выбирается броском (attacks.weight). Наложиться они поэтому не
+ * могут в принципе — раньше у каждой был свой кулдаун, таймеры бились друг о друга
+ * и периодически выдавали два разных удара почти одновременно. Обоснование чисел —
+ * в CONFIG.boss.attacks.interval.
  *
  * HP многослойное: полоса из layerCount слоёв, урон снимает текущий слой сверху.
  * Слои — представление одного числа, а не отдельные пулы HP: так «xN осталось»
@@ -78,11 +87,22 @@ export class Boss {
   private damageMul = 1;
   private posZ = 0;
 
-  /** Обратный отсчёт до следующей атаки каждого типа. */
-  private aoeIn = 0;
-  private allHitIn = 0;
-  /** Если > 0 — идёт замах AoE, круг уже показан. */
-  private telegraphIn = 0;
+  /**
+   * Обратный отсчёт до следующего УДАРА — общий для обеих атак. Именно до удара,
+   * а не до начала сигнала: замах и телеграф читаются из него вычитанием, поэтому
+   * пауза между ударами не зависит от того, какая атака выпала.
+   */
+  private nextIn = 0;
+  /**
+   * Какая атака будет следующей. Выбирается СРАЗУ после предыдущего удара, а не в
+   * момент срабатывания: круг AoE должен лечь на землю за telegraphTime до удара,
+   * то есть тип надо знать заранее.
+   */
+  private nextKind: BossAttackKind = 'aoe';
+  /** Сколько раз подряд уже выпал nextKind, считая его самого (attacks.maxSameInRow). */
+  private sameKindInRow = 0;
+  /** Круг AoE уже лежит на земле — идёт замах. */
+  private telegraphActive = false;
   private telegraphX = 0;
 
   /** Остаток вспышки от урона (ui.damageFlash). Тает по игровому dt. */
@@ -207,7 +227,7 @@ export class Boss {
 
   /** Идёт замах AoE — круг на земле виден. */
   get isTelegraphing(): boolean {
-    return this.telegraphIn > 0;
+    return this.telegraphActive;
   }
 
   get aoeCasts(): number {
@@ -246,9 +266,10 @@ export class Boss {
     this.maxHp = 0;
     this.damageMul = 1;
     this.posZ = CONFIG.world.spawnZ;
-    this.aoeIn = 0;
-    this.allHitIn = 0;
-    this.telegraphIn = 0;
+    this.nextIn = 0;
+    this.nextKind = 'aoe';
+    this.sameKindInRow = 0;
+    this.telegraphActive = false;
     this.telegraphX = 0;
     this.aoeHitsTotal = 0;
     this.allHitsTotal = 0;
@@ -274,10 +295,13 @@ export class Boss {
     // Урон обеих атак — своим множителем волны, как у зомби.
     this.damageMul = this.run.damageMultiplier;
     this.posZ = CONFIG.world.spawnZ;
-    // Первые атаки не сразу по прибытии: игрок должен успеть понять, что вышло.
-    this.aoeIn = attacks.firstAttackDelay;
-    this.allHitIn = attacks.firstAttackDelay + attacks.allHit.cooldown / 2;
-    this.telegraphIn = 0;
+    // Первая атака не сразу по прибытии: игрок должен успеть понять, что вышло.
+    // Вид её выбирается тем же броском, что и всех остальных, — предсказуемого
+    // начала боссфайта нет.
+    this.sameKindInRow = 0;
+    this.scheduleAttack(attacks.firstAttackDelay);
+    this.telegraphActive = false;
+    this.telegraph.visible = false;
     // Босс прошлой волны мог погибнуть на пике замаха, а меш один на всю игру:
     // без сброса следующий вышел бы уже раздутым. reset() здесь не поможет — он
     // вызывается только на старте забега, а волн с боссом в забеге много.
@@ -349,8 +373,10 @@ export class Boss {
    * Масштаб капсулы босса — анимация атаки, та же, что у зомби
    * (CONFIG.enemies.attackAnim), со своим временем замаха (CONFIG.boss.attackAnim).
    *
-   * Сжатие после удара перебивает замах: удары двух типов идут по своим кулдаунам
-   * и могут сойтись, а сжатие должно доиграть.
+   * Сжатие после удара перебивает замах: интервал между ударами (3.5 с) длиннее
+   * замаха (1.2 с), так что в норме они и не пересекаются, но порядок «сжатие
+   * важнее» оставлен — он не даёт сжатию оборваться, если интервал когда-нибудь
+   * укоротят.
    *
    * Замах — только в фазе fighting. На выходе (entering) босс не атакует, и
    * раздуваться ему нечем; заодно это повторяет правило зомби «замах считается
@@ -371,56 +397,75 @@ export class Boss {
     const windup = CONFIG.boss.attackAnim.windupSeconds;
     if (windup <= 0) return 1;
 
-    // Время до УДАРА, а не до начала замаха. У AoE удар в конце телеграфа,
-    // поэтому пока круг на земле — это telegraphIn, а до него ещё и весь телеграф.
-    const aoeStrikeIn =
-      this.telegraphIn > 0
-        ? this.telegraphIn
-        : this.aoeIn + CONFIG.boss.attacks.aoe.telegraphTime;
-    const strikeIn = Math.min(aoeStrikeIn, this.allHitIn);
+    // Таймер один и считает время до УДАРА — что бы ни выпало, замах начинается
+    // за windup до него. Раньше здесь сходились два таймера с разными смыслами.
+    const strikeIn = this.nextIn;
     if (strikeIn >= windup) return 1;
 
     return 1 + grow * (1 - Math.max(strikeIn, 0) / windup);
   }
 
-  private updateAttacks(dt: number): void {
-    const { aoe, allHit } = CONFIG.boss.attacks;
+  /**
+   * Выбирает следующую атаку и заводит общий таймер на delay секунд до удара.
+   *
+   * Бросок по весам, но не более maxSameInRow одинаковых подряд: чистая случайность
+   * иногда выдаёт длинную серию одной и той же атаки, и она читается не как
+   * случайность, а как поломка ритма.
+   */
+  private scheduleAttack(delay: number): void {
+    const { aoe, allHit, maxSameInRow } = CONFIG.boss.attacks;
 
-    // --- Замах AoE: круг уже на земле, ждём удара
-    if (this.telegraphIn > 0) {
-      this.telegraphIn -= dt;
-      if (this.telegraphIn <= 0) {
-        // Бьём по КРУГУ, а не по отряду: успел уйти — не задело.
-        this.aoeHitsTotal += this.squad.damageShootersInCircle(
-          this.telegraphX,
-          0,
-          aoe.radius,
-          aoe.damage * this.damageMul,
-        );
-        this.telegraph.visible = false;
-        this.aoeIn = aoe.cooldown;
-        // Замах кончился ударом — дальше сжатие обратно.
-        this.recoverLeft = CONFIG.enemies.attackAnim.recoverSeconds;
-      }
+    let kind: BossAttackKind;
+    if (this.sameKindInRow >= maxSameInRow) {
+      kind = this.nextKind === 'aoe' ? 'allHit' : 'aoe';
     } else {
-      this.aoeIn -= dt;
-      if (this.aoeIn <= 0) {
-        // Круг намечается по текущей позиции отряда — дальше он не двигается.
-        this.telegraphX = this.squad.x;
-        this.telegraphIn = aoe.telegraphTime;
-        this.telegraph.position.set(this.telegraphX, 0.02, 0);
-        this.telegraph.visible = true;
-        this.aoeCastTotal++;
-      }
+      const total = aoe.weight + allHit.weight;
+      kind = Math.random() * total < aoe.weight ? 'aoe' : 'allHit';
     }
 
-    // --- Неуклоняемый удар по всем
-    this.allHitIn -= dt;
-    if (this.allHitIn <= 0) {
-      this.allHitIn = allHit.cooldown;
-      this.recoverLeft = CONFIG.enemies.attackAnim.recoverSeconds;
+    this.sameKindInRow = kind === this.nextKind ? this.sameKindInRow + 1 : 1;
+    this.nextKind = kind;
+    this.nextIn = delay;
+  }
+
+  private updateAttacks(dt: number): void {
+    const { aoe, allHit, interval } = CONFIG.boss.attacks;
+
+    this.nextIn -= dt;
+
+    // --- Телеграф AoE ложится ровно за telegraphTime до удара, то есть в тот же
+    // кадр, в который начинается замах (windupSeconds === telegraphTime).
+    if (this.nextKind === 'aoe' && !this.telegraphActive && this.nextIn <= aoe.telegraphTime) {
+      // Круг намечается по текущей позиции отряда — дальше он не двигается.
+      this.telegraphX = this.squad.x;
+      this.telegraph.position.set(this.telegraphX, 0.02, 0);
+      this.telegraph.visible = true;
+      this.telegraphActive = true;
+      this.aoeCastTotal++;
+    }
+
+    if (this.nextIn > 0) return;
+
+    // --- Удар
+    if (this.nextKind === 'aoe') {
+      // Бьём по КРУГУ, а не по отряду: успел уйти — не задело.
+      this.aoeHitsTotal += this.squad.damageShootersInCircle(
+        this.telegraphX,
+        0,
+        aoe.radius,
+        aoe.damage * this.damageMul,
+      );
+      this.telegraph.visible = false;
+      this.telegraphActive = false;
+    } else {
       this.allHitsTotal += this.squad.damageAllShooters(allHit.damage * this.damageMul);
     }
+
+    // Замах кончился ударом — дальше сжатие обратно.
+    this.recoverLeft = CONFIG.enemies.attackAnim.recoverSeconds;
+    // Интервал накопителем: остаток кадра (nextIn уже отрицательный) переносится в
+    // следующий отсчёт, иначе на длинном боссфайте ритм уползал бы на полкадра за удар.
+    this.scheduleAttack(this.nextIn + interval);
   }
 
   /**
@@ -475,7 +520,7 @@ export class Boss {
     this.phase = 'dead';
     this.mesh.visible = false;
     this.telegraph.visible = false;
-    this.telegraphIn = 0;
+    this.telegraphActive = false;
 
     // Живой меш прячется, а на его место встаёт тело — с той же точки, где босса
     // застала смерть. Масштаб замаха телу не передаётся: оно падает в свой размер.
@@ -516,8 +561,9 @@ export class Boss {
     layerFill: number;
     telegraphing: boolean;
     telegraphX: number;
-    aoeIn: number;
-    allHitIn: number;
+    nextKind: BossAttackKind;
+    nextIn: number;
+    sameKindInRow: number;
     recoverLeft: number;
     scale: number;
     corpse: {
@@ -541,8 +587,11 @@ export class Boss {
       layerFill: +this.currentLayerFill.toFixed(3),
       telegraphing: this.isTelegraphing,
       telegraphX: +this.telegraphX.toFixed(2),
-      aoeIn: +this.aoeIn.toFixed(3),
-      allHitIn: +this.allHitIn.toFixed(3),
+      // Один таймер на обе атаки: nextKind — что выпало, nextIn — сколько до УДАРА
+      // (не до начала телеграфа).
+      nextKind: this.nextKind,
+      nextIn: +this.nextIn.toFixed(3),
+      sameKindInRow: this.sameKindInRow,
       recoverLeft: +this.recoverLeft.toFixed(3),
       // Фактический масштаб меша — по нему проверяется анимация атаки.
       scale: +this.mesh.scale.x.toFixed(3),
