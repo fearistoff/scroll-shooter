@@ -36,6 +36,12 @@ export interface HudState {
   money: number;
   /** Секунды с начала забега — секундомер справа вверху. */
   elapsedSeconds: number;
+  /**
+   * Частота кадров за последнюю секунду — только в отладочной строке. Шаг логики
+   * теперь равен длине кадра, поэтому увидеть фактический fps важно: по нему
+   * видно, идёт ли устройство на своих 120 Гц или просело.
+   */
+  fps: number;
   /** Номер волны, с 1. Волна сменяется после смерти босса. */
   wave: number;
   zombiesRemaining: number;
@@ -148,7 +154,7 @@ export class Hud {
       `отряд ${state.shooters}${hidden} · ${state.weapon}${specials} · ` +
       `зомби ${state.enemies}${big}${corpses} · убито ${state.killed} · пули ${state.bullets} · ` +
       `бочки ${state.barrels} (разбито ${state.barrelsBroken})${mines} · ` +
-      `кристаллы ${state.crystals} · монеты ${state.coins}`;
+      `кристаллы ${state.crystals} · монеты ${state.coins} · fps ${state.fps}`;
     this.setText(this.debugElement, debug, 'lastDebug');
   }
 

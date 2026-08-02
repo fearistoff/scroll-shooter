@@ -148,7 +148,7 @@ export class RunState {
     return this.elapsed;
   }
 
-  /** Двигает часы забега. Вызывается игровым шагом с фиксированным dt. */
+  /** Двигает часы забега. Вызывается игровым шагом длиной в кадр. */
   advance(dt: number): void {
     this.elapsed += dt;
   }

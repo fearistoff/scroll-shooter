@@ -32,7 +32,7 @@ export type GamePhase = 'running' | 'dying' | 'result' | 'upgrade';
 /**
  * Корень игры: владеет сценой, рендером, камерой и подсистемами.
  *
- * update(dt) вызывается с фиксированным шагом и раздаёт его подсистемам —
+ * update(dt) вызывается шагом по длине кадра и раздаёт его подсистемам —
  * новые слои (enemies, barrels, gates, weapons) подключаются сюда.
  * Подсистемы публичные: так их видно из dev-хука window.__game при отладке.
  */
@@ -275,6 +275,7 @@ export class Game {
       exp: this.run.exp,
       money: this.run.money,
       elapsedSeconds: this.run.elapsedSeconds,
+      fps: this.loop.fps,
       wave: this.run.waveNumber,
       zombiesRemaining: this.run.remainingZombies,
       zombiesTotal: this.run.totalZombies,
@@ -318,7 +319,7 @@ export class Game {
    * 'absent' и выйдет снова, когда будет зачищена и новая волна.
    *
    * Переход происходит на шаге, СЛЕДУЮЩЕМ за смертью босса: умирает он внутри
-   * bullets.update, то есть уже после этой функции. Задержка в 1/60 секунды
+   * bullets.update, то есть уже после этой функции. Задержка в один шаг логики
    * нужна, чтобы кристаллы с босса успели выпасть в старом состоянии волны.
    */
   private updateBossPhase(): void {
