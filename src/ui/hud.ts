@@ -56,7 +56,14 @@ export interface HudState {
   } | null;
 }
 
+/** Точка на холсте в CSS-пикселях: куда лететь подобранному. */
+export interface HudAnchor {
+  x: number;
+  y: number;
+}
+
 export class Hud {
+  private readonly rootElement: HTMLElement | null;
   private readonly expElement: HTMLElement | null;
   private readonly moneyElement: HTMLElement | null;
   private readonly waveElement: HTMLElement | null;
@@ -93,9 +100,26 @@ export class Hud {
   private lastFillColor = '';
 
   /**
+   * Центры плашек EXP и денег в пикселях холста — цель полёта кристаллов и монет
+   * (см. PickupPool). Меряются по требованию и кешируются: getBoundingClientRect
+   * заставляет браузер пересчитать раскладку, а звать его каждый кадр не за чем —
+   * плашка стоит на месте.
+   *
+   * Кеш сбрасывается ровно в двух случаях: сменился размер холста (ResizeObserver
+   * ниже) и сменилась ДЛИНА строки счётчика. Не значение, а именно длина: в HUD
+   * стоит font-variant-numeric: tabular-nums, все цифры одной ширины, и «EXP 12»
+   * → «EXP 13» плашку не двигает.
+   */
+  private readonly expAnchorPoint: HudAnchor = { x: 0, y: 0 };
+  private readonly moneyAnchorPoint: HudAnchor = { x: 0, y: 0 };
+  private anchorsDirty = true;
+  private readonly anchorObserver: ResizeObserver | null;
+
+  /**
    * @param onPauseClick нажатие на контейнер секундомера — он же кнопка паузы.
    */
   constructor(onPauseClick: () => void) {
+    this.rootElement = document.querySelector<HTMLElement>('#hud');
     this.expElement = document.querySelector<HTMLElement>('#hud-exp');
     this.moneyElement = document.querySelector<HTMLElement>('#hud-money');
     this.waveElement = document.querySelector<HTMLElement>('#hud-wave');
@@ -117,16 +141,48 @@ export class Hud {
     if (!this.showDebug && this.bottomElement !== null) {
       this.bottomElement.style.display = 'none';
     }
+
+    // Размер холста задаёт letterbox (Viewport), а не окно, поэтому наблюдаем за
+    // самим оверлеем: событие resize приходит не на всякое изменение вьюпорта, а
+    // ResizeObserver ловит бокс напрямую и срабатывает уже после раскладки.
+    if (this.rootElement === null) {
+      this.anchorObserver = null;
+    } else {
+      this.anchorObserver = new ResizeObserver(() => {
+        this.anchorsDirty = true;
+      });
+      this.anchorObserver.observe(this.rootElement);
+    }
+  }
+
+  /** Центр плашки EXP — туда летят кристаллы. */
+  get expAnchor(): HudAnchor {
+    this.measureAnchors();
+    return this.expAnchorPoint;
+  }
+
+  /** Центр плашки денег — туда летят монеты. */
+  get moneyAnchor(): HudAnchor {
+    this.measureAnchors();
+    return this.moneyAnchorPoint;
   }
 
   update(state: HudState): void {
     // Округляем вниз: EXP дробный (кристалл ×1.5 от прокачки), и без округления
     // в плашку лезло «EXP 330.72000000000065» — она распирала верхнюю строку и
     // налезала на полосу волны.
-    this.setText(this.expElement, `EXP ${Math.floor(state.exp)}`, 'lastExp');
+    const exp = `EXP ${Math.floor(state.exp)}`;
     // Деньги под EXP: валют две, и обе набираются по ходу забега. Всегда целые,
     // округлять нечего — находка округляется на выпадении (MoneyPool.dropFrom).
-    this.setText(this.moneyElement, `$ ${state.money}`, 'lastMoney');
+    const money = `$ ${state.money}`;
+
+    // Плашка выросла на цифру — центр уехал, и цель полёта нужно перемерить.
+    if (exp.length !== this.lastExp.length || money.length !== this.lastMoney.length) {
+      this.anchorsDirty = true;
+    }
+
+    this.setText(this.expElement, exp, 'lastExp');
+    this.setText(this.moneyElement, money, 'lastMoney');
     this.setText(this.timerElement, formatRunTime(state.elapsedSeconds), 'lastTimer');
     this.setText(this.waveNumberElement, `ВОЛНА ${state.wave}`, 'lastWaveNumber');
 
@@ -204,6 +260,37 @@ export class Hud {
       this.waveFillElement.style.background = color;
       this.lastFillColor = color;
     }
+  }
+
+  /**
+   * Перемер плашек счётчиков, если кеш устарел. Обе сразу: раскладка всё равно
+   * пересчитывается целиком, и второй getBoundingClientRect уже бесплатный.
+   */
+  private measureAnchors(): void {
+    if (!this.anchorsDirty || this.rootElement === null) return;
+
+    // Координаты нужны относительно холста, а не окна: холст центрирован в окне
+    // letterbox'ом, и слева от него бывают тёмные поля.
+    const root = this.rootElement.getBoundingClientRect();
+    Hud.measureCenter(this.expElement, root, this.expAnchorPoint);
+    Hud.measureCenter(this.moneyElement, root, this.moneyAnchorPoint);
+    this.anchorsDirty = false;
+  }
+
+  private static measureCenter(
+    element: HTMLElement | null,
+    root: DOMRect,
+    out: HudAnchor,
+  ): void {
+    if (element === null) return;
+
+    const rect = element.getBoundingClientRect();
+    out.x = rect.left + rect.width * 0.5 - root.left;
+    out.y = rect.top + rect.height * 0.5 - root.top;
+  }
+
+  dispose(): void {
+    this.anchorObserver?.disconnect();
   }
 
   /** Цвет слоя полосы босса: каждый следующий слой другого цвета (ТЗ раздел 10). */

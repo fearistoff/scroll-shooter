@@ -119,35 +119,40 @@
         font-variant-numeric: tabular-nums;
       }
 
-      /* EXP слева вверху — как в референсе (3.png, 4.png) */
-      #hud-exp {
-        display: inline-block;
+      /* Счётчики валют слева вверху — как в референсе (3.png, 4.png).
+         Колонкой, деньги под опытом и того же размера: обе плашки — цель полёта
+         подобранного (Hud.expAnchor / moneyAnchor), и разный кегль читался бы
+         как разная важность валюты, хотя набираются они одинаково по ходу забега.
+         align-items обязателен: без него плашки растянулись бы на всю ширину
+         HUD, и центр, в который летят кристаллы, уехал бы на середину экрана.
+         ЗАМЕРЕНО на узком холсте (446 px при пороге viewport.narrowWidthPx 460)
+         с предельными числами «EXP 9999» и «$ 9999»: плашки занимают x 16…122 и
+         x 16…99, колонка целиком — y 14…74. Верхний блок волны в режиме narrow
+         начинается с y 46 (4 px под нижней плашкой EXP) и с x 128 (29 px правее
+         плашки денег), секундомер справа с x 347. */
+      #hud-counters {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 4px;
+      }
+
+      #hud-exp,
+      #hud-money {
         padding: 3px 10px;
         border-radius: 6px;
         background: rgba(0, 0, 0, 0.45);
         font-size: 17px;
         font-weight: 800;
         letter-spacing: 0.5px;
+      }
+
+      #hud-exp {
         color: #6fe6f5;
       }
 
-      /* Деньги рядом с EXP, в той же строке: обе плашки inline-block и встают
-         бок о бок. Второй строкой их ставить не пришлось — ЗАМЕРЕНО на самом
-         узком холсте (459 px, порог viewport.narrowWidthPx) с предельными
-         числами «EXP 9999» и «$ 9999»: пара занимает 16…201 px, полоса волны в
-         режиме narrow начинается ниже (y 68 против 42), секундомер справа с 360
-         (был с 382 — кнопка паузы расширила его контейнер на 22 px влево).
-         Плашка чуть ниже соседней и мельче её — деньги набираются реже опыта, и
-         в глаза первым должен бросаться он. Цвет золотой, как у монет на дороге. */
+      /* Цвет золотой, как у монет на дороге: по нему валюта и опознаётся. */
       #hud-money {
-        display: inline-block;
-        margin-top: 4px;
-        padding: 2px 9px;
-        border-radius: 6px;
-        background: rgba(0, 0, 0, 0.45);
-        font-size: 15px;
-        font-weight: 800;
-        letter-spacing: 0.5px;
         color: #ffcc33;
       }
 
@@ -772,9 +777,13 @@
     <div id="stage">
       <canvas id="game-canvas"></canvas>
       <div id="hud">
-        <div id="hud-exp"></div>
-        <!-- Деньги под опытом: валют две, и обе набираются по ходу забега -->
-        <div id="hud-money"></div>
+        <!-- Счётчики валют колонкой: деньги под опытом, обе набираются по ходу
+             забега. Каждая плашка — отдельный элемент: в неё летит подобранное,
+             и цель полёта меряется по её боксу (Hud.expAnchor / moneyAnchor). -->
+        <div id="hud-counters">
+          <div id="hud-exp"></div>
+          <div id="hud-money"></div>
+        </div>
         <div id="hud-wave">
           <div id="hud-wave-skull"></div>
           <div id="hud-wave-row">

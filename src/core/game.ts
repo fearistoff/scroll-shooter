@@ -1,4 +1,4 @@
-import { AxesHelper, Scene, WebGLRenderer } from 'three';
+import { AxesHelper, Scene, Vector3, WebGLRenderer } from 'three';
 import { CONFIG } from '../config';
 import { BarrelField } from '../entities/barrels';
 import { BonusSlot } from '../entities/bonusSlot';
@@ -13,7 +13,7 @@ import { Squad } from '../entities/squad';
 import { Hud } from '../ui/hud';
 import { LabelLayer } from '../ui/labels';
 import { Screens } from '../ui/screens';
-import { createGameCamera } from '../world/camera';
+import { createGameCamera, screenToWorld } from '../world/camera';
 import { World } from '../world/world';
 import { PointerInput } from './input';
 import { GameLoop } from './loop';
@@ -74,6 +74,14 @@ export class Game {
 
   /** Сколько ещё длится сцена прощания. Тикает только в фазе 'dying'. */
   private deathLeft = 0;
+
+  /**
+   * Куда летит подобранное: мировые точки, которые проецируются в плашки
+   * счётчиков HUD. Пересчитываются каждый кадр (плашка ездит вместе с числом), но
+   * в одни и те же векторы — по кадру ничего не создаётся.
+   */
+  private readonly expTarget = new Vector3();
+  private readonly moneyTarget = new Vector3();
 
   /**
    * Пауза. НЕ фаза, а отдельный признак поверх неё, и по двум причинам.
@@ -251,6 +259,11 @@ export class Game {
     // экрана результата.
     this.resume();
 
+    // Летящее к счётчикам уже подобрано игроком: зачисляем до подсчёта итогов,
+    // иначе забег недосчитывался бы всего, что не долетело за pickupFlight.seconds.
+    this.crystals.flushPending(this.collectExp);
+    this.money.flushPending(this.collectMoney);
+
     const collected = this.run.exp;
     const earned = this.run.expEarned;
     this.meta.deposit(earned);
@@ -339,10 +352,11 @@ export class Game {
     // Мины после зомби: подход проверяется по их актуальным координатам.
     this.mines.update(dt);
     this.bullets.update(dt, this.tryHitAnything);
+    this.updatePickupTargets();
     // Кристаллы после пуль: выпавшие с только что убитого зомби едут сразу.
-    this.crystals.update(dt, this.squad.x, this.collectExp);
+    this.crystals.update(dt, this.squad.x, this.expTarget, this.collectExp);
     // Монеты — там же и по той же причине: выпадают в той же воронке смерти.
-    this.money.update(dt, this.squad.x, this.collectMoney);
+    this.money.update(dt, this.squad.x, this.moneyTarget, this.collectMoney);
     this.world.update(dt);
 
     this.hud.update({
@@ -378,6 +392,24 @@ export class Game {
     });
 
     this.checkRunEnd();
+  }
+
+  /**
+   * Цели полёта подобранного — плашки счётчиков EXP и денег.
+   *
+   * Мостик между интерфейсом и миром: HUD знает свои плашки только в пикселях
+   * холста, а пулу нужна мировая точка. Считается здесь, а не в пуле, потому что
+   * ни камеры, ни размеров холста, ни HUD пул не видит и видеть не должен.
+   */
+  private updatePickupTargets(): void {
+    const distance = CONFIG.pickupFlight.cameraDistance;
+    const width = this.viewport.cssWidth;
+    const height = this.viewport.cssHeight;
+    const exp = this.hud.expAnchor;
+    const money = this.hud.moneyAnchor;
+
+    screenToWorld(this.camera, exp.x, exp.y, width, height, distance, this.expTarget);
+    screenToWorld(this.camera, money.x, money.y, width, height, distance, this.moneyTarget);
   }
 
   /**
@@ -571,6 +603,7 @@ export class Game {
     window.removeEventListener('blur', this.onWindowBlur);
     document.removeEventListener('visibilitychange', this.onVisibilityChange);
     this.input.dispose();
+    this.hud.dispose();
     this.viewport.dispose();
     this.renderer.dispose();
   }
