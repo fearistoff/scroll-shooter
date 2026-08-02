@@ -29,7 +29,11 @@ export interface HudState {
   mines: number;
   minesArmed: number;
   crystals: number;
+  /** Монет денег на дороге — отладочный счётчик, как и кристаллы. */
+  coins: number;
   exp: number;
+  /** Собрано денег за забег — валюта магазина оружия. */
+  money: number;
   /** Секунды с начала забега — секундомер справа вверху. */
   elapsedSeconds: number;
   /** Номер волны, с 1. Волна сменяется после смерти босса. */
@@ -48,6 +52,7 @@ export interface HudState {
 
 export class Hud {
   private readonly expElement: HTMLElement | null;
+  private readonly moneyElement: HTMLElement | null;
   private readonly waveElement: HTMLElement | null;
   private readonly waveCountElement: HTMLElement | null;
   private readonly waveFillElement: HTMLElement | null;
@@ -70,6 +75,7 @@ export class Hud {
 
   /** Последние выведенные значения — DOM трогаем только при изменении. */
   private lastExp = '';
+  private lastMoney = '';
   private lastWaveCount = '';
   private lastWaveFill = -1;
   private lastSkull = '';
@@ -82,6 +88,7 @@ export class Hud {
 
   constructor() {
     this.expElement = document.querySelector<HTMLElement>('#hud-exp');
+    this.moneyElement = document.querySelector<HTMLElement>('#hud-money');
     this.waveElement = document.querySelector<HTMLElement>('#hud-wave');
     this.waveCountElement = document.querySelector<HTMLElement>('#hud-wave-count');
     this.waveFillElement = document.querySelector<HTMLElement>('#hud-wave-fill');
@@ -102,6 +109,9 @@ export class Hud {
     // в плашку лезло «EXP 330.72000000000065» — она распирала верхнюю строку и
     // налезала на полосу волны.
     this.setText(this.expElement, `EXP ${Math.floor(state.exp)}`, 'lastExp');
+    // Деньги под EXP: валют две, и обе набираются по ходу забега. Всегда целые,
+    // округлять нечего — находка округляется на выпадении (MoneyPool.dropFrom).
+    this.setText(this.moneyElement, `$ ${state.money}`, 'lastMoney');
     this.setText(this.timerElement, formatRunTime(state.elapsedSeconds), 'lastTimer');
     this.setText(this.waveNumberElement, `ВОЛНА ${state.wave}`, 'lastWaveNumber');
 
@@ -138,7 +148,7 @@ export class Hud {
       `отряд ${state.shooters}${hidden} · ${state.weapon}${specials} · ` +
       `зомби ${state.enemies}${big}${corpses} · убито ${state.killed} · пули ${state.bullets} · ` +
       `бочки ${state.barrels} (разбито ${state.barrelsBroken})${mines} · ` +
-      `кристаллы ${state.crystals}`;
+      `кристаллы ${state.crystals} · монеты ${state.coins}`;
     this.setText(this.debugElement, debug, 'lastDebug');
   }
 
@@ -147,6 +157,7 @@ export class Hud {
     text: string,
     cacheKey:
       | 'lastExp'
+      | 'lastMoney'
       | 'lastWaveCount'
       | 'lastSkull'
       | 'lastLayers'

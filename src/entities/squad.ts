@@ -18,6 +18,7 @@ import type { GateTarget } from './gates';
 import type { MineField } from './mines';
 import {
   isSpecialWeapon,
+  weaponBlastDamage,
   weaponDamage,
   weaponRange,
   WeaponState,
@@ -449,8 +450,11 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
       // именно ветку героя (у доп. стрелков ниже она своя).
       const damage = weaponDamage(heroWeapon, 'hero');
       const range = weaponRange(heroWeapon, 'hero');
+      // Урон взрыва идёт той же веткой прокачки, что и урон снаряда; у обычных
+      // стволов он нулевой, и снаряд остаётся обычным.
+      const blastDamage = weaponBlastDamage(heroWeapon, 'hero');
       for (let shot = 0; shot < heroShots; shot++) {
-        this.bullets.spawn(squadX, 0, damage, range, heroWeapon, aimX, aimZ);
+        this.bullets.spawn(squadX, 0, damage, range, heroWeapon, blastDamage, aimX, aimZ);
       }
     }
 
@@ -468,6 +472,9 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
       // неё ложится ветка прокачки стрелков — темп и дальность тоже её.
       const damage = weaponDamage(allyWeapon, 'ally') * CONFIG.formation.allyDamageFactor;
       const range = weaponRange(allyWeapon, 'ally');
+      // Доля от героя ложится и на взрыв: иначе граната союзника накрывала бы
+      // толпу полным уроном, и ослабление союзника обходилось бы одним стволом.
+      const blastDamage = weaponBlastDamage(allyWeapon, 'ally') * CONFIG.formation.allyDamageFactor;
       this.allyOffset(i);
       // Невидимые бойцы стреляют из последнего видимого ряда и по множителю из
       // конфига — это и есть «плотность огня растёт за потолком».
@@ -480,6 +487,7 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
           damage,
           range,
           allyWeapon,
+          blastDamage,
           aimX,
           aimZ,
         );

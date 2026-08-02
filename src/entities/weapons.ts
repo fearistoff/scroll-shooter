@@ -16,6 +16,11 @@ export interface WeaponStats {
   damage: number;
   /** Дальность полёта снаряда, units. */
   range: number;
+  /**
+   * Взрыв в точке попадания — круг того же вида, что у мины. Поля нет —
+   * снаряд обычный, урон достаётся только той цели, в которую он попал.
+   */
+  blast?: { radius: number; damage: number };
 }
 
 /**
@@ -80,6 +85,30 @@ export function weaponRange(id: WeaponId, kind: ShooterKind): number {
 }
 
 /**
+ * Радиус взрыва снаряда, 0 — снаряд не взрывается.
+ *
+ * Прокачка радиус НЕ трогает: rangeMultiplier — про то, как далеко боец
+ * достаёт, а не про то, сколько накрывает один снаряд. Растущая с прокачкой
+ * зона поражения умножалась бы на растущий темп огня, и особое оружие ушло бы в
+ * отрыв от всей таблицы.
+ */
+export function weaponBlastRadius(id: WeaponId): number {
+  return getWeapon(id).blast?.radius ?? 0;
+}
+
+/**
+ * Урон взрыва с учётом прокачки. 0 — снаряд не взрывается.
+ *
+ * Качается тем же damageMultiplier, что и урон снаряда: у гранатомёта взрыв —
+ * часть выстрела, а не отдельный источник, и прокачка урона не должна тихо
+ * переставать работать на половине его убойности.
+ */
+export function weaponBlastDamage(id: WeaponId, kind: ShooterKind): number {
+  const blast = getWeapon(id).blast;
+  return blast === undefined ? 0 : blast.damage * multipliersOf(kind).damageMultiplier;
+}
+
+/**
  * Особое оружие (ТЗ раздел 6) — то, чего нет в цепочке прогрессии стрелкового.
  *
  * Признак выводится из ствола, а не хранится флагом на бойце: иначе флаг и
@@ -93,6 +122,110 @@ export function isSpecialWeapon(id: WeaponId): boolean {
 export function randomSpecialWeapon(): WeaponId {
   const list = CONFIG.weapons.special as WeaponId[];
   return list[Math.floor(Math.random() * list.length)] ?? 'flamethrower';
+}
+
+/** Человеческие названия стволов — для магазина и отладочной строки. */
+export const WEAPON_NAMES: Record<WeaponId, string> = {
+  pistol: 'Пистолет',
+  miniSmg: 'Пистолет-пулемёт',
+  rifle: 'Автомат',
+  machineGun: 'Пулемёт',
+  flamethrower: 'Огнемёт',
+  grenadeLauncher: 'Гранатомёт',
+};
+
+/** Позиция в магазине: что открывается и за сколько. */
+export interface ShopWeapon {
+  id: WeaponId;
+  price: number;
+}
+
+/**
+ * Список магазина (CONFIG.shop.weapons) с типом WeaponId вместо строки.
+ *
+ * Приведение здесь, в единственном месте: конфиг — обычный литерал, и вывести
+ * из него WeaponId нельзя, а расползшиеся по коду `as WeaponId` перестали бы
+ * ловить опечатку в ключе.
+ */
+export function shopWeapons(): readonly ShopWeapon[] {
+  return CONFIG.shop.weapons as readonly ShopWeapon[];
+}
+
+/**
+ * Обёртка нарисованной иконки. Высоту задаёт CSS, ширину — viewBox: чем длиннее
+ * ствол, тем шире иконка, и разница в длине видна ещё до того, как разглядишь
+ * силуэт. Цвет наследуется от подписи (`currentColor`), поэтому иконка тускнеет
+ * вместе с ней, если у варианта задан свой цвет.
+ */
+function svgIcon(width: number, body: string): string {
+  return (
+    `<svg viewBox="0 0 ${width} 16" fill="currentColor"` +
+    ` xmlns="http://www.w3.org/2000/svg">${body}</svg>`
+  );
+}
+
+/**
+ * Иконки оружия — по ним видно, что лежит в бочке и что продаётся в магазине.
+ *
+ * Стрелковые ступени нарисованы, а не набраны эмодзи: пистолетный эмодзи в
+ * Unicode ровно один (и на Apple он вообще водяной), так что пистолет-пулемёт,
+ * автомат и пулемёт им не различить. Силуэты разведены по трём признакам,
+ * читаемым на 16 пикселях: длина ствола, форма магазина и сошки.
+ *   пистолет     — короткий ствол, скошенная рукоять, без приклада;
+ *   пистолет-пулемёт — короткий, магазин в рукояти, приклад сложен;
+ *   автомат      — длиннее, изогнутый магазин и приклад;
+ *   пулемёт      — самый длинный, рёбра на стволе, короб снизу и сошки.
+ * Особое оружие остаётся эмодзи: огонь и взрыв они передают лучше рисунка.
+ */
+const WEAPON_ICONS: Partial<Record<WeaponId, string>> = {
+  // Пистолет в бочках не выпадает (он стартовый), иконка нужна магазину: там он
+  // стоит первой строкой цепочки, и пустое место вместо ствола читалось бы как
+  // сбой, а не как «уже есть».
+  pistol: svgIcon(
+    16,
+    '<rect x="1.6" y="5.4" width="10.4" height="3.4" rx=".7"/>' +
+      '<rect x="11.6" y="6" width="3.2" height="1.6" rx=".5"/>' +
+      '<rect x="4.2" y="4.1" width="3" height="1.4" rx=".5"/>' +
+      '<path d="M3.1 8.7h4l-1.5 5.6H2.2z"/>',
+  ),
+  miniSmg: svgIcon(
+    22,
+    '<rect x="1.4" y="6.6" width="3.2" height="1.4" rx=".5"/>' +
+      '<rect x="4.2" y="4.9" width="10.6" height="4.2" rx=".8"/>' +
+      '<rect x="6" y="3.4" width="3.6" height="1.5" rx=".5"/>' +
+      '<rect x="14.4" y="6.3" width="6.6" height="1.9" rx=".6"/>' +
+      '<rect x="17.4" y="4.5" width="1.3" height="1.8"/>' +
+      '<path d="M6.9 9.1h4.2l-.8 5.9H6.2z"/>',
+  ),
+  rifle: svgIcon(
+    30,
+    '<path d="M1.6 6.3 8 5.5v4.1l-5.6.5z"/>' +
+      '<rect x="7.6" y="4.9" width="11" height="4.3" rx=".8"/>' +
+      '<rect x="17" y="7.7" width="6.2" height="2" rx=".7"/>' +
+      '<rect x="18.6" y="5.9" width="10.4" height="1.8" rx=".6"/>' +
+      '<rect x="25.8" y="3.8" width="1.5" height="2.2"/>' +
+      '<path d="M9.8 9.2h3.2l-1 4.4H8.9z"/>' +
+      '<path d="M14.4 9.2h4.4l-.4 3.3q-.3 2.2-2 2.2t-2.1-2.2z"/>',
+  ),
+  machineGun: svgIcon(
+    34,
+    '<path d="M1.4 5.3 7 4.8v4.9l-5.6.4z"/>' +
+      '<rect x="6.6" y="4.3" width="13.4" height="5.3" rx=".9"/>' +
+      '<rect x="7.9" y="9.5" width="6.6" height="4.5" rx=".7"/>' +
+      '<path d="M16 9.7h3.3l-.9 3.5h-2.9z"/>' +
+      '<rect x="19.4" y="5.5" width="13.2" height="2.6" rx=".7"/>' +
+      '<rect x="22.6" y="3.5" width="1.4" height="2.1"/>' +
+      '<rect x="25.6" y="3.5" width="1.4" height="2.1"/>' +
+      '<rect x="28.6" y="3.5" width="1.4" height="2.1"/>' +
+      '<path d="M25.2 8.1h1.6l3.2 6.7h-1.6L26 9.7l-2.4 5.1h-1.6z"/>',
+  ),
+  flamethrower: '🔥',
+  grenadeLauncher: '💥',
+};
+
+/** Готовая разметка иконки ствола. null — для этого ключа рисунка нет. */
+export function weaponIcon(id: WeaponId): string | null {
+  return WEAPON_ICONS[id] ?? null;
 }
 
 export interface BulletStyle {

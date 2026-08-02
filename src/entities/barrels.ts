@@ -5,10 +5,25 @@ import type { RunState } from '../core/run';
 import type { BonusSlot } from './bonusSlot';
 import type { CrystalPool } from './crystals';
 import type { SquadTarget } from './enemies';
-import { randomSpecialWeapon, type WeaponId } from './weapons';
+import { randomSpecialWeapon, weaponIcon, type WeaponId } from './weapons';
 
 /** Что лежит в бочке (ТЗ раздел 7). */
 export type BarrelContent = 'weapon' | 'shooters' | 'special' | 'mine';
+
+/**
+ * Магазин со стороны бочек: разрешено ли этому стволу вообще появляться.
+ *
+ * Узкий интерфейс у потребителя, как SquadTarget и BonusReceiver: бочки не
+ * должны знать ни про деньги, ни про MetaProgress — только про запрет.
+ *
+ * Купленное оружие — ВТОРОЙ замок поверх разблокировки по времени
+ * (CONFIG.run.unlocks.weapons), а не замена ей: ствол должен быть и куплен
+ * между забегами, и дожит до своей секунды внутри забега.
+ */
+export interface WeaponUnlocks {
+  /** true — этот ствол куплен и может выпадать. Пистолет открыт всегда. */
+  isWeaponUnlocked(id: WeaponId): boolean;
+}
 
 /** Отряд, который может получить содержимое бочки. */
 export interface BonusReceiver {
@@ -35,67 +50,6 @@ export interface BonusReceiver {
 }
 
 /**
- * Обёртка нарисованной иконки. Высоту задаёт CSS, ширину — viewBox: чем длиннее
- * ствол, тем шире иконка, и разница в длине видна ещё до того, как разглядишь
- * силуэт. Цвет наследуется от подписи (`currentColor`), поэтому иконка тускнеет
- * вместе с ней, если у варианта задан свой цвет.
- */
-function svgIcon(width: number, body: string): string {
-  return (
-    `<svg viewBox="0 0 ${width} 16" fill="currentColor"` +
-    ` xmlns="http://www.w3.org/2000/svg">${body}</svg>`
-  );
-}
-
-/**
- * Иконки оружия — по ним видно, что именно лежит в бочке.
- *
- * Стрелковые ступени нарисованы, а не набраны эмодзи: пистолетный эмодзи в
- * Unicode ровно один (и на Apple он вообще водяной), так что мини-автомат,
- * автомат и пулемёт им не различить. Силуэты разведены по трём признакам,
- * читаемым на 16 пикселях: длина ствола, форма магазина и сошки.
- *   мини-автомат — короткий, магазин в рукояти, приклад сложен;
- *   автомат      — длиннее, изогнутый магазин и приклад;
- *   пулемёт      — самый длинный, рёбра на стволе, короб снизу и сошки.
- * Особое оружие остаётся эмодзи: огонь и взрыв они передают лучше рисунка.
- */
-const WEAPON_ICONS: Partial<Record<WeaponId, string>> = {
-  miniSmg: svgIcon(
-    22,
-    '<rect x="1.4" y="6.6" width="3.2" height="1.4" rx=".5"/>' +
-      '<rect x="4.2" y="4.9" width="10.6" height="4.2" rx=".8"/>' +
-      '<rect x="6" y="3.4" width="3.6" height="1.5" rx=".5"/>' +
-      '<rect x="14.4" y="6.3" width="6.6" height="1.9" rx=".6"/>' +
-      '<rect x="17.4" y="4.5" width="1.3" height="1.8"/>' +
-      '<path d="M6.9 9.1h4.2l-.8 5.9H6.2z"/>',
-  ),
-  rifle: svgIcon(
-    30,
-    '<path d="M1.6 6.3 8 5.5v4.1l-5.6.5z"/>' +
-      '<rect x="7.6" y="4.9" width="11" height="4.3" rx=".8"/>' +
-      '<rect x="17" y="7.7" width="6.2" height="2" rx=".7"/>' +
-      '<rect x="18.6" y="5.9" width="10.4" height="1.8" rx=".6"/>' +
-      '<rect x="25.8" y="3.8" width="1.5" height="2.2"/>' +
-      '<path d="M9.8 9.2h3.2l-1 4.4H8.9z"/>' +
-      '<path d="M14.4 9.2h4.4l-.4 3.3q-.3 2.2-2 2.2t-2.1-2.2z"/>',
-  ),
-  machineGun: svgIcon(
-    34,
-    '<path d="M1.4 5.3 7 4.8v4.9l-5.6.4z"/>' +
-      '<rect x="6.6" y="4.3" width="13.4" height="5.3" rx=".9"/>' +
-      '<rect x="7.9" y="9.5" width="6.6" height="4.5" rx=".7"/>' +
-      '<path d="M16 9.7h3.3l-.9 3.5h-2.9z"/>' +
-      '<rect x="19.4" y="5.5" width="13.2" height="2.6" rx=".7"/>' +
-      '<rect x="22.6" y="3.5" width="1.4" height="2.1"/>' +
-      '<rect x="25.6" y="3.5" width="1.4" height="2.1"/>' +
-      '<rect x="28.6" y="3.5" width="1.4" height="2.1"/>' +
-      '<path d="M25.2 8.1h1.6l3.2 6.7h-1.6L26 9.7l-2.4 5.1h-1.6z"/>',
-  ),
-  flamethrower: '🔥',
-  grenadeLauncher: '💥',
-};
-
-/**
  * Иконка содержимого над бочкой (ТЗ раздел 7).
  *
  * weaponTier — ступень стрелкового, которую бочка выдаст. Она считается на
@@ -113,10 +67,10 @@ function contentIcon(
   weaponTier: WeaponId | null,
 ): string {
   if (content === 'weapon') {
-    return (weaponTier !== null ? WEAPON_ICONS[weaponTier] : undefined) ?? '🔫';
+    return (weaponTier !== null ? weaponIcon(weaponTier) : null) ?? '🔫';
   }
   if (content === 'mine') return '💣';
-  if (content === 'special') return (special !== null ? WEAPON_ICONS[special] : undefined) ?? '✨';
+  if (content === 'special') return (special !== null ? weaponIcon(special) : null) ?? '✨';
 
   const { iconFigureLimit } = CONFIG.barrels.content;
   if (amount <= iconFigureLimit) return '🧍'.repeat(Math.max(1, amount));
@@ -173,6 +127,7 @@ export class BarrelField {
     private readonly crystals: CrystalPool,
     private readonly run: RunState,
     private readonly bonusSlot: BonusSlot,
+    private readonly shop: WeaponUnlocks,
   ) {
     const { size, poolSize, colors } = CONFIG.barrels;
 
@@ -303,17 +258,22 @@ export class BarrelField {
     return chain[current + 1] ?? null;
   }
 
-  /** Разрешено ли особое оружие id на этой секунде забега. */
-  private isSpecialUnlocked(id: WeaponId): boolean {
+  /**
+   * Разрешён ли ствол прямо сейчас: куплен в магазине И дожил до своей секунды
+   * забега. Оба замка сходятся здесь, в одной функции, — иначе пришлось бы
+   * помнить про покупку в каждой из трёх точек выбора содержимого.
+   */
+  private isWeaponAllowed(id: WeaponId): boolean {
+    if (!this.shop.isWeaponUnlocked(id)) return false;
     const unlocks = CONFIG.run.unlocks.weapons as Record<string, number | undefined>;
     const at = unlocks[id];
     return at === undefined || this.run.isUnlocked(at);
   }
 
-  /** Случайное особое оружие из уже разблокированных. */
+  /** Случайное особое оружие из уже разрешённых. */
   private randomSpecial(): WeaponId {
     const available = (CONFIG.weapons.special as WeaponId[]).filter((id) =>
-      this.isSpecialUnlocked(id),
+      this.isWeaponAllowed(id),
     );
     if (available.length === 0) return randomSpecialWeapon();
     return available[Math.floor(Math.random() * available.length)]!;
@@ -329,11 +289,16 @@ export class BarrelField {
    *
    * БЕСПОЛЕЗНЫЕ бочки не появляются вовсе:
    *   оружие  — отряд уже на последней ступени (nextTier === null) либо следующая
-   *             ступень ещё закрыта по времени. Бочка обещает конкретный ствол, и
-   *             обещание, которое нечем исполнить, лучше не показывать.
+   *             ступень ещё не куплена в магазине / закрыта по времени. Бочка
+   *             обещает конкретный ствол, и обещание, которое нечем исполнить,
+   *             лучше не показывать.
    *   стрелки — отряд уже упёрся в formation.maxShooters, добавить некого.
    * Проверка стоит на спавне, а не на вскрытии: бесполезную бочку игрок иначе
    * расстреливал бы впустую, а патроны и время в crowd-shooter и есть ресурс.
+   *
+   * НА СТАРТЕ ИГРЫ, пока не куплен ни один ствол, бочек с оружием и особым не
+   * бывает вовсе — остаются стрелки и мины. Так и задумано: пистолет один до
+   * первой покупки в магазине.
    */
   private randomContent(): BarrelContent | null {
     const { weaponWeight, shootersWeight, specialWeight, mineWeight } = CONFIG.barrels.content;
@@ -341,11 +306,7 @@ export class BarrelField {
 
     let total = 0;
     const nextTier = this.nextWeaponTier();
-    const weaponUnlocks = unlocks.weapons as Record<string, number | undefined>;
-    const weaponOk =
-      nextTier !== null &&
-      weaponWeight > 0 &&
-      this.run.isUnlocked(weaponUnlocks[nextTier] ?? 0);
+    const weaponOk = nextTier !== null && weaponWeight > 0 && this.isWeaponAllowed(nextTier);
     if (weaponOk) total += weaponWeight;
 
     const squadHasRoom = this.squad.shooterCount < CONFIG.formation.maxShooters;
@@ -354,7 +315,7 @@ export class BarrelField {
     if (shootersOk) total += shootersWeight;
 
     const specialOk =
-      specialWeight > 0 && (CONFIG.weapons.special as WeaponId[]).some((id) => this.isSpecialUnlocked(id));
+      specialWeight > 0 && (CONFIG.weapons.special as WeaponId[]).some((id) => this.isWeaponAllowed(id));
     if (specialOk) total += specialWeight;
 
     const mineOk = mineWeight > 0 && this.run.isUnlocked(unlocks.barrelMine);

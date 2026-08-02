@@ -7,6 +7,14 @@ import {
   type UpgradeId,
   type UpgradeTrackId,
 } from '../core/meta';
+import {
+  getWeapon,
+  isSpecialWeapon,
+  shopWeapons,
+  weaponIcon,
+  WEAPON_NAMES,
+  type WeaponId,
+} from '../entities/weapons';
 import { formatRunTime } from './time';
 
 /** Что экраны умеют сообщать наружу. */
@@ -15,6 +23,18 @@ export interface ScreenHandlers {
   openUpgrade(): void;
   /** Кнопка «Начать забег» — есть и на экране прокачки, и на экране результата. */
   startRun(): void;
+}
+
+/** Итог забега для экрана результата. */
+export interface RunResult {
+  /** Собрано кристаллов, без множителя прокачки — то же число, что было в HUD. */
+  collectedExp: number;
+  /** Сколько EXP ушло в банк: собранное × множитель. */
+  earnedExp: number;
+  /** Собрано денег. Множителя у них нет, поэтому число одно. */
+  money: number;
+  elapsedSeconds: number;
+  wave: number;
 }
 
 interface UpgradeRow {
@@ -28,7 +48,27 @@ interface UpgradeRow {
   batch: HTMLButtonElement;
 }
 
-/** Вкладка таббара: кнопка вверху и её список улучшений. */
+/** Строка магазина оружия. Цена одна и навсегда, поэтому кнопка одна. */
+interface WeaponRow {
+  root: HTMLElement;
+  buy: HTMLButtonElement;
+}
+
+/**
+ * Вкладки экрана прокачки. К трём веткам улучшений (UPGRADE_TRACKS) добавлен
+ * магазин оружия: он тоже мета-прогрессия, только за деньги и разовыми
+ * покупками, поэтому живёт на том же экране, а не на своём.
+ */
+type ScreenTrackId = UpgradeTrackId | 'weapons';
+
+/**
+ * Порядок вкладок. Магазин стоит между стрелками и прочим: он про оружие, то
+ * есть ближе к боевым веткам, чем к экономике, но покупается реже них —
+ * открытый ствол работает уже навсегда.
+ */
+const TRACK_ORDER: readonly ScreenTrackId[] = ['hero', 'ally', 'weapons', 'common'];
+
+/** Вкладка таббара: кнопка вверху и её список. */
 interface TrackView {
   tab: HTMLButtonElement;
   group: HTMLElement;
@@ -40,9 +80,9 @@ interface TrackView {
  * DOM-оверлей поверх холста, как HUD и подписи: текст резкий на любом
  * devicePixelRatio, кнопки работают из коробки и ничего не стоят по кадру.
  *
- * Вкладки и строки улучшений собираются из UPGRADE_TRACKS, а не размечаются
+ * Вкладки и строки собираются из UPGRADE_TRACKS и CONFIG.shop, а не размечаются
  * руками, — иначе список в HTML и список в коде разъезжались бы при добавлении
- * улучшения или ветки.
+ * улучшения, ветки или ствола.
  */
 export class Screens {
   private readonly resultElement: HTMLElement | null;
@@ -51,17 +91,20 @@ export class Screens {
   private readonly resultTime: HTMLElement | null;
   private readonly resultExpCaption: HTMLElement | null;
   private readonly resultRunExp: HTMLElement | null;
+  private readonly resultRunMoney: HTMLElement | null;
   private readonly resultBank: HTMLElement | null;
   private readonly upgradeBank: HTMLElement | null;
+  private readonly upgradeMoney: HTMLElement | null;
 
   private readonly rows = new Map<UpgradeId, UpgradeRow>();
-  private readonly tracks = new Map<UpgradeTrackId, TrackView>();
+  private readonly weaponRows = new Map<WeaponId, WeaponRow>();
+  private readonly tracks = new Map<ScreenTrackId, TrackView>();
 
   /**
    * Открытая вкладка. Держится между заходами на экран: игрок, качающий отряд,
    * не должен каждый забег заново переключаться со «своей» вкладки.
    */
-  private activeTrack: UpgradeTrackId = UPGRADE_TRACKS[0]!.id;
+  private activeTrack: ScreenTrackId = TRACK_ORDER[0]!;
 
   constructor(
     private readonly meta: MetaProgress,
@@ -73,8 +116,10 @@ export class Screens {
     this.resultTime = document.querySelector<HTMLElement>('#result-time');
     this.resultExpCaption = document.querySelector<HTMLElement>('#result-exp-caption');
     this.resultRunExp = document.querySelector<HTMLElement>('#result-run-exp');
+    this.resultRunMoney = document.querySelector<HTMLElement>('#result-run-money');
     this.resultBank = document.querySelector<HTMLElement>('#result-bank');
     this.upgradeBank = document.querySelector<HTMLElement>('#upgrade-bank');
+    this.upgradeMoney = document.querySelector<HTMLElement>('#upgrade-money');
 
     document
       .querySelector<HTMLButtonElement>('#result-continue')
@@ -107,11 +152,11 @@ export class Screens {
    * которой игрок дошёл, и она вынесена в заголовок вместо слова «Поражение».
    * Время — тот же счётчик, что и в секундомере HUD.
    */
-  showResult(collectedExp: number, earnedExp: number, elapsedSeconds: number, wave: number): void {
-    if (this.resultTitle !== null) this.resultTitle.textContent = `Волна ${wave}`;
+  showResult(result: RunResult): void {
+    if (this.resultTitle !== null) this.resultTitle.textContent = `Волна ${result.wave}`;
     if (this.resultTime !== null) {
       // Причина конца забега в строке, а не в заголовке: заголовок занят счётом.
-      this.resultTime.textContent = `Герой погиб · время ${formatRunTime(elapsedSeconds)}`;
+      this.resultTime.textContent = `Герой погиб · время ${formatRunTime(result.elapsedSeconds)}`;
     }
 
     // Множитель опыта применяется только здесь, поэтому число на экране больше
@@ -122,10 +167,17 @@ export class Screens {
       this.resultExpCaption.textContent =
         multiplier === 1
           ? 'Опыт за забег'
-          : `Опыт за забег · ${Math.floor(collectedExp)} × ${multiplier.toFixed(2)}`;
+          : `Опыт за забег · ${Math.floor(result.collectedExp)} × ${multiplier.toFixed(2)}`;
     }
-    if (this.resultRunExp !== null) this.resultRunExp.textContent = `+${Math.floor(earnedExp)} EXP`;
-    if (this.resultBank !== null) this.resultBank.textContent = `Всего: ${this.meta.bankDisplay} EXP`;
+    if (this.resultRunExp !== null) {
+      this.resultRunExp.textContent = `+${Math.floor(result.earnedExp)} EXP`;
+    }
+    // Деньги показываются всегда, даже нулевые: пустая строка выглядела бы
+    // поломкой счётчика, а ноль честно говорит, что монет за забег не выпало.
+    if (this.resultRunMoney !== null) this.resultRunMoney.textContent = `+${result.money} $`;
+    if (this.resultBank !== null) {
+      this.resultBank.textContent = `Всего: ${this.meta.bankDisplay} EXP · ${this.meta.money} $`;
+    }
 
     this.toggle(this.resultElement, true);
     this.toggle(this.upgradeElement, false);
@@ -145,32 +197,38 @@ export class Screens {
   }
 
   /**
-   * Собирает таббар и по списку улучшений на каждую вкладку.
+   * Собирает таббар и списки вкладок.
    *
    * Списки всех вкладок лежат в DOM одновременно, переключение — только показ
-   * нужного. Пересобирать разметку на каждый клик незачем: строк меньше десятка,
-   * зато так не теряется состояние кнопок и не мигает раскладка.
+   * нужного. Пересобирать разметку на каждый клик незачем: строк меньше двух
+   * десятков, зато так не теряется состояние кнопок и не мигает раскладка.
    */
   private buildRows(): void {
     const tabBar = document.querySelector<HTMLElement>('#upgrade-tabs');
     const list = document.querySelector<HTMLElement>('#upgrade-list');
     if (tabBar === null || list === null) return;
 
-    for (const track of UPGRADE_TRACKS) {
+    for (const id of TRACK_ORDER) {
+      const track = UPGRADE_TRACKS.find((entry) => entry.id === id) ?? null;
+
       const tab = document.createElement('button');
       tab.className = 'upgrade-tab';
       tab.type = 'button';
-      tab.textContent = track.title;
-      tab.addEventListener('click', () => this.selectTrack(track.id));
+      tab.textContent = track?.title ?? 'Оружие';
+      tab.addEventListener('click', () => this.selectTrack(id));
       tabBar.appendChild(tab);
 
       const group = document.createElement('div');
       group.className = 'upgrade-group';
       list.appendChild(group);
 
-      for (const id of track.ids) group.appendChild(this.buildRow(id));
+      if (track !== null) {
+        for (const upgradeId of track.ids) group.appendChild(this.buildRow(upgradeId));
+      } else {
+        for (const element of this.buildWeaponRows()) group.appendChild(element);
+      }
 
-      this.tracks.set(track.id, { tab, group });
+      this.tracks.set(id, { tab, group });
     }
 
     this.selectTrack(this.activeTrack);
@@ -217,8 +275,95 @@ export class Screens {
     return row;
   }
 
+  /**
+   * Строки магазина: сначала пистолет, затем цепочка покупок.
+   *
+   * Пистолет показан, хотя купить его нельзя: он начало цепочки, и без него
+   * список открывается пистолетом-пулемётом, из чего не видно, что стартовый ствол
+   * вообще есть и почему он не продаётся.
+   */
+  private buildWeaponRows(): HTMLElement[] {
+    const starting = CONFIG.player.startWeapon as WeaponId;
+    const entries: Array<{ id: WeaponId; price: number | null }> = [
+      { id: starting, price: null },
+      ...shopWeapons().map((entry) => ({ id: entry.id, price: entry.price })),
+    ];
+
+    return entries.map((entry) => this.buildWeaponRow(entry.id, entry.price));
+  }
+
+  /** Одна строка магазина. Цена null — стартовый ствол, он открыт всегда. */
+  private buildWeaponRow(id: WeaponId, price: number | null): HTMLElement {
+    const row = document.createElement('div');
+    row.className = 'weapon';
+
+    const icon = document.createElement('div');
+    icon.className = 'weapon__icon';
+    // Разметка иконки своя (SVG или эмодзи), поэтому innerHTML, а не textContent.
+    // Источник — константа в коде, чужого текста здесь не бывает.
+    icon.innerHTML = weaponIcon(id) ?? '🔫';
+
+    const name = document.createElement('div');
+    name.className = 'weapon__name';
+    name.textContent = WEAPON_NAMES[id];
+
+    // «Особое» — меткой у названия, а не словом в строке характеристик: там оно
+    // занимало девять знаков, и строка переносилась на вторую строку, отчего
+    // ряды огнемёта и гранатомёта были выше остальных. ЗАМЕРЕНО: колонка отдаёт
+    // 185 px, строка без метки укладывается в них, с меткой — нет.
+    if (isSpecialWeapon(id)) {
+      const badge = document.createElement('span');
+      badge.className = 'weapon__badge';
+      badge.textContent = 'особое';
+      name.appendChild(badge);
+    }
+
+    const stats = document.createElement('div');
+    stats.className = 'weapon__stats';
+    stats.textContent = Screens.weaponStats(id);
+
+    const buy = document.createElement('button');
+    buy.className = 'weapon__buy';
+    buy.type = 'button';
+    if (price !== null) {
+      buy.addEventListener('click', () => {
+        this.meta.buyWeapon(id);
+        this.refreshUpgrades();
+      });
+    }
+
+    row.append(icon, name, stats, buy);
+    this.weaponRows.set(id, { root: row, buy });
+    return row;
+  }
+
+  /**
+   * Строка характеристик ствола: базовые числа из таблицы, БЕЗ прокачки.
+   *
+   * Без множителей намеренно: наборов их два (герой и стрелки), и показать один
+   * значило бы соврать про второй. Сравнивать стволы между собой это не мешает —
+   * множитель у обоих один и тот же.
+   */
+  private static weaponStats(id: WeaponId): string {
+    const { damage, fireRate } = getWeapon(id);
+    const dps = (damage * fireRate).toFixed(1);
+    return `урон ${Screens.trim(damage)} · темп ${Screens.trim(fireRate)}/с · DPS ${dps}`;
+  }
+
+  /**
+   * Число без хвоста нулей: 0.6667 → «0.67», 15 → «15».
+   *
+   * В таблице оружия есть значения, подобранные под ровный интервал между
+   * выстрелами (гранатомёт, 0.6667 = раз в полторы секунды). Как есть они в
+   * строку не годятся: четыре знака после запятой читаются как сбой вёрстки, а
+   * toFixed(2) на целых дорисовал бы «15.00».
+   */
+  private static trim(value: number): string {
+    return String(+value.toFixed(2));
+  }
+
   /** Переключает вкладку таббара. */
-  private selectTrack(id: UpgradeTrackId): void {
+  private selectTrack(id: ScreenTrackId): void {
     this.activeTrack = id;
 
     for (const [trackId, view] of this.tracks) {
@@ -232,6 +377,9 @@ export class Screens {
   private refreshUpgrades(): void {
     if (this.upgradeBank !== null) {
       this.upgradeBank.textContent = `${this.meta.bankDisplay} EXP`;
+    }
+    if (this.upgradeMoney !== null) {
+      this.upgradeMoney.textContent = `${this.meta.money} $`;
     }
 
     for (const track of UPGRADE_TRACKS) {
@@ -262,6 +410,41 @@ export class Screens {
 
       this.tracks.get(track.id)?.tab.classList.toggle('upgrade-tab--ready', ready);
     }
+
+    this.refreshWeapons();
+  }
+
+  /**
+   * Магазин: у каждой строки ровно три состояния — открыто, продаётся сейчас,
+   * заперто предыдущим стволом. Последнее не прячется, а показывается тусклым с
+   * ценой: игрок должен видеть всю цепочку и её стоимость наперёд.
+   */
+  private refreshWeapons(): void {
+    const next = this.meta.nextWeapon();
+    let ready = false;
+
+    for (const [id, row] of this.weaponRows) {
+      const owned = this.meta.isWeaponUnlocked(id);
+      const onSale = next !== null && next.id === id;
+      const price = this.meta.weaponPrice(id);
+      const canBuy = this.meta.canBuyWeapon(id);
+      ready ||= canBuy;
+
+      row.root.classList.toggle('weapon--owned', owned);
+      row.root.classList.toggle('weapon--locked', !owned && !onSale);
+
+      if (owned) {
+        // Стартовый ствол цены не имеет — у него и «куплено» не по адресу.
+        row.buy.textContent = price === null ? 'старт' : 'куплено';
+      } else {
+        // Запертому — замок вместо кнопки: цена та же, но нажать нельзя, пока не
+        // куплен предыдущий.
+        row.buy.textContent = onSale ? `${price} $` : `🔒 ${price} $`;
+      }
+      row.buy.disabled = !canBuy;
+    }
+
+    this.tracks.get('weapons')?.tab.classList.toggle('upgrade-tab--ready', ready);
   }
 
   /**

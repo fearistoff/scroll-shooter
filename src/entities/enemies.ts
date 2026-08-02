@@ -12,6 +12,7 @@ import { segmentHitsCircle, segmentPassesCircle } from '../core/collision';
 import type { RunState, ZombieKind } from '../core/run';
 import type { CrystalPool } from './crystals';
 import { makeFlashColor } from './flash';
+import type { MoneyPool } from './money';
 
 /**
  * То, по чему бьют зомби. В слое 3 это был один герой, теперь весь отряд,
@@ -145,6 +146,7 @@ export class EnemyPool {
     scene: Scene,
     private readonly run: RunState,
     private readonly crystals: CrystalPool,
+    private readonly money: MoneyPool,
   ) {
     const { normal, big, poolSize } = CONFIG.enemies;
 
@@ -632,8 +634,13 @@ export class EnemyPool {
     if (this.hp[i]! > 0) return false;
 
     // Кристалл падает там, где зомби погиб; крупный стоит дороже (ТЗ раздел 9).
-    const value = this.isBig[i] === 1 ? CONFIG.exp.perBigZombie : CONFIG.exp.perNormalZombie;
+    const big = this.isBig[i] === 1;
+    const value = big ? CONFIG.exp.perBigZombie : CONFIG.exp.perNormalZombie;
     this.crystals.spawn(this.posX[i]!, this.posZ[i]!, value);
+
+    // Деньги — там же, но не с каждого: бросок вероятности внутри воронки.
+    // Зомби единственный их источник, поэтому вызов стоит только здесь и у босса.
+    this.money.dropFrom(this.posX[i]!, this.posZ[i]!, big ? 'big' : 'normal');
 
     // Слот не освобождается: зомби становится телом и уезжает с дорогой.
     this.kill(i);

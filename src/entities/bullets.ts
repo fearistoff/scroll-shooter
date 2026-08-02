@@ -10,7 +10,7 @@ import {
   type Scene,
 } from 'three';
 import { CONFIG } from '../config';
-import { bulletStyleFor, type WeaponId } from './weapons';
+import { bulletStyleFor, weaponBlastRadius, type WeaponId } from './weapons';
 
 /**
  * Проверка попадания на ОТРЕЗКЕ полёта пули за один шаг.
@@ -19,6 +19,10 @@ import { bulletStyleFor, type WeaponId } from './weapons';
  * radius — фактический радиус снаряда на этом шаге (у расширяющегося пламени он
  * растёт по пути), pierce — снаряд пробивающий, цель его не гасит и урон нужно
  * раздать всем задетым.
+ *
+ * blastRadius/blastDamage — взрыв, который снаряд оставляет в точке попадания
+ * (граната). При blastRadius 0 снаряд обычный. Взрыв разбирает потребитель, а не
+ * пул: пул не знает ни одной цели, и знать не должен.
  *
  * Возвращает true, если пуля должна погаснуть. У пробивающего снаряда это НЕ
  * «попал»: он гаснет только о то, что физически держит огонь (стена ворот).
@@ -31,6 +35,8 @@ export type BulletHitTest = (
   damage: number,
   radius: number,
   pierce: boolean,
+  blastRadius: number,
+  blastDamage: number,
 ) => boolean;
 
 /** Ось поворота пули по направлению полёта. */
@@ -79,6 +85,13 @@ export class BulletPool {
   private readonly spread: Float32Array;
   /** Пробивающий снаряд: цель его не гасит. 1/0 вместо boolean — тот же пул. */
   private readonly pierce: Uint8Array;
+  /**
+   * Взрыв в точке попадания: радиус 0 — снаряд обычный. Хранится у снаряда, а не
+   * берётся по оружию в момент попадания, по той же причине, что и урон: боец
+   * может сменить ствол, пока граната летит.
+   */
+  private readonly blastRadius: Float32Array;
+  private readonly blastDamage: Float32Array;
 
   private count = 0;
 
@@ -117,6 +130,8 @@ export class BulletPool {
     this.lengthScale = new Float32Array(size);
     this.spread = new Float32Array(size);
     this.pierce = new Uint8Array(size);
+    this.blastRadius = new Float32Array(size);
+    this.blastDamage = new Float32Array(size);
 
     // Первый setColorAt создаёт буфер instanceColor — делаем это сразу, чтобы
     // он не появлялся посреди горячего цикла.
@@ -139,6 +154,11 @@ export class BulletPool {
    * aimX/aimZ — точка, куда целиться. Без неё пуля идёт строго вперёд; с ней
    * (боссфайт) направление берётся от дула к цели.
    *
+   * blastDamage — урон взрыва в точке попадания, 0 у всего, кроме гранатомёта.
+   * Приходит числом, как и урон снаряда, потому что зависит от стрелка: у
+   * союзника поверх прокачки лежит ещё и allyDamageFactor. Радиус же взрыва от
+   * стрелка не зависит и берётся по стволу здесь же, рядом со стилем снаряда.
+   *
    * Если пул исчерпан — выстрел молча теряется: терять пулю лучше, чем падать.
    */
   spawn(
@@ -147,6 +167,7 @@ export class BulletPool {
     damage: number,
     range: number,
     weapon: WeaponId,
+    blastDamage = 0,
     aimX?: number,
     aimZ?: number,
   ): void {
@@ -188,6 +209,8 @@ export class BulletPool {
     this.lengthScale[i] = style.lengthScale;
     this.spread[i] = style.spread ?? 1;
     this.pierce[i] = style.pierce === true ? 1 : 0;
+    this.blastRadius[i] = blastDamage > 0 ? weaponBlastRadius(weapon) : 0;
+    this.blastDamage[i] = blastDamage;
 
     // Матрицу и count выставляем сразу, а не ждём update(): иначе новая пуля не
     // рисуется до следующего шага, и вид зависит от порядка вызовов подсистем.
@@ -227,6 +250,8 @@ export class BulletPool {
           this.damage[i]!,
           piercing ? bulletRadius * width : bulletRadius,
           piercing,
+          this.blastRadius[i]!,
+          this.blastDamage[i]!,
         )
       ) {
         this.recycle(i);
@@ -298,6 +323,8 @@ export class BulletPool {
       this.lengthScale[i] = this.lengthScale[last]!;
       this.spread[i] = this.spread[last]!;
       this.pierce[i] = this.pierce[last]!;
+      this.blastRadius[i] = this.blastRadius[last]!;
+      this.blastDamage[i] = this.blastDamage[last]!;
     }
 
     this.count--;
@@ -313,6 +340,8 @@ export class BulletPool {
     damage: number;
     width: number;
     pierce: boolean;
+    blastRadius: number;
+    blastDamage: number;
   }> {
     const out = [];
     for (let i = 0; i < this.count; i++) {
@@ -325,6 +354,8 @@ export class BulletPool {
         damage: this.damage[i]!,
         width: +this.widthScale(i).toFixed(3),
         pierce: this.pierce[i] === 1,
+        blastRadius: this.blastRadius[i]!,
+        blastDamage: this.blastDamage[i]!,
       });
     }
     return out;

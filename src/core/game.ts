@@ -8,6 +8,7 @@ import { CrystalPool } from '../entities/crystals';
 import { EnemyPool } from '../entities/enemies';
 import { GateField } from '../entities/gates';
 import { MineField } from '../entities/mines';
+import { MoneyPool } from '../entities/money';
 import { Squad } from '../entities/squad';
 import { Hud } from '../ui/hud';
 import { LabelLayer } from '../ui/labels';
@@ -42,6 +43,8 @@ export class Game {
   readonly world: World;
   readonly bullets: BulletPool;
   readonly crystals: CrystalPool;
+  /** Монеты денег: та же механика подбора, что у кристаллов, другая валюта. */
+  readonly money: MoneyPool;
   readonly enemies: EnemyPool;
   readonly mines: MineField;
   readonly squad: Squad;
@@ -86,14 +89,24 @@ export class Game {
     this.world = new World(this.scene);
     this.bullets = new BulletPool(this.scene);
     this.crystals = new CrystalPool(this.scene);
-    this.enemies = new EnemyPool(this.scene, this.run, this.crystals);
+    // Монеты создаются до зомби и босса: оба роняют их в своей воронке смерти.
+    this.money = new MoneyPool(this.scene);
+    this.enemies = new EnemyPool(this.scene, this.run, this.crystals, this.money);
     // Порядок создания разрывает цикл зависимостей: мины знают зомби, отряд —
     // мины, бочки — отряд, и только потом бочки попадают в цели взрыва.
     this.mines = new MineField(this.scene, this.enemies);
     this.squad = new Squad(this.scene, this.bullets, this.mines);
-    this.barrels = new BarrelField(this.scene, this.squad, this.crystals, this.run, this.bonusSlot);
+    // meta бочкам нужна как магазин: непокупленное оружие в них не появляется.
+    this.barrels = new BarrelField(
+      this.scene,
+      this.squad,
+      this.crystals,
+      this.run,
+      this.bonusSlot,
+      this.meta,
+    );
     this.gates = new GateField(this.scene, this.squad, this.run, this.bonusSlot);
-    this.boss = new Boss(this.scene, this.squad, this.run, this.crystals);
+    this.boss = new Boss(this.scene, this.squad, this.run, this.crystals, this.money);
     this.mines.addAreaTarget(this.barrels);
     this.mines.addAreaTarget(this.boss);
     // Слот заполняется после создания полей: бочки и ворота делят его на двоих, и
@@ -154,8 +167,18 @@ export class Game {
     const collected = this.run.exp;
     const earned = this.run.expEarned;
     this.meta.deposit(earned);
+    // Деньги уходят в банк как есть: множителя у них нет, и собранное за забег
+    // равно зачисленному. Отдельным вызовом, а не внутри deposit: это разные
+    // валюты, и общая точка зачисления скрыла бы, что одна из них множится.
+    this.meta.depositMoney(this.run.money);
     this.phase = 'result';
-    this.screens.showResult(collected, earned, this.run.elapsedSeconds, this.run.waveNumber);
+    this.screens.showResult({
+      collectedExp: collected,
+      earnedExp: earned,
+      money: this.run.money,
+      elapsedSeconds: this.run.elapsedSeconds,
+      wave: this.run.waveNumber,
+    });
   }
 
   private openUpgrade(): void {
@@ -176,6 +199,7 @@ export class Game {
     this.mines.reset();
     this.bullets.reset();
     this.crystals.reset();
+    this.money.reset();
     this.boss.reset();
 
     // Отряд встаёт в центр, а не туда, где курсор остался с прошлого забега.
@@ -228,6 +252,8 @@ export class Game {
     this.bullets.update(dt, this.tryHitAnything);
     // Кристаллы после пуль: выпавшие с только что убитого зомби едут сразу.
     this.crystals.update(dt, this.squad.x, this.collectExp);
+    // Монеты — там же и по той же причине: выпадают в той же воронке смерти.
+    this.money.update(dt, this.squad.x, this.collectMoney);
     this.world.update(dt);
 
     this.hud.update({
@@ -245,7 +271,9 @@ export class Game {
       mines: this.mines.activeCount,
       minesArmed: this.mines.armedCount,
       crystals: this.crystals.activeCount,
+      coins: this.money.activeCount,
       exp: this.run.exp,
+      money: this.run.money,
       elapsedSeconds: this.run.elapsedSeconds,
       wave: this.run.waveNumber,
       zombiesRemaining: this.run.remainingZombies,
@@ -344,6 +372,8 @@ export class Game {
     damage: number,
     radius: number,
     pierce: boolean,
+    blastRadius: number,
+    blastDamage: number,
   ): boolean => {
     if (pierce) {
       this.boss.tryHit(xFrom, zFrom, xTo, zTo, damage, radius, true);
@@ -352,16 +382,44 @@ export class Game {
       return this.gates.tryHit(xFrom, zFrom, xTo, zTo, damage, radius);
     }
 
-    return (
+    const hit =
       this.boss.tryHit(xFrom, zFrom, xTo, zTo, damage, radius) ||
       this.enemies.tryHit(xFrom, zFrom, xTo, zTo, damage, radius) ||
       this.barrels.tryHit(xFrom, zFrom, xTo, zTo, damage, radius) ||
-      this.gates.tryHit(xFrom, zFrom, xTo, zTo, damage, radius)
-    );
+      this.gates.tryHit(xFrom, zFrom, xTo, zTo, damage, radius);
+
+    // Взрыв — ПОСЛЕ прямого урона и только по факту попадания: граната рвётся
+    // о цель, а не в конце дальности. Промах уходит в никуда, как и раньше.
+    if (hit && blastRadius > 0) this.explode(xTo, zTo, blastRadius, blastDamage);
+
+    return hit;
   };
+
+  /**
+   * Взрыв снаряда (граната) — тот же круг, что у мины, и через те же воронки
+   * урона, поэтому сопротивление целей, полоски HP и вспышки учитываются сами.
+   *
+   * Ворота в список не входят: стена типа A ломается только прямым попаданием.
+   * Урон по площади у неё и не с чем считать — секции стоят вплотную, круг
+   * радиуса 2 накрыл бы половину стены с одного выстрела.
+   *
+   * Точка взрыва — КОНЕЦ отрезка полёта за шаг, а не точное место касания цели:
+   * шаг пули 0.8 units против радиуса взрыва 2, разница внутри самой зоны.
+   *
+   * Цель, в которую попали, стоит в центре круга и получает обе части урона —
+   * прямую и взрывную. Так и задумано, см. CONFIG.weapons.grenadeLauncher.
+   */
+  private explode(x: number, z: number, radius: number, damage: number): void {
+    this.enemies.damageInRadius(x, z, radius, damage);
+    this.boss.damageInRadius(x, z, radius, damage);
+    this.barrels.damageInRadius(x, z, radius, damage);
+  }
 
   /** Собранный кристалл идёт в счётчик забега. Ссылка одна на всю игру. */
   private readonly collectExp = (value: number): void => this.run.addExp(value);
+
+  /** Собранная монета — в счётчик денег забега. */
+  private readonly collectMoney = (value: number): void => this.run.addMoney(value);
 
   /** Одна ссылка на всю игру — подписи собираются каждый кадр. */
   private readonly addLabel = (

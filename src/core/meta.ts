@@ -1,4 +1,5 @@
 import { CONFIG } from '../config';
+import { shopWeapons, type ShopWeapon, type WeaponId } from '../entities/weapons';
 
 /** Ключи улучшений. Совпадают с ключами CONFIG.meta.upgrades. */
 export type UpgradeId =
@@ -180,6 +181,15 @@ const LEGACY_UPGRADE_IDS: Readonly<Record<string, readonly UpgradeId[]>> = {
 interface SavedProgress {
   levels: Partial<Record<UpgradeId, number>>;
   bank: number;
+  /** Банк денег — вторая валюта, за неё открывается оружие. */
+  money: number;
+  /**
+   * Сколько стволов цепочки магазина открыто. Число, а не список ключей:
+   * покупать можно только следующий по порядку, поэтому открытый набор — всегда
+   * ПРЕФИКС CONFIG.shop.weapons, а у префикса всё содержание в его длине.
+   * Заодно последовательность нельзя нарушить правкой сохранения руками.
+   */
+  weapons: number;
 }
 
 /**
@@ -209,6 +219,9 @@ interface SavedProgress {
 export class MetaProgress {
   private readonly levels = new Map<UpgradeId, number>();
   private bankValue = 0;
+  private moneyValue = 0;
+  /** Длина открытого префикса CONFIG.shop.weapons — см. SavedProgress.weapons. */
+  private weaponsBought = 0;
 
   constructor() {
     this.load();
@@ -330,6 +343,78 @@ export class MetaProgress {
     this.save();
   }
 
+  // --- Магазин оружия (за деньги) -------------------------------------------
+
+  /*
+   * Вторая половина мета-прогрессии, и она устроена иначе, чем улучшения выше:
+   * не уровни за EXP, а разовые покупки за деньги (CONFIG.money). Купленный
+   * ствол не выдаётся в руки — он получает право ВЫПАДАТЬ из бочек на забеге
+   * (см. WeaponUnlocks в barrels.ts). До первой покупки у отряда только
+   * пистолет, и бочек с оружием на забеге нет вовсе.
+   *
+   * Покупка строго последовательная, поэтому открытое хранится длиной префикса,
+   * а не набором ключей: непоследовательное состояние просто нечем выразить.
+   */
+
+  /** Накопленные деньги. Целые: находка округляется на выпадении. */
+  get money(): number {
+    return this.moneyValue;
+  }
+
+  /** Зачисляет деньги забега. */
+  depositMoney(amount: number): void {
+    if (amount <= 0) return;
+    this.moneyValue += amount;
+    this.save();
+  }
+
+  /** Сколько стволов магазина уже открыто. */
+  get weaponsUnlockedCount(): number {
+    return this.weaponsBought;
+  }
+
+  /**
+   * Открыт ли ствол. Пистолет открыт всегда — он стартовый и в магазине не
+   * продаётся; всё, чего нет в списке магазина, тоже считается открытым, иначе
+   * добавление ствола мимо магазина молча выключило бы его из игры.
+   */
+  isWeaponUnlocked(id: WeaponId): boolean {
+    const index = shopWeapons().findIndex((entry) => entry.id === id);
+    return index < 0 || index < this.weaponsBought;
+  }
+
+  /** Следующая покупка в цепочке. null — открыто уже всё. */
+  nextWeapon(): ShopWeapon | null {
+    return shopWeapons()[this.weaponsBought] ?? null;
+  }
+
+  /** Цена ствола из списка магазина. null — такого в магазине нет. */
+  weaponPrice(id: WeaponId): number | null {
+    return shopWeapons().find((entry) => entry.id === id)?.price ?? null;
+  }
+
+  /** Можно ли купить прямо сейчас: это следующий по очереди и денег хватает. */
+  canBuyWeapon(id: WeaponId): boolean {
+    const next = this.nextWeapon();
+    return next !== null && next.id === id && this.moneyValue >= next.price;
+  }
+
+  /**
+   * Покупает ствол. Возвращает true, если покупка прошла.
+   *
+   * Проверка «это именно следующий» стоит здесь, а не только в интерфейсе:
+   * порядок — правило магазина, и обойти его вызовом из отладочной консоли
+   * нельзя так же, как нельзя купить уровень без EXP.
+   */
+  buyWeapon(id: WeaponId): boolean {
+    if (!this.canBuyWeapon(id)) return false;
+
+    this.moneyValue -= this.nextWeapon()!.price;
+    this.weaponsBought++;
+    this.save();
+    return true;
+  }
+
   /**
    * Итоговый множитель улучшения — то, что попадёт в конфиг.
    *
@@ -389,10 +474,16 @@ export class MetaProgress {
     config.formation.maxShooters = this.countValue('squadSize');
   }
 
-  /** Сбрасывает прогресс целиком (кнопка на экране прокачки). */
+  /**
+   * Сбрасывает прогресс целиком (кнопка на экране прокачки) — вместе с деньгами
+   * и открытым оружием: после сброса игра начинается с пистолета, как в первый
+   * раз, иначе «сброс» оставлял бы половину прогрессии на месте.
+   */
   reset(): void {
     this.levels.clear();
     this.bankValue = 0;
+    this.moneyValue = 0;
+    this.weaponsBought = 0;
     this.save();
     this.applyTo();
   }
@@ -423,6 +514,17 @@ export class MetaProgress {
         this.bankValue = saved.bank;
       }
 
+      // Денег и оружия нет в сохранениях, сделанных до появления магазина:
+      // такой игрок начинает магазин с нуля, а уровни улучшений сохраняет.
+      if (typeof saved.money === 'number' && Number.isFinite(saved.money) && saved.money >= 0) {
+        this.moneyValue = Math.floor(saved.money);
+      }
+
+      if (typeof saved.weapons === 'number' && Number.isFinite(saved.weapons)) {
+        // Зажимаем длиной цепочки: список магазина мог укоротиться с прошлой версии.
+        this.weaponsBought = Math.min(Math.max(Math.floor(saved.weapons), 0), shopWeapons().length);
+      }
+
       if (typeof saved.levels === 'object' && saved.levels !== null) {
         for (const id of UPGRADE_IDS) {
           const value = saved.levels[id];
@@ -436,6 +538,8 @@ export class MetaProgress {
       // Невалидный JSON — просто стартуем с нуля.
       this.levels.clear();
       this.bankValue = 0;
+      this.moneyValue = 0;
+      this.weaponsBought = 0;
     }
   }
 
@@ -469,7 +573,12 @@ export class MetaProgress {
   }
 
   private save(): void {
-    const payload: SavedProgress = { levels: {}, bank: this.bankValue };
+    const payload: SavedProgress = {
+      levels: {},
+      bank: this.bankValue,
+      money: this.moneyValue,
+      weapons: this.weaponsBought,
+    };
     for (const id of UPGRADE_IDS) {
       const level = this.level(id);
       if (level > 0) payload.levels[id] = level;
@@ -485,6 +594,9 @@ export class MetaProgress {
   /** Состояние прогресса — для отладки и проверок. */
   debugSnapshot(): {
     bank: number;
+    money: number;
+    weapons: WeaponId[];
+    nextWeapon: ShopWeapon | null;
     levels: Record<string, number>;
     multipliers: Record<string, number>;
     nextCosts: Record<string, number | null>;
@@ -499,6 +611,16 @@ export class MetaProgress {
       nextCosts[id] = this.nextCost(id);
     }
 
-    return { bank: +this.bankValue.toFixed(2), levels, multipliers, nextCosts };
+    return {
+      bank: +this.bankValue.toFixed(2),
+      money: this.moneyValue,
+      weapons: shopWeapons()
+        .slice(0, this.weaponsBought)
+        .map((entry) => entry.id),
+      nextWeapon: this.nextWeapon(),
+      levels,
+      multipliers,
+      nextCosts,
+    };
   }
 }

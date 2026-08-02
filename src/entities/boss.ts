@@ -12,6 +12,7 @@ import { segmentHitsCircle, segmentPassesCircle } from '../core/collision';
 import type { RunState } from '../core/run';
 import type { CrystalPool } from './crystals';
 import { makeFlashColor } from './flash';
+import type { MoneyPool } from './money';
 
 /** Фаза боссфайта. */
 export type BossPhase = 'absent' | 'entering' | 'fighting' | 'dead';
@@ -113,6 +114,7 @@ export class Boss {
     private readonly squad: BossTarget,
     private readonly run: RunState,
     private readonly crystals: CrystalPool,
+    private readonly money: MoneyPool,
   ) {
     const { capsule, color, telegraph } = CONFIG.boss;
 
@@ -488,6 +490,13 @@ export class Boss {
       const spread = (Math.random() * 2 - 1) * CONFIG.boss.capsule.radius * 2;
       this.crystals.spawn(spread, this.posZ, CONFIG.exp.perBigZombie);
     }
+
+    // Деньги с босса — одной монетой, но крупной, и растут вместе с его запасом
+    // прочности: множитель волны тот же самый (run.hpMultiplier). Бросок
+    // вероятности общий с обычными зомби — босс тоже зомби, и своего шанса у
+    // него нет, см. CONFIG.money.dropChance.
+    const moneyScale = CONFIG.money.bossScalesWithHp ? this.run.hpMultiplier : 1;
+    this.money.dropFrom(0, this.posZ, 'boss', moneyScale);
 
     this.run.registerBossKill();
   }

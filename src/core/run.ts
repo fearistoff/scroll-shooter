@@ -25,6 +25,7 @@ export class RunState {
   private bigLeft = 0;
   private killed = 0;
   private expTotal = 0;
+  private moneyTotal = 0;
   private bossKilled = false;
   private elapsed = 0;
   private wave = 1;
@@ -37,6 +38,7 @@ export class RunState {
 
   reset(): void {
     this.expTotal = 0;
+    this.moneyTotal = 0;
     this.elapsed = 0;
     this.wave = 1;
     this.resetWaveBudget();
@@ -199,6 +201,23 @@ export class RunState {
     return this.expTotal * CONFIG.player.expMultiplier;
   }
 
+  /**
+   * Собранные за забег деньги — валюта магазина оружия (CONFIG.shop).
+   *
+   * Всегда целые: находка округляется на выпадении (MoneyPool.dropFrom), и
+   * множителя прокачки у денег нет. Тем и отличается от EXP: там дробная сумма
+   * и множитель, применяемый один раз на выходе из забега.
+   */
+  get money(): number {
+    return this.moneyTotal;
+  }
+
+  /** Начисляет деньги с подобранной монеты. Единственная точка. */
+  addMoney(amount: number): void {
+    if (amount <= 0) return;
+    this.moneyTotal += amount;
+  }
+
   /** Череп на полосе: в конце волны будет босс. */
   get hasBoss(): boolean {
     return CONFIG.run.hasBoss;
@@ -273,6 +292,7 @@ export class RunState {
     bigShare: number;
     exp: number;
     expEarned: number;
+    money: number;
     hasBoss: boolean;
     elapsed: number;
     wave: number;
@@ -289,6 +309,7 @@ export class RunState {
       bigShare: +this.bigShare.toFixed(3),
       exp: this.expTotal,
       expEarned: +this.expEarned.toFixed(2),
+      money: this.moneyTotal,
       hasBoss: this.hasBoss,
       elapsed: +this.elapsed.toFixed(2),
       wave: this.wave,
