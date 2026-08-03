@@ -401,7 +401,7 @@ export class BarrelField {
     // именно особое оружие внутри, поэтому и то и другое решается раньше неё.
     const chosenSpecial =
       chosenContent === 'special' ? (special ?? this.randomSpecial()) : null;
-    const chosenAmount = amount ?? BarrelField.randomAmount(chosenContent);
+    const chosenAmount = amount ?? this.randomAmount(chosenContent);
     const chosenHp = hp ?? this.hpFor(chosenContent, chosenAmount, chosenSpecial);
 
     const i = this.count++;
@@ -537,13 +537,31 @@ export class BarrelField {
     return 'mine';
   }
 
-  private static randomAmount(content: BarrelContent): number {
+  /**
+   * Сколько выдаст содержимое.
+   *
+   * Для стрелков диапазон ОБРЕЗАЕТСЯ свободными местами в отряде
+   * (formation.maxShooters минус текущий размер): бочка обещает конкретное число
+   * бойцов, и обещание, которое нечем исполнить, показывать нельзя. Сверх
+   * предела бонус всё равно терялся бы в Squad.addShooters — но игрок платил бы
+   * за него прочностью (она считается за каждого бойца) и патронами. Так же
+   * решается и «оружие»: бесполезная бочка не появляется, а не выдаёт пустоту.
+   *
+   * Обрезка стоит только на СЛУЧАЙНОМ выборе; явный `amount` из замерочных
+   * скриптов проходит как раньше. Ниже 1 не опускается: полное отсутствие мест
+   * отсекается ещё в `randomContent`, а при явном `spawn('shooters')` на полном
+   * отряде бочка остаётся осмысленной по виду и цене.
+   */
+  private randomAmount(content: BarrelContent): number {
     if (content === 'mine') return CONFIG.mine.count;
     if (content !== 'shooters') return 1;
 
     const [min, max] = CONFIG.barrels.content.shooterAmountRange;
-    const low = min ?? 1;
-    const high = max ?? low;
+    // Потолок режет и верх диапазона, и низ: настройка вида [2, 3] иначе выдала
+    // бы двоих на одно свободное место.
+    const cap = Math.max(1, CONFIG.formation.maxShooters - this.squad.shooterCount);
+    const low = Math.min(min ?? 1, cap);
+    const high = Math.max(low, Math.min(max ?? low, cap));
     return low + Math.floor(Math.random() * (high - low + 1));
   }
 
