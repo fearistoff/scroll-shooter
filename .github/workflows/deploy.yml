@@ -40,7 +40,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           # Vite 8 требует Node 20.19+/22.12+; 22 — текущий LTS.
-          node-version: '22'
+          node-version: '24'
           # Кеш по package-lock.json — он в репозитории, поэтому npm ci честный.
           cache: npm
 
