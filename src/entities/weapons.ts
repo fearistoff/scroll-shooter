@@ -57,9 +57,16 @@ function multipliersOf(kind: ShooterKind): typeof CONFIG.player.heroMultipliers 
   return kind === 'hero' ? CONFIG.player.heroMultipliers : CONFIG.player.allyMultipliers;
 }
 
-/** Урон снаряда с учётом прокачки. */
+/**
+ * Урон снаряда с учётом прокачки: множитель своей ветки × общий урон отряда
+ * (player.squadDamageMultiplier — ветка squadDamage, одна на всех стрелков).
+ */
 export function weaponDamage(id: WeaponId, kind: ShooterKind): number {
-  return CONFIG.weapons[id].damage * multipliersOf(kind).damageMultiplier;
+  return (
+    CONFIG.weapons[id].damage *
+    multipliersOf(kind).damageMultiplier *
+    CONFIG.player.squadDamageMultiplier
+  );
 }
 
 /** Выстрелов в секунду с учётом прокачки. */
@@ -105,7 +112,10 @@ export function weaponBlastRadius(id: WeaponId): number {
  */
 export function weaponBlastDamage(id: WeaponId, kind: ShooterKind): number {
   const blast = getWeapon(id).blast;
-  return blast === undefined ? 0 : blast.damage * multipliersOf(kind).damageMultiplier;
+  if (blast === undefined) return 0;
+  // Общий урон отряда входит по той же причине, что damageMultiplier: взрыв —
+  // часть выстрела, и множитель не должен тихо терять половину убойности гранаты.
+  return blast.damage * multipliersOf(kind).damageMultiplier * CONFIG.player.squadDamageMultiplier;
 }
 
 /**

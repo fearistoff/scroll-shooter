@@ -18,6 +18,7 @@ export type UpgradeId =
   | 'heroRegenRate'
   | 'heroRegenDelay'
   | 'squadSize'
+  | 'squadDamage'
   | 'allyDamage'
   | 'allyFireRate'
   | 'allyRange'
@@ -90,8 +91,9 @@ export const UPGRADE_TRACKS: readonly UpgradeTrack[] = [
     title: 'Прочее',
     // Размер отряда стоит первым: он решает, скольким бойцам достанутся строки
     // вкладки стрелков, то есть покупается раньше них.
+    // Общий урон — сразу за ним: тоже про отряд целиком, а не про одного бойца.
     // Опыт и деньги стоят рядом: это две валюты игры, и качаются они одинаково.
-    ids: ['squadSize', 'exp', 'money'],
+    ids: ['squadSize', 'squadDamage', 'exp', 'money'],
   },
 ];
 
@@ -151,6 +153,10 @@ export const UPGRADE_LABELS: Record<UpgradeId, UpgradeLabel> = {
   // состояние — «Макс. стрелков — 3» и «+20% за вылазку» (см. upgradeEffect и
   // Screens.refreshUpgrades).
   squadSize: { title: 'Размер отряда', effect: 'Макс. стрелков в отряде' },
+  // Показывается ПРИБАВКОЙ В ПРОЦЕНТАХ (решение пользователя), как опыт и
+  // деньги: фактического урона у ветки нет — она множит урон КАЖДОГО ствола
+  // КАЖДОГО стрелка, и одно число в HP тут не сказало бы ничего.
+  squadDamage: { title: 'Общий урон', effect: 'Надбавка к урону всего отряда' },
   exp: { title: 'Опыт', effect: 'Надбавка за вылазку' },
   money: { title: 'Деньги', effect: 'Надбавка за вылазку' },
 };
@@ -205,7 +211,12 @@ function combatValue(
   switch (stat) {
     case 'damage': {
       const factor = kind === 'ally' ? formation.allyDamageFactor : 1;
-      return { value: weapons.pistol.damage * multiplier * factor, unit: ' HP', digits: 2 };
+      // Общий урон (player.squadDamageMultiplier) входит в показание: пуля в бою
+      // считается с ним (weaponDamage), и без него строка врала бы ровно на его
+      // величину. Берётся из конфига, а не из уровня, — конфиг держит текущим
+      // applyTo на каждой перерисовке экрана (Screens.refreshUpgrades).
+      const value = weapons.pistol.damage * multiplier * factor * player.squadDamageMultiplier;
+      return { value, unit: ' HP', digits: 2 };
     }
     // Выстрелов в МИНУТУ: в секунду у пистолета выходит 2.2, и на таком числе
     // прибавка уровня (4%) не читается вовсе.
@@ -327,6 +338,13 @@ export function upgradeEffect(id: UpgradeId, multiplier: number): string | null 
   // сразу, множитель требует пересчёта в уме.
   if (id === 'exp' || id === 'money') {
     return `+${trimNumber((multiplier - 1) * 100, 1)}% за вылазку`;
+  }
+
+  // Общий урон — прибавкой в процентах, в одном языке с опытом и деньгами
+  // (решение пользователя, сменившее показ множителем в тот же день):
+  // «+20% ко всему урону» поверх остальных веток.
+  if (id === 'squadDamage') {
+    return `+${trimNumber((multiplier - 1) * 100, 1)}% ко всему урону`;
   }
 
   const entry = COMBAT_STATS[id];
@@ -1135,6 +1153,9 @@ export class MetaProgress {
 
     config.player.expMultiplier = this.multiplier('exp');
     config.player.moneyMultiplier = this.multiplier('money');
+    // Общий урон один на отряд, как опыт и деньги: применяется в аксессорах
+    // оружия ПОВЕРХ множителя своей ветки (weapons.ts).
+    config.player.squadDamageMultiplier = this.multiplier('squadDamage');
 
     // Размер отряда — единственное, что прокачка пишет ВНЕ player: предел живёт
     // в formation, потому что его читают все источники бойцов через
