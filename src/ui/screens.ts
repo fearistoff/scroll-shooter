@@ -1,17 +1,24 @@
 import { CONFIG } from '../config';
 import {
   isCountUpgrade,
+  trimNumber,
   UPGRADE_LABELS,
   UPGRADE_TRACKS,
+  upgradeEffect,
+  upgradeValue,
   type MetaProgress,
   type UpgradeId,
   type UpgradeTrackId,
 } from '../core/meta';
 import {
-  getWeapon,
   isSpecialWeapon,
   shopWeapons,
+  weaponBlastDamage,
+  weaponBlastRadius,
+  weaponDamage,
+  weaponFireRate,
   weaponIcon,
+  weaponRange,
   WEAPON_NAMES,
   type WeaponId,
 } from '../entities/weapons';
@@ -56,22 +63,42 @@ export interface RunResult {
 interface UpgradeRow {
   /** Название с текущим уровнем: «Урон (ур. 1)». Меняется после каждой покупки. */
   name: HTMLElement;
-  /** Описание эффекта — единственная строка, которая не зависит от уровня. */
+  /** Фактическое состояние характеристики: «Базовый урон — 2.4 HP». */
   effect: HTMLElement;
-  /** Что даст следующая покупка: «Сл. ур.: ×1.00 → ×1.04». */
+  /** Что даст следующая покупка: «Сл. ур.: 2.5 HP». На максимуме — «Максимум». */
   next: HTMLElement;
   buy: HTMLButtonElement;
   batch: HTMLButtonElement;
+  /** Подпись «Макс.» на месте кнопок, когда уровень последний. */
+  maxed: HTMLElement;
 }
 
 /** Строка со стволом: в магазине и в бустерах разметка одна и та же. */
 interface WeaponRow {
   root: HTMLElement;
   buy: HTMLButtonElement;
+  /**
+   * Урон и темп. Хранится, потому что числа считаются с прокачкой: купленный
+   * уровень урона меняет их, не сходя с экрана, — значит строку надо
+   * перерисовывать, а не проставить один раз при сборке.
+   */
+  stats: HTMLElement;
+  /** Примечание особого ствола (Screens.weaponNote). Тоже с прокачкой. */
+  note: HTMLElement;
+  /** Подпись «Получено» на месте кнопки, когда ствол уже открыт. */
+  owned: HTMLElement;
 }
 
-/** Строка бустера с двумя кнопками: взять и вернуть. */
-interface BoosterRow extends WeaponRow {
+/**
+ * Строка бойцов на экране бустеров: две кнопки — взять и вернуть.
+ *
+ * НЕ наследует WeaponRow, хотя разметка та же: у ствола есть примечание особого
+ * (weapon__note), а у бойцов — нет, и наследование заставляло бы держать в строке
+ * бойцов пустой элемент только ради типа.
+ */
+interface BoosterRow {
+  root: HTMLElement;
+  buy: HTMLButtonElement;
   name: HTMLElement;
   stats: HTMLElement;
   refund: HTMLButtonElement;
@@ -483,7 +510,7 @@ export class Screens {
       if (entry.version === __APP_VERSION__) {
         const badge = document.createElement('span');
         badge.className = 'changelog__current';
-        badge.textContent = 'сейчас';
+        badge.textContent = 'Сейчас';
         version.appendChild(badge);
       }
 
@@ -515,11 +542,10 @@ export class Screens {
     const name = document.createElement('div');
     name.className = 'upgrade__name';
 
+    // Текст ставится в refreshUpgrades: у боевых характеристик здесь стоит их
+    // фактическое состояние, а оно зависит от купленного уровня.
     const effect = document.createElement('div');
     effect.className = 'upgrade__effect';
-    // Описание от уровня не зависит — единственная строка, которую хватает
-    // проставить один раз. Первую букву поднимает CSS (::first-letter).
-    effect.textContent = UPGRADE_LABELS[id].effect;
 
     const next = document.createElement('div');
     next.className = 'upgrade__next';
@@ -542,8 +568,16 @@ export class Screens {
       this.refreshUpgrades();
     });
 
-    row.append(name, effect, next, buy, batch);
-    this.rows.set(id, { name, effect, next, buy, batch });
+    // Подпись вместо обеих кнопок на максимальном уровне. Отдельный элемент, а не
+    // подпись на самой кнопке: неактивная кнопка «макс.» рядом с неактивной «×0»
+    // читалась как «можно было бы купить, но нет денег», хотя покупать больше
+    // нечего вовсе.
+    const maxed = document.createElement('div');
+    maxed.className = 'upgrade__maxed';
+    maxed.textContent = 'Макс.';
+
+    row.append(name, effect, next, buy, batch, maxed);
+    this.rows.set(id, { name, effect, next, buy, batch, maxed });
     return row;
   }
 
@@ -562,7 +596,7 @@ export class Screens {
     ];
 
     return entries.map((entry) => {
-      const row = Screens.buildWeaponRow(entry.id, Screens.weaponStats(entry.id));
+      const row = Screens.buildWeaponRow(entry.id);
       // Стартовому стволу кнопка досталась ради ровного ряда: она показывает
       // «старт» и нажатий не ловит — покупать его не за что.
       if (entry.price !== null) {
@@ -577,13 +611,17 @@ export class Screens {
   }
 
   /**
-   * Разметка строки ствола: иконка, название, характеристики, кнопка.
+   * Разметка строки ствола: иконка, название, характеристики, примечание, кнопка.
    *
    * Одна на магазин и на бустеры — строки отличаются только тем, что написано на
    * кнопке и что она делает, а собирать вторую такую же разметку значило бы
    * получить два ряда, расходящихся при первой же правке вёрстки.
+   *
+   * Тексты характеристик и примечания здесь НЕ проставляются: они зависят от
+   * прокачки и ставятся перерисовкой (refreshWeaponStats), одной точкой для обоих
+   * экранов.
    */
-  private static buildWeaponRow(id: WeaponId, stats: string): WeaponRow {
+  private static buildWeaponRow(id: WeaponId): WeaponRow {
     const row = document.createElement('div');
     row.className = 'weapon';
 
@@ -604,20 +642,54 @@ export class Screens {
     if (isSpecialWeapon(id)) {
       const badge = document.createElement('span');
       badge.className = 'weapon__badge';
-      badge.textContent = 'особое';
+      badge.textContent = 'Особое';
       name.appendChild(badge);
     }
 
     const statsElement = document.createElement('div');
     statsElement.className = 'weapon__stats';
-    statsElement.textContent = stats;
+
+    const note = document.createElement('div');
+    note.className = 'weapon__note';
 
     const buy = document.createElement('button');
     buy.className = 'weapon__buy';
     buy.type = 'button';
 
-    row.append(icon, name, statsElement, buy);
-    return { root: row, buy };
+    // Подпись вместо кнопки у уже полученного ствола — по той же причине, что и
+    // «Макс.» в строке прокачки: неактивная кнопка предлагала бы покупку, которой
+    // не бывает. На экране бустеров она не показывается: там арендуют любой ствол,
+    // открытый или нет, и кнопка всегда живая.
+    const owned = document.createElement('div');
+    owned.className = 'weapon__owned';
+    owned.textContent = 'Получено';
+    owned.hidden = true;
+
+    row.append(icon, name, statsElement, note, buy, owned);
+    return { root: row, buy, stats: statsElement, note, owned };
+  }
+
+  /**
+   * Проставляет строке ствола числа и примечание по текущей прокачке.
+   *
+   * Одна точка на магазин и на бустеры: обе перерисовки зовут её, поэтому купить
+   * уровень урона и увидеть в магазине прежние числа невозможно.
+   *
+   * showStats: false — экран бустеров. Урон и темп там не показываются: ствол в
+   * аренду выбирают по тому, ЧТО это за оружие, а числа уже прочитаны в магазине,
+   * где стволы и сравнивают между собой. Примечание особого остаётся: правило
+   * «достаётся одному стрелку» решает выбор на этом экране, а не в магазине.
+   *
+   * Пустое примечание не оставляет пустой строки: у обычных стволов элемент
+   * прячется целиком, иначе их ряды стали бы выше на пустую строку текста.
+   */
+  private static refreshWeaponStats(id: WeaponId, row: WeaponRow, showStats = true): void {
+    row.stats.hidden = !showStats;
+    if (showStats) row.stats.textContent = Screens.weaponStats(id);
+
+    const note = Screens.weaponNote(id);
+    row.note.textContent = note;
+    row.note.hidden = note === '';
   }
 
   /**
@@ -634,7 +706,7 @@ export class Screens {
     list.appendChild(this.buildBoosterShooterRow());
 
     for (const entry of shopWeapons()) {
-      const row = Screens.buildWeaponRow(entry.id, Screens.weaponStats(entry.id));
+      const row = Screens.buildWeaponRow(entry.id);
       row.buy.classList.add('weapon__buy--booster');
       row.buy.addEventListener('click', () => {
         // Повторное нажатие по выбранному снимает выбор: пока забег не начат,
@@ -694,28 +766,61 @@ export class Screens {
   }
 
   /**
-   * Строка характеристик ствола: базовые числа из таблицы, БЕЗ прокачки.
+   * Строка характеристик ствола: урон выстрела и выстрелы в минуту С УЧЁТОМ
+   * ПРОКАЧКИ ГЕРОЯ.
    *
-   * Без множителей намеренно: наборов их два (герой и стрелки), и показать один
-   * значило бы соврать про второй. Сравнивать стволы между собой это не мешает —
-   * множитель у обоих один и тот же.
+   * Показан набор ГЕРОЯ, а не стрелков: ствол из бочки достаётся всему отряду, но
+   * числа двух ветвей разные, и выбирать надо было одну. Герой — тот боец,
+   * которого игрок ведёт сам и по которому судит об оружии; у союзников урон к
+   * тому же режется долей от героя (CONFIG.formation.allyDamageFactor), и их
+   * числа читались бы как ослабленные.
+   *
+   * DPS убран: строка теперь пересчитывается прокачкой и с ним не влезала в
+   * колонку (ЗАМЕРЕНО: колонка отдаёт 185 px).
+   *
+   * Минута, а не секунда, — как и в строках прокачки: у гранатомёта темп 0.6667
+   * в секунду, и «0.7/с» о полутора секундах между выстрелами не говорит ничего.
    */
   private static weaponStats(id: WeaponId): string {
-    const { damage, fireRate } = getWeapon(id);
-    const dps = (damage * fireRate).toFixed(1);
-    return `урон ${Screens.trim(damage)} · темп ${Screens.trim(fireRate)}/с · DPS ${dps}`;
+    // Урон до сотых, темп до десятых — как в строках прокачки (UpgradeValue.digits):
+    // у огнемёта урон 0.36, и в десятых он превратился бы в «0.4».
+    const damage = trimNumber(weaponDamage(id, 'hero'), 2);
+    const perMinute = trimNumber(weaponFireRate(id, 'hero') * 60, 1);
+    return `Урон ${damage} · ${perMinute}/мин`;
   }
 
   /**
-   * Число без хвоста нулей: 0.6667 → «0.67», 15 → «15».
+   * Примечание особого ствола: чем именно он особый и что достаётся ОДНОМУ бойцу.
    *
-   * В таблице оружия есть значения, подобранные под ровный интервал между
-   * выстрелами (гранатомёт, 0.6667 = раз в полторы секунды). Как есть они в
-   * строку не годятся: четыре знака после запятой читаются как сбой вёрстки, а
-   * toFixed(2) на целых дорисовал бы «15.00».
+   * Пустая строка — ствол обычный, примечания нет: у стрелковой лестницы всё
+   * сказано уроном и темпом.
+   *
+   * Правило «одному бойцу» стоит в каждом из двух примечаний, а не отдельной
+   * общей строкой: игрок читает строку того ствола, который покупает, и метка
+   * «особое» у названия про количество носителей ничего не говорит. Реализация
+   * правила — Squad.giveSpecialWeapon.
    */
-  private static trim(value: number): string {
-    return String(+value.toFixed(2));
+  private static weaponNote(id: WeaponId): string {
+    if (!isSpecialWeapon(id)) return '';
+
+    const single = 'Достаётся одному стрелку.';
+
+    if (id === 'flamethrower') {
+      // Дальность огнемёта выводится из стрелковой (weaponRange), поэтому берётся
+      // оттуда же, а не из таблицы: с прокачкой она уезжает.
+      const range = trimNumber(weaponRange(id, 'hero'), 1);
+      return `Сплошная струя, дальность вдвое короче — ${range} м. ${single}`;
+    }
+
+    if (id === 'grenadeLauncher') {
+      // Урон взрыва — тем же порядком точности, что и урон выстрела: это тот же
+      // урон, только по кругу.
+      const blast = trimNumber(weaponBlastDamage(id, 'hero'), 2);
+      const radius = trimNumber(weaponBlastRadius(id), 1);
+      return `Взрыв на ${blast} HP в радиусе ${radius} м вокруг попадания. ${single}`;
+    }
+
+    return single;
   }
 
   /** Переключает вкладку таббара. */
@@ -761,9 +866,26 @@ export class Screens {
         const canBuy = this.meta.canBuy(id);
         ready ||= canBuy;
 
+        const maxed = cost === null;
+
         row.name.textContent = `${UPGRADE_LABELS[id].title} (ур. ${level})`;
-        row.next.textContent = this.nextText(id, level, cost === null);
-        row.buy.textContent = cost === null ? 'макс.' : `${cost} EXP`;
+        // Вторая строка — фактическое состояние на купленном уровне, поэтому
+        // обновляется здесь, а не проставляется один раз при сборке ряда.
+        row.effect.textContent =
+          upgradeEffect(id, this.meta.multiplier(id, level)) ?? UPGRADE_LABELS[id].effect;
+        // Третья строка — только следующий уровень; на максимуме вместо него
+        // одно слово «Максимум»: достигнутое значение уже стоит строкой выше, и
+        // повторять его здесь незачем.
+        row.next.textContent = maxed ? 'Максимум' : this.nextText(id, level);
+
+        // На последнем уровне кнопок нет вовсе — вместо них подпись «Макс.»:
+        // нажимать больше не на что, и две неактивные кнопки только предлагали бы
+        // покупку, которой не существует.
+        row.buy.hidden = maxed;
+        row.batch.hidden = maxed;
+        row.maxed.hidden = !maxed;
+
+        row.buy.textContent = `${cost ?? 0} EXP`;
         row.buy.disabled = !canBuy;
 
         // Пачка тратит весь банк, но не больше batchSize уровней, — на кнопке
@@ -795,14 +917,21 @@ export class Screens {
       const canBuy = this.meta.canBuyWeapon(id);
       ready ||= canBuy;
 
+      // Числа ствола зависят от прокачки урона и темпа, а её покупают на соседней
+      // вкладке этого же экрана — значит пересчитывать надо на каждой перерисовке.
+      Screens.refreshWeaponStats(id, row);
+
       row.root.classList.toggle('weapon--owned', owned);
       row.root.classList.toggle('weapon--locked', !owned && !onSale);
 
-      if (owned) {
-        // Стартовый ствол цены не имеет — у него и «куплено» не по адресу.
-        row.buy.textContent = price === null ? 'старт' : 'куплено';
-      } else {
-        // Запертому — замок вместо кнопки: цена та же, но нажать нельзя, пока не
+      // Полученное — подписью «Получено» вместо кнопки, и одинаково для купленного
+      // и для стартового пистолета: игроку важно, что ствол у него есть, а не то,
+      // достался он за деньги или сразу.
+      row.buy.hidden = owned;
+      row.owned.hidden = !owned;
+
+      if (!owned) {
+        // Запертому — замок вместо цены: цена та же, но нажать нельзя, пока не
         // куплен предыдущий.
         row.buy.textContent = onSale ? `${price} $` : `🔒 ${price} $`;
       }
@@ -829,11 +958,15 @@ export class Screens {
     for (const [id, row] of this.boosterWeaponRows) {
       const picked = chosen === id;
 
+      // Без урона и темпа: на этом экране выбирают, ЧТО взять на забег, а не
+      // сравнивают стволы по числам — для этого есть магазин.
+      Screens.refreshWeaponStats(id, row, false);
+
       // Замка здесь нет, в отличие от магазина: арендовать можно любой ствол,
       // открытый он или нет, — единственное условие остаётся денежным.
       row.root.classList.toggle('weapon--picked', picked);
 
-      row.buy.textContent = picked ? 'убрать' : `${this.meta.startWeaponPrice(id)} $`;
+      row.buy.textContent = picked ? 'Убрать' : `${this.meta.startWeaponPrice(id)} $`;
       // Выбранный ствол остаётся нажимаемым: та же кнопка снимает выбор.
       row.buy.disabled = !picked && !this.meta.canBuyStartWeapon(id);
     }
@@ -852,13 +985,14 @@ export class Screens {
 
     // Число взятых — в названии, как уровень у улучшений: это то же «сколько
     // уже куплено», и искать его игрок будет там же.
-    row.name.textContent = count > 0 ? `Стрелок ×${count}` : 'Стрелок';
+    row.name.textContent = count > 0 ? `Доп. стрелок ×${count}` : 'Доп. стрелок';
     // Коротко до предела: колонка здесь на 40 px уже, чем в магазине (место
     // забрала вторая кнопка). ЗАМЕРЕНО canvas-обмером при фактическом шрифте:
-    // колонка отдаёт 145 px, «в отряд на забег · до 22» занимает 129, а
+    // колонка отдаёт 145 px, «в отряд на забег · до 22» занимало 129, а
     // «в отряд на забег · не больше 2» — 167, и строка переносилась на вторую,
-    // отчего ряд стрелков был выше оружейных.
-    row.stats.textContent = `в отряд на забег · до ${limit}`;
+    // отчего ряд стрелков был выше оружейных. «В отряд на вылазку» длиннее
+    // прежнего на одно слово — замер перепроверен ниже, в браузере.
+    row.stats.textContent = `В отряд на вылазку · до ${limit}`;
     row.root.classList.toggle('weapon--picked', count > 0);
 
     row.buy.textContent = `${price} $`;
@@ -888,7 +1022,7 @@ export class Screens {
     if (weapon !== null) parts.push(WEAPON_NAMES[weapon]);
 
     this.boostersSummary.hidden = parts.length === 0;
-    this.boostersSummary.textContent = `В забег: ${parts.join(' · ')}`;
+    this.boostersSummary.textContent = `В вылазку: ${parts.join(' · ')}`;
   }
 
   /**
@@ -908,27 +1042,46 @@ export class Screens {
   }
 
   /**
-   * Третья строка: что даст следующий уровень.
+   * Третья строка: во что превратится характеристика на СЛЕДУЮЩЕМ уровне —
+   * «Сл. ур.: 2.5 HP».
    *
-   * Показана не для красоты — при шаге в 1% по одному текущему множителю
-   * непонятно, за что вообще платишь. На максимальном уровне стрелки нет:
-   * покупать больше нечего, поэтому там остаётся достигнутое значение.
+   * Только следующее значение, без текущего: текущее стоит строкой выше словами
+   * («Базовый урон — 2.4 HP»), и повторять его здесь стрелкой значило бы дважды
+   * писать одно число в двух строках подряд.
+   *
+   * На максимальном уровне вместо этого стоит «Максимум» (см. refreshUpgrades):
+   * следующего уровня не существует, а достигнутое видно второй строкой.
    */
-  private nextText(id: UpgradeId, level: number, maxed: boolean): string {
-    const current = this.valueText(id, level);
-    if (maxed) return `Максимум: ${current}`;
-    return `Сл. ур.: ${current} → ${this.valueText(id, level + 1)}`;
+  private nextText(id: UpgradeId, level: number): string {
+    return `Сл. ур.: ${this.valueText(id, level + 1)}${this.unitText(id)}`;
   }
 
   /**
    * Значение улучшения на заданном уровне.
    *
+   * У боевых характеристик это ФАКТИЧЕСКОЕ число (урон выстрела, выстрелы в
+   * минуту, метры, проценты поглощения, hp в секунду, секунды задержки), а не
+   * множитель: см. UpgradeValue в meta.ts. Округление до десятых — везде одно, и
+   * его следствие стоит держать в уме: прибавка уровня к урону пистолета (4% от
+   * 1.0) в десятых не видна, зато видна к дальности и темпу.
+   *
    * Улучшения-счётчики (размер отряда) считаются в бойцах, поэтому у них «3»
-   * без знака умножения: «×1.33» о размере отряда не сказало бы ничего.
+   * без знака умножения: «×1.33» о размере отряда не сказало бы ничего. Опыт и
+   * деньги остаются множителями — фактическое «сколько за забег» зависит от
+   * забега, а не от уровня.
    */
   private valueText(id: UpgradeId, level: number): string {
     if (isCountUpgrade(id)) return `${this.meta.countValue(id, level)}`;
+
+    const actual = upgradeValue(id, this.meta.multiplier(id, level));
+    if (actual !== null) return trimNumber(actual.value, actual.digits);
+
     return `×${this.meta.multiplier(id, level).toFixed(2)}`;
+  }
+
+  /** Единица фактического значения; пустая строка — значение без единицы. */
+  private unitText(id: UpgradeId): string {
+    return upgradeValue(id, this.meta.multiplier(id))?.unit ?? '';
   }
 
   private toggle(element: HTMLElement | null, visible: boolean): void {

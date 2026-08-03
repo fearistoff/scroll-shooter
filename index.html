@@ -637,12 +637,6 @@
         opacity: 0.7;
       }
 
-      /* Описания в UPGRADE_LABELS написаны со строчной: в строке они идут
-         отдельным предложением, поэтому первую букву поднимает вёрстка, а не
-         дубль тех же слов с заглавной в коде. */
-      .upgrade__effect::first-letter {
-        text-transform: uppercase;
-      }
 
       /* Строка «Сл. ур.» тусклее описания намеренно: это справка о ещё не
          купленном, и в глаза первым должно бросаться название, а не цифры. */
@@ -693,6 +687,19 @@
         cursor: default;
       }
 
+      /* Достигнутый максимум: подпись на месте кнопки цены, у правого края строки
+         (кнопка пачки при этом скрыта, и её колонка сжимается в ноль). Устроено
+         как «Получено» у полученного оружия — .weapon__owned: два одинаковых по
+         смыслу состояния должны и выглядеть одинаково. */
+      .upgrade__maxed {
+        grid-area: buy;
+        min-width: 82px;
+        text-align: center;
+        font-size: 13px;
+        font-weight: 700;
+        opacity: 0.4;
+      }
+
       /* --- Магазин оружия (вкладка «Оружие») --- */
 
       /* Слева иконка ствола во всю высоту строки, справа кнопка цены, между
@@ -702,7 +709,7 @@
       .weapon {
         display: grid;
         grid-template-columns: 40px 1fr auto;
-        grid-template-areas: 'icon name buy' 'icon stats buy';
+        grid-template-areas: 'icon name buy' 'icon stats buy' 'icon note buy';
         align-items: center;
         gap: 2px 8px;
         padding: 8px;
@@ -757,6 +764,19 @@
         font-variant-numeric: tabular-nums;
       }
 
+      /* Третья строка — только у особого оружия: чем он особый и что достаётся
+         одному бойцу. Переносу здесь ничто не мешает (в отличие от строки
+         характеристик, которая должна остаться одной строкой), поэтому текст
+         связный, а не сокращённый до значков. Тусклее характеристик: это
+         пояснение, а не числа, по которым выбирают. */
+      .weapon__note {
+        grid-area: note;
+        margin-top: 2px;
+        font-size: 11px;
+        line-height: 1.3;
+        opacity: 0.45;
+      }
+
       .weapon__buy {
         grid-area: buy;
         min-width: 82px;
@@ -777,11 +797,19 @@
         cursor: default;
       }
 
-      /* Купленное не гасим целиком: строка остаётся полноценной, тускнеет только
-         кнопка (она disabled). Запертое — наоборот, приглушено всё, включая
-         иконку: до него ещё не дошла очередь. */
-      .weapon--owned .weapon__buy {
-        background: rgba(255, 255, 255, 0.12);
+      /* Уже полученное: вместо кнопки подпись «Получено» — нажимать нечего, как и
+         на максимальном уровне прокачки (.upgrade__maxed). Ширина держится той же
+         82 px, что у кнопки цены, иначе строки полученного оружия оказались бы
+         короче остальных. Строка при этом не гаснет целиком — она полноценная;
+         запертое, наоборот, приглушено всё, включая иконку: до него ещё не дошла
+         очередь. */
+      .weapon__owned {
+        grid-area: buy;
+        min-width: 82px;
+        text-align: center;
+        font-size: 13px;
+        font-weight: 700;
+        opacity: 0.4;
       }
 
       .weapon--locked {
@@ -997,17 +1025,17 @@
              ставит screens.ts — при множителе прокачки ≠ 1 там всё умножение
              целиком, «280 × 1.04 = 291 EXP». -->
         <div class="screen__gain">
-          <div class="screen__row">Опыт за забег</div>
+          <div class="screen__row">Опыт за вылазку</div>
           <div id="result-run-exp" class="screen__exp"></div>
         </div>
         <div class="screen__gain">
-          <div class="screen__row">Деньги за забег</div>
+          <div class="screen__row">Деньги за вылазку</div>
           <div id="result-run-money" class="screen__exp screen__exp--money"></div>
         </div>
         <div id="result-bank" class="screen__row"></div>
         <button id="result-continue" class="screen__button" type="button">Прокачка</button>
         <!-- Прямой перезапуск: чтобы не заходить в прокачку, когда тратить нечего -->
-        <button id="result-start" class="screen__button" type="button">Начать забег</button>
+        <button id="result-start" class="screen__button" type="button">Начать вылазку</button>
       </div>
 
       <div id="screen-upgrade" class="screen">
@@ -1020,7 +1048,7 @@
         <!-- Таббар и списки вкладок собирает screens.ts по UPGRADE_TRACKS -->
         <div id="upgrade-tabs"></div>
         <div id="upgrade-list"></div>
-        <button id="upgrade-start" class="screen__button" type="button">Начать забег</button>
+        <button id="upgrade-start" class="screen__button" type="button">Начать вылазку</button>
         <!-- Подпись и показ ставит screens.ts: кнопка есть только когда есть что
              сбрасывать, а по нажатиям текст меняется на подтверждения. Скрыта
              изначально, чтобы не мелькнуть на чистом сохранении. -->
@@ -1046,13 +1074,13 @@
            screens.ts по CONFIG.shop. -->
       <div id="screen-boosters" class="screen">
         <div class="screen__title">Бустеры</div>
-        <div class="screen__row">Действуют один забег</div>
+        <div class="screen__row">Действуют одну вылазку</div>
         <span id="boosters-money" class="screen__exp screen__exp--money"></span>
         <div id="boosters-list"></div>
         <!-- Что уже взято. Текст и показ ставит screens.ts: строки нет, пока в
              кит ничего не куплено. -->
         <div id="boosters-kit" hidden></div>
-        <button id="boosters-start" class="screen__button" type="button">В бой</button>
+        <button id="boosters-start" class="screen__button" type="button">Начать вылазку</button>
         <button id="boosters-back" class="screen__button screen__button--ghost" type="button">
           Назад
         </button>

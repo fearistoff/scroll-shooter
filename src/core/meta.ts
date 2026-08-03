@@ -110,12 +110,15 @@ interface UpgradeLabel {
  * веткам ссылкой на один объект, так что разойтись они уже не могут.
  */
 const COMBAT_LABELS = {
-  damage: { title: 'Урон', effect: 'урон одного выстрела из пистолета' },
-  fireRate: { title: 'Скорострельность', effect: 'выстрелов в минуту' },
-  range: { title: 'Дальность', effect: 'расстояние, которое может пройти пуля' },
-  damageTaken: { title: 'Защита', effect: 'сколько урона поглощается' },
-  regenRate: { title: 'Восстановление HP', effect: 'скорость лечения' },
-  regenDelay: { title: 'Задержка лечения', effect: 'пауза перед началом лечения' },
+  // effect у боевых характеристик — запасной текст: обычно на его месте стоит
+  // ФАКТИЧЕСКОЕ состояние («Базовый урон — 2.4 HP», см. upgradeEffect), и
+  // показывается он только если значение почему-то не посчиталось.
+  damage: { title: 'Урон', effect: 'Урон выстрела пистолета' },
+  fireRate: { title: 'Скорострельность', effect: 'Выстрелов в минуту' },
+  range: { title: 'Дальность', effect: 'Расстояние, которое проходит пуля' },
+  damageTaken: { title: 'Защита', effect: 'Сколько урона поглощается' },
+  regenRate: { title: 'Восстановление HP', effect: 'Скорость лечения' },
+  regenDelay: { title: 'Задержка лечения', effect: 'Пауза перед началом лечения' },
 } as const satisfies Record<string, UpgradeLabel>;
 
 /** Человеческие названия и описание эффекта — для экрана прокачки. */
@@ -135,9 +138,9 @@ export const UPGRADE_LABELS: Record<UpgradeId, UpgradeLabel> = {
   allyRegenDelay: COMBAT_LABELS.regenDelay,
 
   // Единственное улучшение-счётчик: в строке стоит не множитель, а «3 → 4».
-  squadSize: { title: 'Размер отряда', effect: 'стрелков в отряде' },
-  exp: { title: 'Получаемый опыт', effect: 'опыт за забег' },
-  money: { title: 'Объём дропа денег', effect: 'размер находки с убитых зомби' },
+  squadSize: { title: 'Размер отряда', effect: 'Стрелков в отряде' },
+  exp: { title: 'Получаемый опыт', effect: 'Опыт за вылазку' },
+  money: { title: 'Объём дропа денег', effect: 'Размер находки с убитых зомби' },
 };
 
 /**
@@ -153,6 +156,15 @@ export const UPGRADE_LABELS: Record<UpgradeId, UpgradeLabel> = {
 export interface UpgradeValue {
   value: number;
   unit: string;
+  /**
+   * Сколько знаков после запятой ЗНАЧИМЫ. Хвост нулей всё равно обрезается
+   * (см. Screens.trim), поэтому это потолок точности, а не формат.
+   *
+   * У урона 2: база пистолета — 1 hp, шаг уровня 4%, и в десятых прибавка не
+   * видна вовсе. У остальных 1: там числа крупные (132 выстрела в минуту, 16 м),
+   * и вторая цифра после запятой уже шум.
+   */
+  digits: number;
 }
 
 /**
@@ -181,29 +193,29 @@ function combatValue(
   switch (stat) {
     case 'damage': {
       const factor = kind === 'ally' ? formation.allyDamageFactor : 1;
-      return { value: weapons.pistol.damage * multiplier * factor, unit: ' hp' };
+      return { value: weapons.pistol.damage * multiplier * factor, unit: ' HP', digits: 2 };
     }
     // Выстрелов в МИНУТУ: в секунду у пистолета выходит 2.2, и на таком числе
     // прибавка уровня (4%) не читается вовсе.
     case 'fireRate':
-      return { value: weapons.pistol.fireRate * multiplier * 60, unit: '/мин' };
+      return { value: weapons.pistol.fireRate * multiplier * 60, unit: '/мин', digits: 1 };
     // 1 unit = 1 метр (см. CLAUDE.md, «Единицы и оси»), поэтому дальность
     // показывается как есть.
     case 'range':
-      return { value: weapons.pistol.range * multiplier, unit: ' м' };
+      return { value: weapons.pistol.range * multiplier, unit: ' м', digits: 1 };
     // Множитель здесь — доля ДОХОДЯЩЕГО урона (0.99 на первом уровне), а игрока
     // интересует поглощённая часть: её и показываем.
     case 'damageTaken':
-      return { value: (1 - multiplier) * 100, unit: '%' };
+      return { value: (1 - multiplier) * 100, unit: '%', digits: 1 };
     // Регенерация задана как «hpPerInterval за intervalSeconds», а в бою работает
     // ровно как их отношение (Squad.regenerate), — значит и показывать надо его.
     case 'regenRate': {
       const { hpPerInterval, intervalSeconds } = player.regen;
       const perSecond = intervalSeconds > 0 ? hpPerInterval / intervalSeconds : 0;
-      return { value: perSecond * multiplier, unit: ' hp/с' };
+      return { value: perSecond * multiplier, unit: ' HP/с', digits: 1 };
     }
     case 'regenDelay':
-      return { value: player.regen.delayAfterDamageSeconds * multiplier, unit: ' с' };
+      return { value: player.regen.delayAfterDamageSeconds * multiplier, unit: ' с', digits: 1 };
   }
 }
 
@@ -242,6 +254,74 @@ export function upgradeValue(id: UpgradeId, multiplier: number): UpgradeValue | 
   const entry = COMBAT_STATS[id];
   if (entry === undefined) return null;
   return combatValue(entry.kind, entry.stat, multiplier);
+}
+
+/**
+ * Число без хвоста нулей: 132.0 → «132», 1.10 → «1.1», 1.04 → «1.04».
+ *
+ * Ровные значения должны выглядеть ровными: «132.0 выстрела» и «10.0 с» читаются
+ * как измеренные с точностью до десятых, хотя это просто целые числа. Точность
+ * приходит снаружи (digits у UpgradeValue): у урона сотые, у остального десятые.
+ *
+ * Лежит здесь, рядом с самими значениями и их точностью, а не на экране: единица
+ * измерения, число знаков и формат — одно решение, и разносить его по файлам
+ * значит однажды показать «2.40 HP» в одном месте и «2.4 HP» в другом.
+ */
+export function trimNumber(value: number, digits: number): string {
+  return String(+value.toFixed(digits));
+}
+
+/**
+ * Форма слова при числе: 1 выстрел, 2 выстрела, 5 выстрелов.
+ *
+ * У дробных числительных форма всегда как у 2–4 («133.3 выстрела»), поэтому
+ * нецелое значение сразу берёт few.
+ */
+function pluralize(value: number, one: string, few: string, many: string): string {
+  if (!Number.isInteger(value)) return few;
+
+  const tens = Math.abs(value) % 100;
+  if (tens >= 11 && tens <= 14) return many;
+
+  const units = Math.abs(value) % 10;
+  if (units === 1) return one;
+  if (units >= 2 && units <= 4) return few;
+  return many;
+}
+
+/**
+ * Вторая строка ряда: ФАКТИЧЕСКОЕ состояние характеристики словами — «Базовый
+ * урон — 2.4 HP», «132 выстрела в минуту».
+ *
+ * Не описание того, что улучшение делает, а показание прибора: описание игрок
+ * прочитал один раз, а число смотрит каждый заход на экран. Считается по
+ * КУПЛЕННОМУ уровню; что даст следующий, стоит третьей строкой.
+ *
+ * null — улучшение не боевое (размер отряда, опыт, деньги): у них на этом месте
+ * остаётся обычное описание из UPGRADE_LABELS.
+ */
+export function upgradeEffect(id: UpgradeId, multiplier: number): string | null {
+  const entry = COMBAT_STATS[id];
+  if (entry === undefined) return null;
+
+  const { value, digits } = combatValue(entry.kind, entry.stat, multiplier);
+  const shown = trimNumber(value, digits);
+  const rounded = +value.toFixed(digits);
+
+  switch (entry.stat) {
+    case 'damage':
+      return `Базовый урон — ${shown} HP`;
+    case 'fireRate':
+      return `${shown} ${pluralize(rounded, 'выстрел', 'выстрела', 'выстрелов')} в минуту`;
+    case 'range':
+      return `Пуля пролетает ${shown} м`;
+    case 'damageTaken':
+      return `Поглощается ${shown}% урона`;
+    case 'regenRate':
+      return `Восстанавливается ${shown} HP/с`;
+    case 'regenDelay':
+      return `Лечение начинается через ${shown} с`;
+  }
 }
 
 /**
