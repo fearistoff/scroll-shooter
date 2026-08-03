@@ -128,6 +128,23 @@ export class RunState {
     return CONFIG.run.waveDamageGrowth ** (this.wave - 1);
   }
 
+  /**
+   * Во сколько раз дороже кристалл этой волны по сравнению с первой:
+   * 1, 1.5, 2.25, … (CONFIG.run.waveExpGrowth).
+   *
+   * Берётся НА ВЫПАДЕНИИ кристалла (CrystalPool.spawn), а не на подборе, и по
+   * той же причине, что hp/damage берутся на спавне: награда принадлежит той
+   * волне, в которой её заслужили. У босса это не тонкость, а необходимость —
+   * он умирает последним в волне, startNextWave срабатывает на следующем кадре,
+   * и на подборе его кристаллы уже считались бы кристаллами новой волны.
+   *
+   * С множителем прокачки (player.expMultiplier) не пересекается: тот один раз
+   * применяется к итогу забега, см. expEarned.
+   */
+  get expMultiplier(): number {
+    return CONFIG.run.waveExpGrowth ** (this.wave - 1);
+  }
+
   private resetWaveBudget(): void {
     // Единиц в волне ровно столько при ЛЮБОМ составе: сначала считается общий
     // бюджет, и только потом он делится на виды. Иначе доля крупных меняла бы
@@ -376,6 +393,7 @@ export class RunState {
     spawnRateMultiplier: number;
     hpMultiplier: number;
     damageMultiplier: number;
+    expMultiplier: number;
   } {
     return {
       total: this.totalZombies,
@@ -396,6 +414,7 @@ export class RunState {
       spawnRateMultiplier: +this.spawnRateMultiplier.toFixed(3),
       hpMultiplier: +this.hpMultiplier.toFixed(3),
       damageMultiplier: +this.damageMultiplier.toFixed(3),
+      expMultiplier: +this.expMultiplier.toFixed(3),
     };
   }
 }

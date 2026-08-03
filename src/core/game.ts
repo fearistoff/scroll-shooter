@@ -109,7 +109,9 @@ export class Game {
     // ноль (см. RunState.worldSpeed).
     this.world = new World(this.scene, this.run);
     this.bullets = new BulletPool(this.scene);
-    this.crystals = new CrystalPool(this.scene);
+    // Кристаллам забег нужен ради множителя опыта волны: он применяется на
+    // выпадении, внутри CrystalPool.spawn (см. RunState.expMultiplier).
+    this.crystals = new CrystalPool(this.scene, this.run);
     // Монеты создаются до зомби и босса: оба роняют их в своей воронке смерти.
     this.money = new MoneyPool(this.scene);
     this.enemies = new EnemyPool(this.scene, this.run, this.crystals, this.money);

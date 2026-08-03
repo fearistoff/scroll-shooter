@@ -549,11 +549,16 @@ export class Boss {
     // рисовался бы по одной раскладке, а все следующие — по другой.
     this.updateCorpse(0);
 
-    // Босс осыпается кристаллами: он один стоит целой волны.
+    // Босс осыпается кристаллами: он один стоит целой волны. Награда задана
+    // ЦЕЛИКОМ (CONFIG.exp.perBoss) и делится на число кристаллов, а не задана на
+    // штуку: сколько их сыплется — вопрос картинки (по одному на слой полосы), и
+    // правка layerCount не должна менять цену босса. Множитель волны добавит
+    // CrystalPool.spawn — на выпадении, то есть ещё в СВОЕЙ волне.
     const drops = Math.max(1, CONFIG.boss.layerCount);
+    const perDrop = CONFIG.exp.perBoss / drops;
     for (let n = 0; n < drops; n++) {
       const spread = (Math.random() * 2 - 1) * CONFIG.boss.capsule.radius * 2;
-      this.crystals.spawn(spread, this.posZ, CONFIG.exp.perBigZombie);
+      this.crystals.spawn(spread, this.posZ, perDrop);
     }
 
     // Деньги с босса — одной монетой, но крупной, и растут вместе с его запасом

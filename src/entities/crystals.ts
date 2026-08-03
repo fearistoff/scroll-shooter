@@ -2,6 +2,11 @@ import { OctahedronGeometry, Vector3, type Scene } from 'three';
 import { CONFIG } from '../config';
 import { PickupPool, type PickupMotion } from './pickups';
 
+/** Что кристаллам нужно от забега: во сколько раз дороже опыт текущей волны. */
+export interface CrystalWaveScale {
+  readonly expMultiplier: number;
+}
+
 /**
  * Кристаллы EXP (ТЗ раздел 9): падают с убитых зомби и разбитых бочек, едут к
  * отряду и попадают в счётчик забега.
@@ -11,7 +16,10 @@ import { PickupPool, type PickupMotion } from './pickups';
  * отряда: подбирать вручную по ТЗ не нужно.
  */
 export class CrystalPool extends PickupPool {
-  constructor(scene: Scene) {
+  constructor(
+    scene: Scene,
+    private readonly wave: CrystalWaveScale,
+  ) {
     const { crystalSize, crystalColor, poolSize } = CONFIG.exp;
 
     super(scene, {
@@ -27,5 +35,20 @@ export class CrystalPool extends PickupPool {
 
   protected get motion(): PickupMotion {
     return CONFIG.exp;
+  }
+
+  /**
+   * ЕДИНСТВЕННАЯ ТОЧКА, где к номиналу кристалла применяется множитель волны
+   * (RunState.expMultiplier). Источники выпадения — зомби, бочки, босс — передают
+   * сюда БАЗОВОЕ число из CONFIG.exp и о волне не знают: иначе множитель пришлось
+   * бы дублировать в трёх воронках смерти, и он разъехался бы при первой правке.
+   *
+   * Множится на выпадении, а не на подборе: кристалл стоит столько, сколько
+   * стоила волна, в которой он выпал. Кристаллы босса иначе получали бы цену уже
+   * следующей волны — он умирает последним, и волна сменяется на следующем кадре,
+   * пока они летят к счётчику.
+   */
+  override spawn(x: number, z: number, value: number): void {
+    super.spawn(x, z, value * this.wave.expMultiplier);
   }
 }
