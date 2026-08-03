@@ -100,6 +100,43 @@ export const UPGRADE_TRACKS: readonly UpgradeTrack[] = [
 /** Плоский список всех улучшений — для сохранения, сброса и отладки. */
 export const UPGRADE_IDS: readonly UpgradeId[] = UPGRADE_TRACKS.flatMap((track) => track.ids);
 
+/**
+ * Бусты характеристик — разовые усиления на одну вылазку, часть стартового
+ * кита (CONFIG.shop.startBonuses.statBoosts — там же величины и цены). Пять
+ * множителей ×1.5 и складывающийся буст предела отряда.
+ */
+export type StatBoostId = 'shooters' | 'damage' | 'fireRate' | 'range' | 'exp' | 'money';
+
+/** Порядок и здесь смысловой: в нём экран бустеров строит строки. */
+export const STAT_BOOST_IDS: readonly StatBoostId[] = [
+  // Предел отряда первым — его строка стоит рядом со строкой бойцов, чей
+  // предел он и двигает.
+  'shooters',
+  'damage',
+  'fireRate',
+  'range',
+  'exp',
+  'money',
+];
+
+/**
+ * Чьи уровни входят в цену буста. Буст — разовая копия того же эффекта, что
+ * дают эти ветки, поэтому чем дальше они выкуплены, тем дороже копия: +50%
+ * поверх прокачанного стоит больше, чем поверх базы (формула цены и её
+ * обоснование — CONFIG.shop.startBonuses.statBoosts).
+ *
+ * У урона веток три: буст множит squadDamageMultiplier, то есть усиливает и
+ * героя, и стрелков, и общий урон разом — все три ветки и считаются.
+ */
+const STAT_BOOST_SOURCES: Record<StatBoostId, readonly UpgradeId[]> = {
+  shooters: ['squadSize'],
+  damage: ['heroDamage', 'allyDamage', 'squadDamage'],
+  fireRate: ['heroFireRate', 'allyFireRate'],
+  range: ['heroRange', 'allyRange'],
+  exp: ['exp'],
+  money: ['money'],
+};
+
 interface UpgradeLabel {
   title: string;
   effect: string;
@@ -455,6 +492,12 @@ interface SavedProgress {
    */
   specialsPicked: WeaponId[];
   /**
+   * Взятые в кит бусты характеристик: id → сколько раз (больше единицы бывает
+   * только у предела отряда). Как и весь кит, перезагрузку не переживают —
+   * конвертируются обратно в деньги на чтении.
+   */
+  startBoosts: Partial<Record<StatBoostId, number>>;
+  /**
    * Рекорд достигнутой волны. Поля нет в сохранениях, сделанных до появления
    * замка по волне: такой игрок начинает рекорд с нуля и открывает средние
    * ступени магазина заново — уже купленное при этом остаётся купленным
@@ -514,6 +557,11 @@ export class MetaProgress {
    * руках, предлагать его в кит нечего.
    */
   private readonly specialsPicked = new Set<WeaponId>();
+  /**
+   * Взятые в кит бусты характеристик: id → сколько раз. Живут по правилам
+   * кита — см. «Стартовый кит» ниже и SavedProgress.startBoosts.
+   */
+  private readonly startBoostsValue = new Map<StatBoostId, number>();
 
   constructor() {
     this.load();
@@ -894,9 +942,12 @@ export class MetaProgress {
    * до этого момента в конфиге не виден, и экран бустеров показывал бы старый
    * предел. Расхождения с выдачей нет: к моменту, когда Squad.addShooters
    * читает конфиг, applyTo() уже вызван (Game.startRun).
+   *
+   * Буст предела отряда входит в предел (boostedMaxShooters): взятые бусты
+   * тут же открывают места и оплаченным бойцам.
    */
   get startShooterLimit(): number {
-    return Math.max(0, this.countValue('squadSize') - 1);
+    return Math.max(0, this.boostedMaxShooters - 1);
   }
 
   canBuyStartShooter(): boolean {
@@ -1028,6 +1079,89 @@ export class MetaProgress {
     return true;
   }
 
+  // --- Бусты характеристик (часть кита) --------------------------------------
+
+  /** Сколько раз буст взят в кит. Больше единицы — только у предела отряда. */
+  startBoostCount(id: StatBoostId): number {
+    return this.startBoostsValue.get(id) ?? 0;
+  }
+
+  /**
+   * Предел отряда С УЧЁТОМ взятых бустов: ветка размера отряда плюс
+   * shooterStep за каждый буст, но не выше shooterCap. От ветки считается по
+   * той же причине, что startShooterLimit: applyTo() до старта забега конфиг
+   * не трогал, а экран бустеров должен показывать уже новый предел.
+   */
+  get boostedMaxShooters(): number {
+    const { shooterStep, shooterCap } = CONFIG.shop.startBonuses.statBoosts;
+    const boosted = this.countValue('squadSize') + shooterStep * this.startBoostCount('shooters');
+    return Math.min(boosted, shooterCap);
+  }
+
+  /**
+   * Цена буста: базовая растёт с уровнями соответствующих веток до
+   * priceMaxFactor раз при полностью выкупленных (формула и обоснование —
+   * CONFIG.shop.startBonuses.statBoosts). От числа уже взятых бустов цена НЕ
+   * зависит, поэтому возврат по ней же честен при любом порядке покупок.
+   */
+  statBoostPrice(id: StatBoostId): number {
+    const { basePrices, priceMaxFactor } = CONFIG.shop.startBonuses.statBoosts;
+
+    let levels = 0;
+    let maxLevels = 0;
+    for (const source of STAT_BOOST_SOURCES[id]) {
+      levels += this.level(source);
+      maxLevels += this.maxLevel(source);
+    }
+
+    const share = maxLevels > 0 ? levels / maxLevels : 0;
+    return Math.round(basePrices[id] * (1 + (priceMaxFactor - 1) * share));
+  }
+
+  /**
+   * Можно ли взять буст: множители — по одному (второй раз давать «+50%»
+   * нечему), предел отряда — пока не упёрся в потолок shooterCap.
+   */
+  canBuyStatBoost(id: StatBoostId): boolean {
+    if (id === 'shooters') {
+      if (this.boostedMaxShooters >= CONFIG.shop.startBonuses.statBoosts.shooterCap) return false;
+    } else if (this.startBoostCount(id) > 0) {
+      return false;
+    }
+    return this.moneyValue >= this.statBoostPrice(id);
+  }
+
+  /** Берёт буст в кит. Возвращает true, если покупка прошла. */
+  buyStatBoost(id: StatBoostId): boolean {
+    if (!this.canBuyStatBoost(id)) return false;
+
+    this.moneyValue -= this.statBoostPrice(id);
+    this.startBoostsValue.set(id, this.startBoostCount(id) + 1);
+    this.save();
+    return true;
+  }
+
+  /** Возвращает один буст в кошелёк — поштучно, как бойцов. */
+  refundStatBoost(id: StatBoostId): boolean {
+    const count = this.startBoostCount(id);
+    if (count <= 0) return false;
+
+    this.moneyValue += this.statBoostPrice(id);
+    if (count === 1) this.startBoostsValue.delete(id);
+    else this.startBoostsValue.set(id, count - 1);
+
+    // Возврат буста предела мог оставить в ките больше бойцов, чем теперь
+    // влезает, — лишние возвращаются деньгами тут же, а не молча теряются
+    // на выдаче.
+    while (this.startShootersValue > this.startShooterLimit) {
+      this.startShootersValue--;
+      this.moneyValue += this.startShooterPrice;
+    }
+
+    this.save();
+    return true;
+  }
+
   /** Стоимость содержимого кита по текущим ценам аренды. */
   private startKitWorth(): number {
     let worth = this.startShootersValue * this.startShooterPrice;
@@ -1036,6 +1170,9 @@ export class MetaProgress {
     }
     if (this.startSpecialValue !== null) {
       worth += this.startWeaponPrice(this.startSpecialValue) ?? 0;
+    }
+    for (const [id, count] of this.startBoostsValue) {
+      worth += this.statBoostPrice(id) * count;
     }
     return worth;
   }
@@ -1054,6 +1191,7 @@ export class MetaProgress {
     this.startShootersValue = 0;
     this.startWeaponValue = null;
     this.startSpecialValue = null;
+    this.startBoostsValue.clear();
     this.save();
   }
 
@@ -1062,7 +1200,8 @@ export class MetaProgress {
     return (
       this.startShootersValue > 0 ||
       this.startWeaponValue !== null ||
-      this.startSpecialValue !== null
+      this.startSpecialValue !== null ||
+      this.startBoostsValue.size > 0
     );
   }
 
@@ -1077,6 +1216,7 @@ export class MetaProgress {
    */
   get hasAffordableBooster(): boolean {
     if (this.canBuyStartShooter()) return true;
+    if (STAT_BOOST_IDS.some((id) => this.canBuyStatBoost(id))) return true;
     return shopWeapons().some((entry) => this.canBuyStartWeapon(entry.id));
   }
 
@@ -1086,19 +1226,67 @@ export class MetaProgress {
    *
    * Зовётся из Game.startRun ровно один раз за забег.
    */
-  consumeStartKit(): { shooters: number; weapon: WeaponId | null; special: WeaponId | null } {
+  consumeStartKit(): {
+    shooters: number;
+    weapon: WeaponId | null;
+    special: WeaponId | null;
+    boosts: Partial<Record<StatBoostId, number>>;
+  } {
+    const boosts: Partial<Record<StatBoostId, number>> = {};
+    for (const [id, count] of this.startBoostsValue) boosts[id] = count;
+
     const kit = {
       shooters: this.startShootersValue,
       weapon: this.startWeaponValue,
       special: this.startSpecialValue,
+      boosts,
     };
     if (!this.hasStartKit) return kit;
 
     this.startShootersValue = 0;
     this.startWeaponValue = null;
     this.startSpecialValue = null;
+    this.startBoostsValue.clear();
     this.save();
     return kit;
+  }
+
+  /**
+   * Применяет бусты кита к конфигу. В отличие от applyTo() НЕ идемпотентен —
+   * МНОЖИТ поверх только что записанных applyTo() абсолютных значений, поэтому
+   * зовётся ровно один раз за забег, из Game.startRun: строго после applyTo()
+   * и до выдачи бойцов кита — буст предела отряда должен встать в
+   * formation.maxShooters раньше, чем Squad.addShooters начнёт по нему резать.
+   * Снимать бусты не нужно: следующий applyTo() перепишет всё абсолютами.
+   */
+  applyStartBoosts(
+    boosts: Partial<Record<StatBoostId, number>>,
+    config: typeof CONFIG = CONFIG,
+  ): void {
+    const { multiplier, shooterStep, shooterCap } = CONFIG.shop.startBonuses.statBoosts;
+
+    // Урон — общим множителем отряда, а не ветками героя и стрелков: это одна
+    // точка (weapons.ts кладёт её на снаряд и взрыв каждого ствола), и то же
+    // место, куда пишет ветка «Общий урон».
+    if (boosts.damage) config.player.squadDamageMultiplier *= multiplier;
+    if (boosts.fireRate) {
+      config.player.heroMultipliers.fireRateMultiplier *= multiplier;
+      config.player.allyMultipliers.fireRateMultiplier *= multiplier;
+    }
+    if (boosts.range) {
+      config.player.heroMultipliers.rangeMultiplier *= multiplier;
+      config.player.allyMultipliers.rangeMultiplier *= multiplier;
+    }
+    if (boosts.exp) config.player.expMultiplier *= multiplier;
+    if (boosts.money) config.player.moneyMultiplier *= multiplier;
+
+    const shooters = boosts.shooters ?? 0;
+    if (shooters > 0) {
+      config.formation.maxShooters = Math.min(
+        config.formation.maxShooters + shooterStep * shooters,
+        shooterCap,
+      );
+    }
   }
 
   /**
@@ -1199,6 +1387,7 @@ export class MetaProgress {
     this.startShootersValue = 0;
     this.startWeaponValue = null;
     this.startSpecialValue = null;
+    this.startBoostsValue.clear();
     this.specialsPicked.clear();
     this.bestWaveValue = 0;
     this.save();
@@ -1292,6 +1481,7 @@ export class MetaProgress {
         this.startShootersValue = 0;
         this.startWeaponValue = null;
         this.startSpecialValue = null;
+        this.startBoostsValue.clear();
       }
     } catch {
       // Невалидный JSON — просто стартуем с нуля.
@@ -1303,6 +1493,7 @@ export class MetaProgress {
       this.startShootersValue = 0;
       this.startWeaponValue = null;
       this.startSpecialValue = null;
+      this.startBoostsValue.clear();
       this.specialsPicked.clear();
       this.bestWaveValue = 0;
     }
@@ -1320,6 +1511,28 @@ export class MetaProgress {
    * без неё. Открытость при этом не спрашивается: арендовать можно и закрытое.
    */
   private loadStartKit(saved: Partial<SavedProgress>): void {
+    // Бусты читаются РАНЬШЕ бойцов: предел бойцов (startShooterLimit) считается
+    // уже с бустами предела отряда, и обратный порядок отрезал бы оплаченных
+    // бойцов, которым буст место как раз давал.
+    if (typeof saved.startBoosts === 'object' && saved.startBoosts !== null) {
+      const { shooterStep, shooterCap } = CONFIG.shop.startBonuses.statBoosts;
+      for (const id of STAT_BOOST_IDS) {
+        const value = (saved.startBoosts as Partial<Record<StatBoostId, unknown>>)[id];
+        if (typeof value !== 'number' || !Number.isFinite(value)) continue;
+
+        let count = Math.max(0, Math.floor(value));
+        if (id === 'shooters') {
+          // Не больше, чем набирается честными покупками: каждая следующая
+          // требует, чтобы предел ещё не упёрся в потолок (canBuyStatBoost).
+          const base = this.countValue('squadSize');
+          count = Math.min(count, Math.max(0, Math.ceil((shooterCap - base) / shooterStep)));
+        } else {
+          count = Math.min(count, 1);
+        }
+        if (count > 0) this.startBoostsValue.set(id, count);
+      }
+    }
+
     if (typeof saved.startShooters === 'number' && Number.isFinite(saved.startShooters)) {
       const limit = this.startShooterLimit;
       this.startShootersValue = Math.min(Math.max(Math.floor(saved.startShooters), 0), limit);
@@ -1394,12 +1607,16 @@ export class MetaProgress {
       startShooters: this.startShootersValue,
       startWeapon: this.startWeaponValue,
       startSpecial: this.startSpecialValue,
+      startBoosts: {},
       specialsPicked: [...this.specialsPicked],
       bestWave: this.bestWaveValue,
     };
     for (const id of UPGRADE_IDS) {
       const level = this.level(id);
       if (level > 0) payload.levels[id] = level;
+    }
+    for (const [id, count] of this.startBoostsValue) {
+      payload.startBoosts[id] = count;
     }
 
     try {
@@ -1422,6 +1639,8 @@ export class MetaProgress {
       limit: number;
       weapon: WeaponId | null;
       special: WeaponId | null;
+      boosts: Partial<Record<StatBoostId, number>>;
+      boostPrices: Record<string, number>;
     };
     specialsPicked: WeaponId[];
     levels: Record<string, number>;
@@ -1454,6 +1673,10 @@ export class MetaProgress {
         limit: this.startShooterLimit,
         weapon: this.startWeaponValue,
         special: this.startSpecialValue,
+        boosts: Object.fromEntries(this.startBoostsValue),
+        boostPrices: Object.fromEntries(
+          STAT_BOOST_IDS.map((id) => [id, this.statBoostPrice(id)]),
+        ),
       },
       specialsPicked: [...this.specialsPicked],
       levels,

@@ -1,12 +1,14 @@
 import { CONFIG } from '../config';
 import {
   isCountUpgrade,
+  STAT_BOOST_IDS,
   trimNumber,
   UPGRADE_LABELS,
   UPGRADE_TRACKS,
   upgradeEffect,
   upgradeValue,
   type MetaProgress,
+  type StatBoostId,
   type UpgradeId,
   type UpgradeTrackId,
 } from '../core/meta';
@@ -106,19 +108,41 @@ interface WeaponRow {
 }
 
 /**
- * Строка бойцов на экране бустеров: две кнопки — взять и вернуть.
+ * Строка бойцов или буста на экране бустеров.
  *
  * НЕ наследует WeaponRow, хотя разметка та же: у ствола есть примечание особого
- * (weapon__note), а у бойцов — нет, и наследование заставляло бы держать в строке
- * бойцов пустой элемент только ради типа.
+ * (weapon__note), а здесь — нет, и наследование заставляло бы держать в строке
+ * пустой элемент только ради типа.
+ *
+ * refund — вторая кнопка «вернуть» у складывающихся покупок (бойцы, буст
+ * предела отряда). null — покупка одиночная, и её снимает та же кнопка buy
+ * («Убрать»), как у строк аренды стволов.
  */
 interface BoosterRow {
   root: HTMLElement;
   buy: HTMLButtonElement;
   name: HTMLElement;
   stats: HTMLElement;
-  refund: HTMLButtonElement;
+  refund: HTMLButtonElement | null;
 }
+
+/**
+ * Иконки, названия и вторые строки бустов характеристик. Величина прибавки в
+ * названиях не зашита — она общая (+50%,
+ * CONFIG.shop.startBonuses.statBoosts.multiplier) и дописывается перерисовкой,
+ * чтобы правка конфига не разъезжалась с экраном. Вторая строка говорит, К
+ * ЧЕМУ прибавка, а не как долго она действует: «одну вылазку» уже сказано
+ * шапкой экрана. У предела отряда своей строки здесь нет — она собирается из
+ * чисел конфига (см. refreshStatBoosts).
+ */
+const STAT_BOOST_VIEW: Record<StatBoostId, { icon: string; title: string; note: string }> = {
+  shooters: { icon: '👥', title: 'Предел отряда', note: '' },
+  damage: { icon: '💥', title: 'Урон', note: 'Ко всему урону отряда' },
+  fireRate: { icon: '⚡', title: 'Скорострельность', note: 'К темпу огня всех стволов' },
+  range: { icon: '🎯', title: 'Дальность', note: 'К дальности всех стволов' },
+  exp: { icon: '💎', title: 'Опыт', note: 'К опыту за вылазку' },
+  money: { icon: '💰', title: 'Деньги', note: 'К деньгам за вылазку' },
+};
 
 /**
  * Вкладки экрана прокачки. К трём веткам улучшений (UPGRADE_TRACKS) добавлен
@@ -238,6 +262,8 @@ export class Screens {
   private readonly boosterWeaponRows = new Map<WeaponId, WeaponRow>();
   /** Единственная строка бойцов на экране бустеров. null — разметки экрана нет вовсе. */
   private boosterShooterRow: BoosterRow | null = null;
+  /** Строки бустов характеристик — по одной на каждый StatBoostId. */
+  private readonly statBoostRows = new Map<StatBoostId, BoosterRow>();
   private readonly tracks = new Map<ScreenTrackId, TrackView>();
 
   /**
@@ -808,6 +834,13 @@ export class Screens {
 
     list.appendChild(this.buildBoosterShooterRow());
 
+    // Бусты характеристик — сразу за бойцами, до стволов: предел отряда двигает
+    // «до N» в строке бойцов и потому стоит рядом с ней, а остальные читаются
+    // одним блоком разовых усилений. Порядок — STAT_BOOST_IDS.
+    for (const id of STAT_BOOST_IDS) {
+      list.appendChild(this.buildStatBoostRow(id));
+    }
+
     for (const entry of shopWeapons()) {
       const row = Screens.buildWeaponRow(entry.id);
       row.buy.classList.add('weapon__buy--booster');
@@ -867,6 +900,71 @@ export class Screens {
     actions.append(refund, buy);
     row.append(icon, name, stats, actions);
     this.boosterShooterRow = { root: row, name, stats, buy, refund };
+    return row;
+  }
+
+  /**
+   * Строка буста характеристик.
+   *
+   * У предела отряда две кнопки, как у бойцов: буст складывается (+5 мест за
+   * покупку до потолка), и снимать его нужно так же поштучно. Остальные бусты
+   * берутся по одному, и их кнопка — переключатель: повторное нажатие
+   * («Убрать») снимает выбор, как у строк аренды стволов.
+   */
+  private buildStatBoostRow(id: StatBoostId): HTMLElement {
+    const stackable = id === 'shooters';
+
+    const row = document.createElement('div');
+    row.className = 'weapon';
+
+    const icon = document.createElement('div');
+    icon.className = 'weapon__icon';
+    icon.textContent = STAT_BOOST_VIEW[id].icon;
+
+    const name = document.createElement('div');
+    name.className = 'weapon__name';
+
+    const stats = document.createElement('div');
+    stats.className = 'weapon__stats';
+
+    const buy = document.createElement('button');
+    buy.className = 'weapon__buy weapon__buy--booster';
+    buy.type = 'button';
+
+    let refund: HTMLButtonElement | null = null;
+    if (stackable) {
+      const actions = document.createElement('div');
+      actions.className = 'weapon__actions';
+
+      refund = document.createElement('button');
+      refund.className = 'weapon__buy weapon__buy--slim';
+      refund.type = 'button';
+      refund.textContent = '−';
+      refund.setAttribute('aria-label', 'Вернуть буст предела отряда');
+      refund.addEventListener('click', () => {
+        this.meta.refundStatBoost(id);
+        this.refreshBoosters();
+      });
+
+      buy.addEventListener('click', () => {
+        this.meta.buyStatBoost(id);
+        this.refreshBoosters();
+      });
+
+      actions.append(refund, buy);
+      row.append(icon, name, stats, actions);
+    } else {
+      buy.addEventListener('click', () => {
+        // Повторное нажатие по взятому снимает выбор — то же правило, что у
+        // строк аренды стволов.
+        if (this.meta.startBoostCount(id) > 0) this.meta.refundStatBoost(id);
+        else this.meta.buyStatBoost(id);
+        this.refreshBoosters();
+      });
+      row.append(icon, name, stats, buy);
+    }
+
+    this.statBoostRows.set(id, { root: row, name, stats, buy, refund });
     return row;
   }
 
@@ -1106,9 +1204,16 @@ export class Screens {
    * изменившимся остатком денег.
    */
   private refreshBoosters(): void {
+    // Конфиг — к текущим уровням, как на прокачке (см. refreshUpgrades): после
+    // забега с бустами в нём ещё лежат их множители, и примечания особых
+    // стволов (дальность огнемёта, взрыв гранаты) показывали бы числа ×1.5.
+    // Бусты нового кита от этого не страдают: их применит startRun, уже после.
+    this.meta.applyTo();
+
     if (this.boostersMoney !== null) this.boostersMoney.textContent = `${this.meta.money} $`;
 
     this.refreshBoosterShooters();
+    this.refreshStatBoosts();
 
     // Слота два — стрелковый и особый (см. MetaProgress.canBuyStartWeapon).
     const chosenFirearm = this.meta.startWeapon;
@@ -1182,7 +1287,44 @@ export class Screens {
 
     row.buy.textContent = `${price} $`;
     row.buy.disabled = !this.meta.canBuyStartShooter();
-    row.refund.disabled = count === 0;
+    if (row.refund !== null) row.refund.disabled = count === 0;
+  }
+
+  /**
+   * Строки бустов характеристик: подписи, цены и доступность.
+   *
+   * Прибавка предела отряда в названии — ФАКТИЧЕСКАЯ, а не номинал × число
+   * покупок: у потолка (32) последний буст даёт меньше пяти мест, и «+10»
+   * там врал бы. Вторая строка называет номинал и потолок — они из конфига.
+   */
+  private refreshStatBoosts(): void {
+    const { multiplier, shooterStep, shooterCap } = CONFIG.shop.startBonuses.statBoosts;
+    const percent = trimNumber((multiplier - 1) * 100, 0);
+
+    for (const [id, row] of this.statBoostRows) {
+      const count = this.meta.startBoostCount(id);
+      const price = this.meta.statBoostPrice(id);
+      const { title, note } = STAT_BOOST_VIEW[id];
+
+      row.root.classList.toggle('weapon--picked', count > 0);
+
+      if (id === 'shooters') {
+        const bonus = this.meta.boostedMaxShooters - this.meta.countValue('squadSize');
+        row.name.textContent = count > 0 ? `${title} +${bonus}` : title;
+        // Коротко: колонка с двумя кнопками отдаёт 146 px (ЗАМЕРЕНО canvas-обмером
+        // при фактическом шрифте), «+5 к макс. стрелков · до 28» занимала 149 и
+        // переносилась на вторую строку, «+5 к стрелкам · до 28» — 118.
+        row.stats.textContent = `+${shooterStep} к стрелкам · до ${shooterCap}`;
+        row.buy.textContent = `${price} $`;
+        row.buy.disabled = !this.meta.canBuyStatBoost(id);
+        if (row.refund !== null) row.refund.disabled = count === 0;
+      } else {
+        row.name.textContent = `${title} +${percent}%`;
+        row.stats.textContent = note;
+        row.buy.textContent = count > 0 ? 'Убрать' : `${price} $`;
+        row.buy.disabled = count === 0 && !this.meta.canBuyStatBoost(id);
+      }
+    }
   }
 
   /**
@@ -1211,6 +1353,16 @@ export class Screens {
 
     const special = this.meta.startSpecialWeapon;
     if (special !== null) parts.push(WEAPON_NAMES[special]);
+
+    // Бусты — после стволов, в порядке своих строк. Предел отряда — итоговым
+    // числом («отряд до 28»), а не прибавкой: сводку пересчитывают глазами
+    // перед боем, и итог здесь полезнее слагаемых.
+    const percent = trimNumber((CONFIG.shop.startBonuses.statBoosts.multiplier - 1) * 100, 0);
+    for (const id of STAT_BOOST_IDS) {
+      if (this.meta.startBoostCount(id) === 0) continue;
+      if (id === 'shooters') parts.push(`отряд до ${this.meta.boostedMaxShooters}`);
+      else parts.push(`${STAT_BOOST_VIEW[id].title.toLowerCase()} +${percent}%`);
+    }
 
     this.boostersSummary.hidden = parts.length === 0;
     this.boostersSummary.textContent = `В вылазку: ${parts.join(' · ')}`;

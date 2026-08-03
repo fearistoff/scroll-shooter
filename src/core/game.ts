@@ -361,6 +361,12 @@ export class Game {
      * вышли бы с пистолетами, либо особое могло бы достаться не герою.
      */
     const kit = this.meta.consumeStartKit();
+    // Бусты характеристик — раньше остального кита: они МНОЖАТ значения,
+    // записанные applyTo() выше (сам applyTo их бы стёр), а буст предела
+    // отряда должен встать в formation.maxShooters до того, как addShooters
+    // ниже начнёт по нему резать. За смертью героя бусты снимает следующий
+    // applyTo() — на экране прокачки или на старте следующего забега.
+    this.meta.applyStartBoosts(kit.boosts);
     if (kit.weapon !== null) this.squad.equipStartWeapon(kit.weapon);
     if (kit.special !== null) this.squad.equipStartWeapon(kit.special);
     if (kit.shooters > 0) this.squad.addShooters(kit.shooters);
