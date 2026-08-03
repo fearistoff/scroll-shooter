@@ -1,7 +1,7 @@
 import { CONFIG } from '../config';
 
 /** Кого спавнить следующим. */
-export type ZombieKind = 'normal' | 'big';
+export type ZombieKind = 'normal' | 'big' | 'fast';
 
 /**
  * Состояние забега (ТЗ раздел 9): бюджет спавна, счётчик волны, накопленный EXP.
@@ -23,6 +23,15 @@ export type ZombieKind = 'normal' | 'big';
 export class RunState {
   private normalLeft = 0;
   private bigLeft = 0;
+  private fastLeft = 0;
+  /**
+   * Фактические доли ТЕКУЩЕЙ волны. До поздних волн совпадают с лестницами из
+   * конфига, а с волны случайного состава (см. waveMixPureChance) — результат
+   * розыгрыша, поэтому хранятся, а не считаются заново: доля волны обязана быть
+   * одной и той же и для бюджета, и для отладочного снимка.
+   */
+  private bigShareNow = 0;
+  private fastShareNow = 0;
   private killed = 0;
   private expTotal = 0;
   private moneyTotal = 0;
@@ -90,18 +99,91 @@ export class RunState {
   }
 
   /**
-   * Какая ДОЛЯ бюджета этой волны — крупные зомби: 0 до bigZombieFromWave, дальше
-   * по bigZombieShareStep за волну (волна 2 — 10%, волна 3 — 20%, …) до
-   * bigZombieShareMax.
+   * Какая ДОЛЯ бюджета ТЕКУЩЕЙ волны — крупные зомби. Разыгрывается один раз на
+   * старте волны (см. rollWaveMix), внутри волны не меняется.
+   */
+  get bigShare(): number {
+    return this.bigShareNow;
+  }
+
+  /** Доля быстрых зомби в текущей волне — симметрично bigShare. */
+  get fastShare(): number {
+    return this.fastShareNow;
+  }
+
+  /**
+   * Плановая доля вида по лестнице из конфига: 0 до fromWave, дальше по step за
+   * волну (fromWave — один шаг, следующая — два, …) до потолка max.
    *
    * Рост линейный, а не кумулятивный (см. CONFIG.run.bigZombieShareStep), и это
    * доля от ОБЩЕГО числа единиц волны — состав меняется, количество нет.
    */
-  get bigShare(): number {
-    const { bigZombieFromWave, bigZombieShareStep, bigZombieShareMax } = CONFIG.run;
-    if (this.wave < bigZombieFromWave) return 0;
-    const steps = this.wave - bigZombieFromWave + 1;
-    return Math.min(bigZombieShareMax, bigZombieShareStep * steps);
+  private plannedShare(fromWave: number, step: number, max: number): number {
+    if (this.wave < fromWave) return 0;
+    const steps = this.wave - fromWave + 1;
+    return Math.min(max, step * steps);
+  }
+
+  /**
+   * Первая волна, на которой лестница вида упирается в потолок. Например, шаг
+   * 0.1 с потолком 0.5 от волны 2 — это волна 6 (10% → … → 50%). При выключенном
+   * виде (step или max ≤ 0) потолок недостижим — Infinity, и случайный состав
+   * (см. rollWaveMix) не наступает никогда.
+   */
+  private static shareCapWave(fromWave: number, step: number, max: number): number {
+    if (step <= 0 || max <= 0) return Infinity;
+    return fromWave + Math.ceil(max / step) - 1;
+  }
+
+  /**
+   * Состав волны: доли крупных и быстрых, остаток — обычные.
+   *
+   * До поздних волн — детерминированные лестницы из конфига (bigZombieShareStep /
+   * fastZombieShareStep). Начиная со СЛЕДУЮЩЕЙ волны после той, где обе лестницы
+   * упёрлись в потолки (при текущих числах — с волны 8), состав случайный
+   * (решение пользователя): суммарная доля крупных и быстрых равна сумме
+   * потолков (при 0.5 + 0.5 обычных не остаётся вовсе), а граница между ними —
+   * с вероятностью waveMixPureChance волна ЧИСТАЯ (целиком крупные или целиком
+   * быстрые, поровну), иначе равномерно случайная.
+   *
+   * Розыгрыш происходит ОДИН РАЗ, на старте волны из resetWaveBudget: внутри
+   * волны состав бюджета не меняется — по той же причине, по которой гейт видов
+   * стоит на номере волны, а не на секунде забега (см. bigZombieFromWave).
+   */
+  private rollWaveMix(): { big: number; fast: number } {
+    const {
+      bigZombieFromWave,
+      bigZombieShareStep,
+      bigZombieShareMax,
+      fastZombieFromWave,
+      fastZombieShareStep,
+      fastZombieShareMax,
+      waveMixPureChance,
+    } = CONFIG.run;
+
+    const randomFromWave =
+      Math.max(
+        RunState.shareCapWave(bigZombieFromWave, bigZombieShareStep, bigZombieShareMax),
+        RunState.shareCapWave(fastZombieFromWave, fastZombieShareStep, fastZombieShareMax),
+      ) + 1;
+
+    if (this.wave < randomFromWave) {
+      return {
+        big: this.plannedShare(bigZombieFromWave, bigZombieShareStep, bigZombieShareMax),
+        fast: this.plannedShare(fastZombieFromWave, fastZombieShareStep, fastZombieShareMax),
+      };
+    }
+
+    // Случайная фаза. Сумма долей — сумма потолков: при 0.5 + 0.5 это ровно вся
+    // волна, при потолках поменьше остаток по-прежнему достаётся обычным.
+    const mixShare = Math.min(1, bigZombieShareMax + fastZombieShareMax);
+
+    if (Math.random() < waveMixPureChance) {
+      return Math.random() < 0.5 ? { big: mixShare, fast: 0 } : { big: 0, fast: mixShare };
+    }
+
+    const bigPortion = Math.random();
+    return { big: mixShare * bigPortion, fast: mixShare * (1 - bigPortion) };
   }
 
   /**
@@ -151,16 +233,25 @@ export class RunState {
     // длительность волны, хотя обязана менять только её состав.
     const total = Math.round(CONFIG.run.waveZombieCount * this.budgetMultiplier);
 
-    // Крупные входят в бюджет не раньше своей волны (CONFIG.run.bigZombieFromWave),
-    // а до неё их доля ОТДАЁТСЯ ОБЫЧНЫМ, а не пропадает: число единиц в волне
-    // одинаково при любом составе, поэтому ранняя волна не оказывается короче
-    // прочих просто из-за того, что в ней нет крупных.
-    const bigBudget = Math.round(total * this.bigShare);
-    this.normalLeft = total - bigBudget;
+    // Крупные и быстрые входят в бюджет не раньше своих волн (bigZombieFromWave /
+    // fastZombieFromWave), а до них их доля ОТДАЁТСЯ ОБЫЧНЫМ, а не пропадает:
+    // число единиц в волне одинаково при любом составе, поэтому ранняя волна не
+    // оказывается короче прочих просто из-за того, что в ней нет этих видов.
+    const mix = this.rollWaveMix();
+    this.bigShareNow = mix.big;
+    this.fastShareNow = mix.fast;
+    const bigBudget = Math.round(total * mix.big);
+    // Второе округление зажато остатком: при долях 0.5 + 0.5 два независимых
+    // Math.round на нечётном бюджете дали бы на единицу больше total, и остаток
+    // обычных ушёл бы в минус.
+    const fastBudget = Math.min(Math.round(total * mix.fast), total - bigBudget);
+    this.normalLeft = total - bigBudget - fastBudget;
     this.bigLeft = bigBudget;
+    this.fastLeft = fastBudget;
     // Итог волны запоминается, а не пересчитывается: полоса волны и бюджет спавна
     // обязаны совпадать, а два независимых округления могли бы разойтись.
-    this.waveTotal = this.normalLeft + this.bigLeft + (CONFIG.run.hasBoss ? 1 : 0);
+    this.waveTotal =
+      this.normalLeft + this.bigLeft + this.fastLeft + (CONFIG.run.hasBoss ? 1 : 0);
     this.killed = 0;
     this.bossKilled = false;
   }
@@ -325,7 +416,7 @@ export class RunState {
 
   /** Бюджет обычных зомби исчерпан — дальше только босс (слой 10). */
   get allZombiesSpawned(): boolean {
-    return this.normalLeft <= 0 && this.bigLeft <= 0;
+    return this.normalLeft <= 0 && this.bigLeft <= 0 && this.fastLeft <= 0;
   }
 
   get bossDefeated(): boolean {
@@ -344,16 +435,22 @@ export class RunState {
     // 120-й секунды забега, и волна распадалась надвое — сначала ~270 обычных, а
     // потом, когда обычные кончались и замок уступал, толпа из 30 крупных подряд.
     // Гейт переехал на номер волны именно поэтому: внутри волны запирать нечего.
-    const total = this.normalLeft + this.bigLeft;
+    const total = this.normalLeft + this.bigLeft + this.fastLeft;
     if (total <= 0) return null;
 
-    if (Math.random() * total < this.normalLeft) {
+    const pick = Math.random() * total;
+    if (pick < this.normalLeft) {
       this.normalLeft--;
       return 'normal';
     }
 
-    this.bigLeft--;
-    return 'big';
+    if (pick < this.normalLeft + this.bigLeft) {
+      this.bigLeft--;
+      return 'big';
+    }
+
+    this.fastLeft--;
+    return 'fast';
   }
 
   registerZombieKill(): void {
@@ -389,7 +486,9 @@ export class RunState {
     killed: number;
     normalLeft: number;
     bigLeft: number;
+    fastLeft: number;
     bigShare: number;
+    fastShare: number;
     exp: number;
     expEarned: number;
     money: number;
@@ -410,7 +509,9 @@ export class RunState {
       killed: this.killed,
       normalLeft: this.normalLeft,
       bigLeft: this.bigLeft,
+      fastLeft: this.fastLeft,
       bigShare: +this.bigShare.toFixed(3),
+      fastShare: +this.fastShare.toFixed(3),
       exp: this.expTotal,
       expEarned: +this.expEarned.toFixed(2),
       money: this.moneyTotal,

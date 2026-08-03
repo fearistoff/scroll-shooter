@@ -3,7 +3,7 @@ import { CONFIG } from '../config';
 import { PickupPool, type PickupMotion } from './pickups';
 
 /** С кого выпали деньги — от этого зависит только размер находки. */
-export type MoneySource = 'normal' | 'big' | 'boss';
+export type MoneySource = 'normal' | 'big' | 'fast' | 'boss';
 
 /**
  * Монеты (деньги) — валюта магазина оружия (CONFIG.shop).
@@ -73,7 +73,9 @@ export class MoneyPool extends PickupPool {
         ? config.perBoss
         : source === 'big'
           ? config.perBigZombie
-          : config.perNormalZombie;
+          : source === 'fast'
+            ? config.perFastZombie
+            : config.perNormalZombie;
 
     const min = range[0] ?? 1;
     const max = range[1] ?? min;

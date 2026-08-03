@@ -438,6 +438,7 @@ export class Game {
       specials: this.squad.specialWeaponCount,
       enemies: this.enemies.activeCount,
       bigEnemies: this.enemies.bigActiveCount,
+      fastEnemies: this.enemies.fastActiveCount,
       corpses: this.enemies.corpseCount,
       bullets: this.bullets.activeCount,
       killed: this.enemies.killed,

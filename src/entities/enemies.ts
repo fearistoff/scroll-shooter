@@ -38,12 +38,36 @@ export interface SquadTarget {
 }
 
 /**
- * Зомби обоих видов (ТЗ раздел 9): обычные и крупные.
+ * Код вида зомби в данных пула. Это ИНДЕКС: по нему выбираются меш, цвета и
+ * скорость из массивов «по виду», поэтому значения обязаны быть 0..2 подряд.
+ */
+const KIND_NORMAL = 0;
+const KIND_BIG = 1;
+const KIND_FAST = 2;
+
+/** Имя вида по коду — обратное отображение для debugSnapshot и воронок наград. */
+const KIND_NAMES: readonly ZombieKind[] = ['normal', 'big', 'fast'];
+
+function kindCode(kind: ZombieKind): number {
+  return kind === 'big' ? KIND_BIG : kind === 'fast' ? KIND_FAST : KIND_NORMAL;
+}
+
+/** Параметры вида по коду. Единственное место, где код превращается в конфиг. */
+function kindStats(code: number) {
+  return code === KIND_BIG
+    ? CONFIG.enemies.big
+    : code === KIND_FAST
+      ? CONFIG.enemies.fast
+      : CONFIG.enemies.normal;
+}
+
+/**
+ * Зомби всех видов (ТЗ раздел 9): обычные, крупные и быстрые.
  *
- * Оба вида живут в ОДНОМ пуле: движение, остановка на линии, удары и попадания
- * у них одинаковые, различаются только HP, урон, габарит и цвет. Разными
- * остаются лишь InstancedMesh — по одному на вид, потому что геометрия капсулы
- * у них разного размера.
+ * Все виды живут в ОДНОМ пуле: движение, остановка на линии, удары и попадания
+ * у них одинаковые, различаются только HP, урон, габарит, скорость и цвет.
+ * Разными остаются лишь InstancedMesh — по одному на вид, потому что геометрия
+ * капсулы у них разного размера.
  *
  * Данные в Float32Array, гашение через swap-remove — как у пуль и кристаллов.
  *
@@ -58,8 +82,8 @@ export interface SquadTarget {
  * труп в каждой итерации.
  */
 export class EnemyPool {
-  private readonly normalMesh: InstancedMesh;
-  private readonly bigMesh: InstancedMesh;
+  /** Меши по коду вида: [обычный, крупный, быстрый]. */
+  private readonly meshes: readonly InstancedMesh[];
   private readonly matrix = new Matrix4();
   /** Поза падения. Одна на пул: тела считаются по очереди, мусорить нельзя. */
   private readonly fallPose = new FallPose();
@@ -82,8 +106,8 @@ export class EnemyPool {
   private readonly attackTimer: Float32Array;
   /** Своя линия остановки у каждого — толпа не выстраивается в стену. */
   private readonly stopAt: Float32Array;
-  /** 1 — крупный зомби, 0 — обычный. */
-  private readonly isBig: Uint8Array;
+  /** Код вида: KIND_NORMAL / KIND_BIG / KIND_FAST. */
+  private readonly kindOf: Uint8Array;
   /**
    * Сколько секунд ещё показывать полоску HP. Ставится при уроне, убывает по
    * ИГРОВОМУ dt — на паузе между забегами полоски не тают.
@@ -123,15 +147,21 @@ export class EnemyPool {
    */
   private readonly slots: Array<Float32Array | Uint8Array | Int8Array>;
 
-  /** Цвета для instanceColor. Заведены один раз: в цикле отрисовки нельзя мусорить. */
-  private readonly normalColor = new Color(CONFIG.enemies.normal.color);
-  private readonly bigColor = new Color(CONFIG.enemies.big.color);
-  // Вспышка — светлый оттенок СВОЕГО цвета, поэтому у каждого вида свой.
-  private readonly normalFlash = makeFlashColor(CONFIG.enemies.normal.color);
-  private readonly bigFlash = makeFlashColor(CONFIG.enemies.big.color);
-  // Тела — тёмный оттенок своего же цвета: мёртвые не должны читаться как толпа.
-  private readonly normalCorpse = makeCorpseColor(CONFIG.enemies.normal.color);
-  private readonly bigCorpse = makeCorpseColor(CONFIG.enemies.big.color);
+  /**
+   * Цвета для instanceColor, индекс — код вида. Заведены один раз: в цикле
+   * отрисовки нельзя мусорить. Вспышка — светлый оттенок СВОЕГО цвета, тела —
+   * тёмный оттенок своего же: мёртвые не должны читаться как толпа.
+   */
+  private readonly baseColors: readonly Color[];
+  private readonly flashColors: readonly Color[];
+  private readonly corpseColors: readonly Color[];
+  /**
+   * Множитель скорости подхода по коду вида (нормаль — 1, см.
+   * enemies.bigSpeedScale / fastSpeedScale) и счётчик отрисованных инстансов
+   * каждого меша. Оба заведены полями, чтобы update не создавал массивы за кадр.
+   */
+  private readonly speedScaleOf: Float32Array;
+  private readonly drawn = new Int32Array(KIND_NAMES.length);
 
   /** Занятых слотов всего: живые плюс тела. */
   private count = 0;
@@ -151,6 +181,7 @@ export class EnemyPool {
   private killedTotal = 0;
   private spawnedTotal = 0;
   private bigSpawnedTotal = 0;
+  private fastSpawnedTotal = 0;
 
   constructor(
     scene: Scene,
@@ -158,10 +189,26 @@ export class EnemyPool {
     private readonly crystals: CrystalPool,
     private readonly money: MoneyPool,
   ) {
-    const { normal, big, poolSize } = CONFIG.enemies;
+    const { normal, big, fast, poolSize, bigSpeedScale, fastSpeedScale } = CONFIG.enemies;
 
-    this.normalMesh = EnemyPool.createMesh(scene, normal.capsule, normal.color, poolSize);
-    this.bigMesh = EnemyPool.createMesh(scene, big.capsule, big.color, poolSize);
+    // Порядок — строго по кодам видов: KIND_NORMAL, KIND_BIG, KIND_FAST.
+    this.meshes = [
+      EnemyPool.createMesh(scene, normal.capsule, normal.color, poolSize),
+      EnemyPool.createMesh(scene, big.capsule, big.color, poolSize),
+      EnemyPool.createMesh(scene, fast.capsule, fast.color, poolSize),
+    ];
+    this.baseColors = [new Color(normal.color), new Color(big.color), new Color(fast.color)];
+    this.flashColors = [
+      makeFlashColor(normal.color),
+      makeFlashColor(big.color),
+      makeFlashColor(fast.color),
+    ];
+    this.corpseColors = [
+      makeCorpseColor(normal.color),
+      makeCorpseColor(big.color),
+      makeCorpseColor(fast.color),
+    ];
+    this.speedScaleOf = new Float32Array([1, bigSpeedScale, fastSpeedScale]);
 
     this.posX = new Float32Array(poolSize);
     this.posZ = new Float32Array(poolSize);
@@ -170,7 +217,7 @@ export class EnemyPool {
     this.damage = new Float32Array(poolSize);
     this.attackTimer = new Float32Array(poolSize);
     this.stopAt = new Float32Array(poolSize);
-    this.isBig = new Uint8Array(poolSize);
+    this.kindOf = new Uint8Array(poolSize);
     this.hpBarLeft = new Float32Array(poolSize);
     this.flashLeft = new Float32Array(poolSize);
     this.recoverLeft = new Float32Array(poolSize);
@@ -185,7 +232,7 @@ export class EnemyPool {
       this.damage,
       this.attackTimer,
       this.stopAt,
-      this.isBig,
+      this.kindOf,
       this.hpBarLeft,
       this.flashLeft,
       this.recoverLeft,
@@ -252,11 +299,24 @@ export class EnemyPool {
     return this.bigSpawnedTotal;
   }
 
+  get fastSpawned(): number {
+    return this.fastSpawnedTotal;
+  }
+
   /** Сколько крупных ЖИВЫХ зомби сейчас на поле. */
   get bigActiveCount(): number {
     let total = 0;
     for (let i = 0; i < this.aliveCount; i++) {
-      if (this.isBig[i] === 1) total++;
+      if (this.kindOf[i] === KIND_BIG) total++;
+    }
+    return total;
+  }
+
+  /** Сколько быстрых ЖИВЫХ зомби сейчас на поле. */
+  get fastActiveCount(): number {
+    let total = 0;
+    for (let i = 0; i < this.aliveCount; i++) {
+      if (this.kindOf[i] === KIND_FAST) total++;
     }
     return total;
   }
@@ -291,10 +351,10 @@ export class EnemyPool {
             `Сигнатура — spawn(x, kind).`,
         );
       }
-      if (kind !== 'normal' && kind !== 'big') {
+      if (kind !== 'normal' && kind !== 'big' && kind !== 'fast') {
         throw new TypeError(
-          `EnemyPool.spawn: вид зомби — 'normal' или 'big', получено ${JSON.stringify(kind)}. ` +
-            `Сигнатура — spawn(x, kind).`,
+          `EnemyPool.spawn: вид зомби — 'normal', 'big' или 'fast', получено ` +
+            `${JSON.stringify(kind)}. Сигнатура — spawn(x, kind).`,
         );
       }
     }
@@ -302,7 +362,8 @@ export class EnemyPool {
     if (this.count >= this.capacity) return;
 
     const { stopZ, stopLineJitter, attackInterval, firstAttackDelay } = CONFIG.enemies;
-    const stats = kind === 'big' ? CONFIG.enemies.big : CONFIG.enemies.normal;
+    const code = kindCode(kind);
+    const stats = kindStats(code);
     // Живой встаёт в конец своей области, а не в конец пула: сразу за ним лежат
     // тела. Занявшее это место тело уезжает в первый свободный слот — обе области
     // остаются непрерывными.
@@ -326,7 +387,7 @@ export class EnemyPool {
     // есть таймер приходил уже полным и бил мгновенно.
     this.attackTimer[i] = attackInterval - firstAttackDelay;
     this.stopAt[i] = stopZ - Math.random() * stopLineJitter;
-    this.isBig[i] = kind === 'big' ? 1 : 0;
+    this.kindOf[i] = code;
     // Обязательно обнуляем: в этот слот мог попасть таймер убитого зомби, и
     // новый мигнул бы полоской, вспышкой и сжатием после чужого удара.
     this.hpBarLeft[i] = 0;
@@ -339,29 +400,29 @@ export class EnemyPool {
 
     this.spawnedTotal++;
     if (kind === 'big') this.bigSpawnedTotal++;
+    if (kind === 'fast') this.fastSpawnedTotal++;
   }
 
   /** Поток сверху, движение к отряду, остановка на линии и удары. */
   update(dt: number, squad: SquadTarget): void {
     this.spawnStream(dt, squad);
 
-    const { normal, big, extraSpeed, bigSpeedScale, attackInterval, attackAnim } = CONFIG.enemies;
+    const { extraSpeed, attackInterval, attackAnim } = CONFIG.enemies;
     const { despawnZ } = CONFIG.world;
     // Скорость мира — текущая (run), а не номинальная: на боссфайте дорога стоит,
     // и зомби на ней шёл бы только своими ногами. Живых зомби в этот момент нет
     // (босс выходит на пустое поле), но правило одно на всех, кого везёт дорога.
     const worldSpeed = this.run.worldSpeed;
-    // Зомби идут сами плюс их несёт наезжающий мир. Крупный подходит медленнее —
-    // множитель на всю скорость подхода, см. enemies.bigSpeedScale.
+    // Зомби идут сами плюс их несёт наезжающий мир. Крупный подходит медленнее,
+    // быстрый — быстрее: множитель по виду на всю скорость подхода, см.
+    // enemies.bigSpeedScale / fastSpeedScale.
     const step = (worldSpeed + extraSpeed) * dt;
-    const bigStep = step * bigSpeedScale;
 
-    let normalDrawn = 0;
-    let bigDrawn = 0;
+    this.drawn.fill(0);
 
     for (let i = 0; i < this.aliveCount; ) {
-      const bigOne = this.isBig[i] === 1;
-      const stats = bigOne ? big : normal;
+      const code = this.kindOf[i]!;
+      const stats = kindStats(code);
 
       if (this.hpBarLeft[i]! > 0) this.hpBarLeft[i]! -= dt;
       if (this.flashLeft[i]! > 0) this.flashLeft[i]! -= dt;
@@ -371,7 +432,10 @@ export class EnemyPool {
 
       if (!arrived) {
         // Ещё идёт. Не перескакиваем линию остановки за шаг.
-        this.posZ[i] = Math.min(this.posZ[i]! + (bigOne ? bigStep : step), this.stopAt[i]!);
+        this.posZ[i] = Math.min(
+          this.posZ[i]! + step * this.speedScaleOf[code]!,
+          this.stopAt[i]!,
+        );
       } else {
         // Дошёл: бьёт ближайшего стрелка с периодом attackInterval.
         this.attackTimer[i]! += dt;
@@ -399,18 +463,14 @@ export class EnemyPool {
       this.matrix.makeScale(scale, scale, scale);
       this.matrix.setPosition(this.posX[i]!, y, this.posZ[i]!);
       // Цвет пишется рядом с матрицей и по тому же индексу отрисовки: у зомби
-      // индекс в пуле и индекс в меше не совпадают (обычные и крупные рисуются
-      // разными мешами), и разъехавшись, вспышка досталась бы чужому.
+      // индекс в пуле и индекс в меше не совпадают (каждый вид рисуется своим
+      // мешем), и разъехавшись, вспышка досталась бы чужому.
       const flashing = this.flashLeft[i]! > 0;
-      if (bigOne) {
-        this.bigMesh.setMatrixAt(bigDrawn, this.matrix);
-        this.bigMesh.setColorAt(bigDrawn, flashing ? this.bigFlash : this.bigColor);
-        bigDrawn++;
-      } else {
-        this.normalMesh.setMatrixAt(normalDrawn, this.matrix);
-        this.normalMesh.setColorAt(normalDrawn, flashing ? this.normalFlash : this.normalColor);
-        normalDrawn++;
-      }
+      const mesh = this.meshes[code]!;
+      const slot = this.drawn[code]!;
+      mesh.setMatrixAt(slot, this.matrix);
+      mesh.setColorAt(slot, flashing ? this.flashColors[code]! : this.baseColors[code]!);
+      this.drawn[code] = slot + 1;
 
       i++;
     }
@@ -437,8 +497,8 @@ export class EnemyPool {
         continue;
       }
 
-      const bigOne = this.isBig[i] === 1;
-      const capsule = (bigOne ? big : normal).capsule;
+      const code = this.kindOf[i]!;
+      const capsule = kindStats(code).capsule;
       // Поза целиком — в FallPose: наклон вокруг подошвы в произвольную сторону
       // (там же разбор формулы). Тело валится в свою сторону из 360°, поэтому
       // уезжает от места смерти и по x, и по z.
@@ -455,25 +515,21 @@ export class EnemyPool {
       this.matrix.makeRotationAxis(pose.axis, pose.angle);
       this.matrix.setPosition(pose.x, pose.y, pose.z);
 
-      if (bigOne) {
-        this.bigMesh.setMatrixAt(bigDrawn, this.matrix);
-        this.bigMesh.setColorAt(bigDrawn, this.bigCorpse);
-        bigDrawn++;
-      } else {
-        this.normalMesh.setMatrixAt(normalDrawn, this.matrix);
-        this.normalMesh.setColorAt(normalDrawn, this.normalCorpse);
-        normalDrawn++;
-      }
+      const mesh = this.meshes[code]!;
+      const slot = this.drawn[code]!;
+      mesh.setMatrixAt(slot, this.matrix);
+      mesh.setColorAt(slot, this.corpseColors[code]!);
+      this.drawn[code] = slot + 1;
 
       i++;
     }
 
-    this.normalMesh.count = normalDrawn;
-    this.bigMesh.count = bigDrawn;
-    this.normalMesh.instanceMatrix.needsUpdate = true;
-    this.bigMesh.instanceMatrix.needsUpdate = true;
-    if (this.normalMesh.instanceColor !== null) this.normalMesh.instanceColor.needsUpdate = true;
-    if (this.bigMesh.instanceColor !== null) this.bigMesh.instanceColor.needsUpdate = true;
+    for (let code = 0; code < this.meshes.length; code++) {
+      const mesh = this.meshes[code]!;
+      mesh.count = this.drawn[code]!;
+      mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.instanceColor !== null) mesh.instanceColor.needsUpdate = true;
+    }
   }
 
   /**
@@ -503,10 +559,7 @@ export class EnemyPool {
 
     // Только живые: тело пуля прошивает насквозь, добивать труп нечем и незачем.
     for (let i = 0; i < this.aliveCount; ) {
-      const reach =
-        (this.isBig[i] === 1 ? CONFIG.enemies.big : CONFIG.enemies.normal).capsule.radius *
-          hitboxScale +
-        bulletRadius;
+      const reach = kindStats(this.kindOf[i]!).capsule.radius * hitboxScale + bulletRadius;
 
       const touched = pierce
         ? segmentPassesCircle(this.posX[i]!, this.posZ[i]!, reach, xFrom, zFrom, xTo, zTo)
@@ -591,24 +644,24 @@ export class EnemyPool {
   forEachHpBar(
     visit: (x: number, y: number, z: number, fraction: number, scale: number) => void,
   ): void {
-    const { normal, big } = CONFIG.enemies;
     const { offsetY, normalZombieScale } = CONFIG.ui.hpBar;
 
     // Только живые: у тела запас показывать нечем и не за чем следить.
     for (let i = 0; i < this.aliveCount; i++) {
       if (this.hpBarLeft[i]! <= 0) continue;
 
-      const bigOne = this.isBig[i] === 1;
-      const stats = bigOne ? big : normal;
+      const code = this.kindOf[i]!;
+      const stats = kindStats(code);
       const top = stats.capsule.length + stats.capsule.radius * 2;
-      // Полоска обычного зомби мельче: их на дороге до 200, и полный размер у
-      // каждого забивает кадр. У крупного размер базовый.
+      // Полоска обычного (и быстрого — он того же роста и мельче) зомби мельче:
+      // их на дороге до 200, и полный размер у каждого забивает кадр. У крупного
+      // размер базовый.
       visit(
         this.posX[i]!,
         top + offsetY,
         this.posZ[i]!,
         this.hp[i]! / this.maxHp[i]!,
-        bigOne ? 1 : normalZombieScale,
+        code === KIND_BIG ? 1 : normalZombieScale,
       );
     }
   }
@@ -658,10 +711,10 @@ export class EnemyPool {
 
   /** Наносит урон зомби i. Возвращает true, если он погиб. */
   private applyDamage(i: number, damage: number): boolean {
+    const code = this.kindOf[i]!;
     // Сопротивление урону берётся по виду зомби и применяется здесь, в воронке, —
     // тогда его учитывают и пули, и взрывы мин, без правок в местах попадания.
-    const resistance = (this.isBig[i] === 1 ? CONFIG.enemies.big : CONFIG.enemies.normal)
-      .damageResistance;
+    const resistance = kindStats(code).damageResistance;
     this.hp[i]! -= damage * resistance;
     // Единственная воронка урона по зомби (попадание пули и взрыв мины идут
     // через неё), поэтому таймеры полоски и вспышки ставятся здесь и только здесь.
@@ -669,14 +722,19 @@ export class EnemyPool {
     this.flashLeft[i] = CONFIG.ui.damageFlash.seconds;
     if (this.hp[i]! > 0) return false;
 
-    // Кристалл падает там, где зомби погиб; крупный стоит дороже (ТЗ раздел 9).
-    const big = this.isBig[i] === 1;
-    const value = big ? CONFIG.exp.perBigZombie : CONFIG.exp.perNormalZombie;
+    // Кристалл падает там, где зомби погиб; крупный и быстрый стоят дороже
+    // обычного (ТЗ раздел 9, exp.perFastZombie).
+    const value =
+      code === KIND_BIG
+        ? CONFIG.exp.perBigZombie
+        : code === KIND_FAST
+          ? CONFIG.exp.perFastZombie
+          : CONFIG.exp.perNormalZombie;
     this.crystals.spawn(this.posX[i]!, this.posZ[i]!, value);
 
     // Деньги — там же, но не с каждого: бросок вероятности внутри воронки.
     // Зомби единственный их источник, поэтому вызов стоит только здесь и у босса.
-    this.money.dropFrom(this.posX[i]!, this.posZ[i]!, big ? 'big' : 'normal');
+    this.money.dropFrom(this.posX[i]!, this.posZ[i]!, KIND_NAMES[code]!);
 
     // Слот не освобождается: зомби становится телом и уезжает с дорогой.
     this.kill(i);
@@ -773,10 +831,11 @@ export class EnemyPool {
     this.killedTotal = 0;
     this.spawnedTotal = 0;
     this.bigSpawnedTotal = 0;
-    this.normalMesh.count = 0;
-    this.bigMesh.count = 0;
-    this.normalMesh.instanceMatrix.needsUpdate = true;
-    this.bigMesh.instanceMatrix.needsUpdate = true;
+    this.fastSpawnedTotal = 0;
+    for (const mesh of this.meshes) {
+      mesh.count = 0;
+      mesh.instanceMatrix.needsUpdate = true;
+    }
   }
 
   /*
@@ -856,7 +915,7 @@ export class EnemyPool {
         maxHp: this.maxHp[i]!,
         damage: this.damage[i]!,
         stopAt: this.stopAt[i]!,
-        kind: (this.isBig[i] === 1 ? 'big' : 'normal') as ZombieKind,
+        kind: KIND_NAMES[this.kindOf[i]!]!,
         hpBarLeft: +this.hpBarLeft[i]!.toFixed(3),
         attackTimer: +this.attackTimer[i]!.toFixed(3),
         recoverLeft: +this.recoverLeft[i]!.toFixed(3),
@@ -890,15 +949,15 @@ export class EnemyPool {
     const out = [];
 
     for (let i = this.aliveCount; i < this.count; i++) {
-      const bigOne = this.isBig[i] === 1;
-      const capsule = (bigOne ? CONFIG.enemies.big : CONFIG.enemies.normal).capsule;
+      const code = this.kindOf[i]!;
+      const capsule = kindStats(code).capsule;
       const yaw = this.fallYaw[i]!;
       const pose = this.fallPose.set(this.posX[i]!, this.posZ[i]!, yaw, this.fallLeft[i]!, capsule);
 
       out.push({
         x: +this.posX[i]!.toFixed(3),
         z: +this.posZ[i]!.toFixed(3),
-        kind: (bigOne ? 'big' : 'normal') as ZombieKind,
+        kind: KIND_NAMES[code]!,
         fallLeft: +this.fallLeft[i]!.toFixed(3),
         tiltDegrees: +pose.tiltDegrees.toFixed(1),
         yawDegrees: +((yaw * 180) / Math.PI).toFixed(1),
