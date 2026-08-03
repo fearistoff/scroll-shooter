@@ -9,6 +9,7 @@ import {
   type Scene,
 } from 'three';
 import { CONFIG } from '../config';
+import { cubicBezierEase } from '../core/easing';
 import type { BonusReceiver } from './barrels';
 import type { BossTarget } from './boss';
 import type { BulletPool } from './bullets';
@@ -34,6 +35,12 @@ interface Ally {
   regenDelayLeft: number;
   /** Остаток вспышки от урона (ui.damageFlash). Ставится там же. */
   flashLeft: number;
+  /**
+   * Остаток анимации появления (player.spawnAnim), секунды. Ставится в
+   * addShooters — единственной точке входа бойцов в отряд. Пока тает, капсула
+   * вырастает от подошвы; на игровые проверки не влияет.
+   */
+  spawnLeft: number;
 }
 
 /**
@@ -329,6 +336,10 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
     for (const ally of this.allies) {
       if (ally.regenDelayLeft > 0) ally.regenDelayLeft -= dt;
       if (ally.flashLeft > 0) ally.flashLeft -= dt;
+      // Тает у ВСЕХ бойцов, включая тех, что за визуальным потолком: пришедший
+      // «невидимым» отыгрывает рост, стоя за строем, и на освободившееся место
+      // после гибели соседа встаёт уже в полный рост, а не вырастает заново.
+      if (ally.spawnLeft > 0) ally.spawnLeft -= dt;
     }
 
     this.regenerate(dt);
@@ -390,7 +401,11 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
 
     for (let i = 0; i < visible; i++) {
       this.allyOffset(i);
-      this.matrix.makeTranslation(squadX + this.offsetX, y, this.offsetZ);
+      // Рост от подошвы: масштаб равномерный, а центр капсулы поднимается вместе
+      // с ним — при y = const боец вырастал бы из-под асфальта (см. spawnScale).
+      const scale = Squad.spawnScale(this.allies[i]!.spawnLeft);
+      this.matrix.makeScale(scale, scale, scale);
+      this.matrix.setPosition(squadX + this.offsetX, y * scale, this.offsetZ);
       this.allyMesh.setMatrixAt(i, this.matrix);
       // Индекс в меше равен индексу в строю, поэтому вспышку можно писать здесь же.
       const flashing = (this.allies[i]?.flashLeft ?? 0) > 0;
@@ -400,6 +415,38 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
     this.allyMesh.count = visible;
     this.allyMesh.instanceMatrix.needsUpdate = true;
     if (this.allyMesh.instanceColor !== null) this.allyMesh.instanceColor.needsUpdate = true;
+  }
+
+  /**
+   * Масштаб капсулы по остатку анимации появления (player.spawnAnim).
+   *
+   * Повторяет CSS-keyframes «0% scale(0) → 75% scale(1.1) → 100% scale(1)»
+   * буквально, включая то, что умолчание timing-function (ease) в CSS
+   * применяется к КАЖДОМУ участку отдельно: до пика кривая своя и после пика
+   * своя, поэтому один общий easing по всей длине дал бы другое движение.
+   *
+   * Считается в игровом цикле, а не CSS-переходом: капсула — инстанс в
+   * InstancedMesh, а не DOM-элемент. Заодно рост замирает на паузе и на экранах
+   * вместе со всем остальным — таймер тает по игровому dt.
+   */
+  private static spawnScale(spawnLeft: number): number {
+    const { seconds, peakAt, peakScale } = CONFIG.player.spawnAnim;
+    if (spawnLeft <= 0 || seconds <= 0) return 1;
+
+    // Доля пройденного времени. Зажата сверху на случай, когда seconds покрутили
+    // на живой игре и остаток оказался длиннее новой длительности.
+    const t = Math.min(1, Math.max(0, 1 - spawnLeft / seconds));
+
+    if (t < peakAt) {
+      const eased = cubicBezierEase(0.25, 0.1, 0.25, 1, t / peakAt);
+      // Нулевой масштаб в three делит нормали инстанса на длину его столбцов и
+      // даёт NaN. Пикселей у выродившейся в точку капсулы всё равно нет, но
+      // полагаться на то, что NaN нигде не всплывёт, незачем — отсюда порог.
+      return Math.max(1e-3, peakScale * eased);
+    }
+
+    const eased = cubicBezierEase(0.25, 0.1, 0.25, 1, (t - peakAt) / (1 - peakAt));
+    return peakScale + (1 - peakScale) * eased;
   }
 
   /**
@@ -698,6 +745,8 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
         // Новый боец урона не получал — ни паузы регенерации, ни вспышки.
         regenDelayLeft: 0,
         flashLeft: 0,
+        // Единственная точка, где ставится рост: сюда приходят и бочки, и ворота.
+        spawnLeft: CONFIG.player.spawnAnim.seconds,
       });
     }
   }
@@ -850,6 +899,8 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
       weapon: WeaponId;
       special: boolean;
       regenDelayLeft: number;
+      spawnLeft: number;
+      scale: number;
     }>;
     heroRegenDelayLeft: number;
   } {
@@ -865,6 +916,8 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
         weapon: ally.weapon.weaponId,
         special: isSpecialWeapon(ally.weapon.weaponId),
         regenDelayLeft: +ally.regenDelayLeft.toFixed(3),
+        spawnLeft: +ally.spawnLeft.toFixed(3),
+        scale: +Squad.spawnScale(ally.spawnLeft).toFixed(3),
       };
     });
 

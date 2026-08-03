@@ -1,6 +1,6 @@
 {
   "name": "scroll-shooter",
-  "version": "2.8.0",
+  "version": "2.8.2",
   "description": "Zombie Crowd Shooter — playable prototype (three.js)",
   "private": true,
   "type": "module",

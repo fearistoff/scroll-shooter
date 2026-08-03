@@ -1,10 +1,20 @@
-import { BoxGeometry, Mesh, MeshStandardMaterial, type Scene } from 'three';
+import {
+  Color,
+  CylinderGeometry,
+  LatheGeometry,
+  Mesh,
+  MeshStandardMaterial,
+  TorusGeometry,
+  Vector2,
+  type Scene,
+} from 'three';
 import { CONFIG } from '../config';
 import { segmentHitsCircle, segmentPassesCircle } from '../core/collision';
 import type { RunState } from '../core/run';
 import type { BonusSlot } from './bonusSlot';
 import type { CrystalPool } from './crystals';
 import type { SquadTarget } from './enemies';
+import { makeFlashColor } from './flash';
 import { randomSpecialWeapon, weaponIcon, type WeaponId } from './weapons';
 
 /** Что лежит в бочке (ТЗ раздел 7). */
@@ -78,6 +88,77 @@ function contentIcon(
   return `${'🧍'.repeat(iconFigureLimit)}×${amount}`;
 }
 
+/** Состояние прочности бочки — от него зависит цвет тела. */
+type BarrelVariant = 'intact' | 'cracked50' | 'cracked25';
+
+/**
+ * Радиус тела бочки на высоте t, где t — доля полувысоты в [-1, 1].
+ *
+ * Косинус, а не парабола: у косинуса производная в середине нулевая, поэтому в
+ * самом широком месте бок плавный, а к донышкам сходится быстрее — ровно тот
+ * силуэт, по которому бочка узнаётся с одного взгляда.
+ */
+function barrelRadiusAt(t: number): number {
+  const { endRadiusRatio } = CONFIG.barrels.shape;
+  const maxRadius = CONFIG.barrels.size.x / 2;
+  return maxRadius * (endRadiusRatio + (1 - endRadiusRatio) * Math.cos((t * Math.PI) / 2));
+}
+
+/**
+ * Тело бочки — фигура вращения по профилю barrelRadiusAt.
+ *
+ * Крайние точки лежат НА ОСИ (x = 0): из них LatheGeometry собирает донышки.
+ * Без них бочка была бы трубой, и сквозь верх было бы видно дорогу.
+ */
+function buildBarrelBody(): LatheGeometry {
+  const { radialSegments, heightSegments } = CONFIG.barrels.shape;
+  const halfY = CONFIG.barrels.size.y / 2;
+
+  const points = [new Vector2(0, -halfY)];
+  for (let s = 0; s <= heightSegments; s++) {
+    const t = -1 + (2 * s) / heightSegments;
+    points.push(new Vector2(barrelRadiusAt(t), t * halfY));
+  }
+  points.push(new Vector2(0, halfY));
+
+  return new LatheGeometry(points, radialSegments);
+}
+
+/**
+ * Обруч на высоте offsetRatio (доля полувысоты, знак — вверх/вниз).
+ *
+ * Открытый цилиндр: изнутри обруч не виден никогда, а торцы съедаются телом.
+ * Радиусы сверху и снизу берутся с профиля тела, поэтому обруч ложится по боку,
+ * а не висит цилиндром на пузатой бочке.
+ */
+function buildHoopGeometry(offsetRatio: number): CylinderGeometry {
+  const { radialSegments, hoopHeight, hoopOverhang } = CONFIG.barrels.shape;
+  const halfY = CONFIG.barrels.size.y / 2;
+  const half = hoopHeight / 2 / halfY;
+
+  return new CylinderGeometry(
+    barrelRadiusAt(offsetRatio + half) + hoopOverhang,
+    barrelRadiusAt(offsetRatio - half) + hoopOverhang,
+    hoopHeight,
+    radialSegments,
+    1,
+    true,
+  );
+}
+
+/**
+ * Обод по верхней кромке — тор, лежащий в плоскости XZ.
+ *
+ * Радиус кольца равен радиусу кромки, поэтому тор садится НА неё: половина
+ * ширины снаружи силуэта, половина поверх крышки. Так сверху видно тёмное кольцо
+ * и цветную середину — и «бочка», и состояние прочности одновременно.
+ */
+function buildLidRimGeometry(): TorusGeometry {
+  const { radialSegments, lidRimTube } = CONFIG.barrels.shape;
+  // 6 сегментов на сечение: тор тонкий, гранёности сечения на экране не видно.
+  return new TorusGeometry(barrelRadiusAt(1), lidRimTube / 2, 6, radialSegments);
+}
+
 /**
  * Бочки-бонусы (ТЗ раздел 7).
  *
@@ -94,10 +175,23 @@ export class BarrelField {
   private readonly meshes: Mesh[] = [];
   private readonly materials: MeshStandardMaterial[] = [];
 
+  /**
+   * Цвет тела по состоянию трещин и вспышка к каждому из них.
+   *
+   * Считаются ОДИН раз на поле, а не на кадр: цвет ставится каждой видимой
+   * бочке каждый кадр, и аллокация Color там недопустима. Вспышка своя на каждое
+   * состояние, потому что она — светлый оттенок СОБСТВЕННОГО цвета цели
+   * (см. entities/flash.ts), а собственный цвет у треснувшей бочки другой.
+   */
+  private readonly bodyColors: Record<BarrelVariant, Color>;
+  private readonly flashColors: Record<BarrelVariant, Color>;
+
   private readonly posX: Float32Array;
   private readonly posZ: Float32Array;
   private readonly hp: Float32Array;
   private readonly maxHp: Float32Array;
+  /** Остаток вспышки от полученного урона, секунды. */
+  private readonly flashLeft: Float32Array;
   private readonly content: BarrelContent[] = [];
   /** Сколько выдаёт содержимое: для «стрелков» — число бойцов. */
   private readonly amount: Float32Array;
@@ -129,10 +223,35 @@ export class BarrelField {
     private readonly bonusSlot: BonusSlot,
     private readonly shop: WeaponUnlocks,
   ) {
-    const { size, poolSize, colors } = CONFIG.barrels;
+    const { size, poolSize, colors, shape } = CONFIG.barrels;
+
+    this.bodyColors = {
+      intact: new Color(colors.intact),
+      cracked50: new Color(colors.cracked50),
+      cracked25: new Color(colors.cracked25),
+    };
+    this.flashColors = {
+      intact: makeFlashColor(colors.intact),
+      cracked50: makeFlashColor(colors.cracked50),
+      cracked25: makeFlashColor(colors.cracked25),
+    };
 
     // Геометрия одна на все бочки, материал — свой на каждую (нужен свой цвет).
-    const geometry = new BoxGeometry(size.x, size.y, size.z);
+    // Обручи же одинаковые у всех и цвет не меняют — им хватает одного материала.
+    const bodyGeometry = buildBarrelBody();
+    const halfY = size.y / 2;
+    // Накладки: два обруча по бокам и обод по верхней кромке. Тор задан в
+    // плоскости XY, поэтому его кладут набок поворотом на четверть оборота.
+    const trims = [
+      { geometry: buildHoopGeometry(-shape.hoopOffsetRatio), y: -shape.hoopOffsetRatio * halfY, flat: false },
+      { geometry: buildHoopGeometry(shape.hoopOffsetRatio), y: shape.hoopOffsetRatio * halfY, flat: false },
+      { geometry: buildLidRimGeometry(), y: halfY, flat: true },
+    ];
+    const hoopMaterial = new MeshStandardMaterial({
+      color: shape.hoopColor,
+      roughness: 0.6,
+      metalness: 0.3,
+    });
 
     for (let i = 0; i < poolSize; i++) {
       const material = new MeshStandardMaterial({
@@ -140,8 +259,18 @@ export class BarrelField {
         roughness: 0.85,
         metalness: 0,
       });
-      const mesh = new Mesh(geometry, material);
+      const mesh = new Mesh(bodyGeometry, material);
       mesh.visible = false;
+
+      // Накладки — ДЕТИ тела, а не отдельные объекты пула: тогда пул по-прежнему
+      // двигает и прячет ровно один Mesh на бочку, и про обручи ему знать нечего.
+      for (const trim of trims) {
+        const part = new Mesh(trim.geometry, hoopMaterial);
+        part.position.y = trim.y;
+        if (trim.flat) part.rotation.x = -Math.PI / 2;
+        mesh.add(part);
+      }
+
       scene.add(mesh);
 
       this.meshes.push(mesh);
@@ -152,6 +281,7 @@ export class BarrelField {
     this.posZ = new Float32Array(poolSize);
     this.hp = new Float32Array(poolSize);
     this.maxHp = new Float32Array(poolSize);
+    this.flashLeft = new Float32Array(poolSize);
     this.amount = new Float32Array(poolSize);
   }
 
@@ -209,6 +339,9 @@ export class BarrelField {
     this.posZ[i] = CONFIG.world.spawnZ;
     this.hp[i] = chosenHp;
     this.maxHp[i] = chosenHp;
+    // Обнуляем явно: в слоте мог остаться таймер вспышки от прошлой бочки, и
+    // новая вышла бы на дорогу уже подсвеченной.
+    this.flashLeft[i] = 0;
     this.content[i] = chosenContent;
     this.amount[i] = chosenAmount;
     this.special[i] = chosenSpecial;
@@ -362,6 +495,7 @@ export class BarrelField {
 
     for (let i = 0; i < this.count; ) {
       this.posZ[i]! += step;
+      if (this.flashLeft[i]! > 0) this.flashLeft[i]! -= dt;
 
       // Пока бочка накрывает линию отряда, каждый шаг пробуем задеть стрелков.
       // Задевает ВСЮ полосу шириной хитбокса, а не одного ближайшего: катящаяся
@@ -387,7 +521,7 @@ export class BarrelField {
       const mesh = this.meshes[i]!;
       mesh.visible = true;
       mesh.position.set(this.posX[i]!, y, this.posZ[i]!);
-      this.materials[i]!.color.setHex(this.colorFor(i));
+      this.materials[i]!.color.copy(this.colorFor(i));
 
       i++;
     }
@@ -399,8 +533,8 @@ export class BarrelField {
 
   /**
    * Попадание пули на отрезке её полёта за шаг (передаётся в BulletPool.update).
-   * Бочка считается кругом в плоскости XZ — для бокса 1.2×1.2 разница
-   * незаметна, а проверка остаётся такой же дешёвой, как у зомби.
+   * Бочка считается кругом в плоскости XZ — модель и есть фигура вращения,
+   * так что круг радиусом size.x / 2 совпадает с её самым широким сечением.
    */
   readonly tryHit = (
     xFrom: number,
@@ -446,6 +580,9 @@ export class BarrelField {
    */
   private applyDamage(i: number, damage: number): boolean {
     this.hp[i]! -= damage * CONFIG.barrels.damageResistance;
+    // Вспышка ставится здесь же, после изменения HP: воронка одна на выстрелы и
+    // взрывы, значит подсветятся оба источника урона.
+    this.flashLeft[i] = CONFIG.ui.damageFlash.seconds;
     if (this.hp[i]! > 0) return false;
 
     this.breakBarrel(i);
@@ -534,7 +671,7 @@ export class BarrelField {
   }
 
   /** Состояние прочности: intact → cracked50 → cracked25 (ТЗ раздел 7). */
-  private variantFor(i: number): 'intact' | 'cracked50' | 'cracked25' {
+  private variantFor(i: number): BarrelVariant {
     const [half, quarter] = CONFIG.barrels.crackThresholds;
     const fraction = this.hp[i]! / this.maxHp[i]!;
 
@@ -543,17 +680,13 @@ export class BarrelField {
     return 'intact';
   }
 
-  private colorFor(i: number): number {
-    const { colors } = CONFIG.barrels;
-
-    switch (this.variantFor(i)) {
-      case 'cracked25':
-        return colors.cracked25;
-      case 'cracked50':
-        return colors.cracked50;
-      default:
-        return colors.intact;
-    }
+  /**
+   * Цвет тела бочки на этот кадр: состояние трещин, а поверх него — вспышка
+   * от только что полученного урона, как у зомби, босса и отряда.
+   */
+  private colorFor(i: number): Color {
+    const variant = this.variantFor(i);
+    return this.flashLeft[i]! > 0 ? this.flashColors[variant] : this.bodyColors[variant];
   }
 
   private spawnStream(dt: number): void {
@@ -598,6 +731,7 @@ export class BarrelField {
       this.posZ[i] = this.posZ[last]!;
       this.hp[i] = this.hp[last]!;
       this.maxHp[i] = this.maxHp[last]!;
+      this.flashLeft[i] = this.flashLeft[last]!;
       this.content[i] = this.content[last]!;
       this.amount[i] = this.amount[last]!;
       this.special[i] = this.special[last] ?? null;
@@ -613,6 +747,7 @@ export class BarrelField {
     z: number;
     hp: number;
     maxHp: number;
+    flashLeft: number;
     variant: string;
     content: BarrelContent;
     amount: number;
@@ -629,6 +764,7 @@ export class BarrelField {
         z: this.posZ[i]!,
         hp: this.hp[i]!,
         maxHp: this.maxHp[i]!,
+        flashLeft: this.flashLeft[i]!,
         variant: this.variantFor(i),
         content: this.content[i]!,
         amount,
