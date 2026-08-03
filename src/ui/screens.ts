@@ -20,9 +20,14 @@ import { formatRunTime } from './time';
 
 /** Что экраны умеют сообщать наружу. */
 export interface ScreenHandlers {
-  /** Кнопка «Прокачка» на экране результата. */
+  /** Кнопка «Прокачка» на экране результата и «Назад» с бустеров. */
   openUpgrade(): void;
-  /** Кнопка «Начать забег» — есть и на экране прокачки, и на экране результата. */
+  /**
+   * Кнопка «Начать забег» — есть и на экране прокачки, и на экране результата.
+   * Забег с неё НЕ начинается: сначала открывается экран бустеров.
+   */
+  openBoosters(): void;
+  /** Кнопка «В бой» на экране бустеров — единственный вход в забег. */
   startRun(): void;
   /** Кнопка «Продолжить» на экране паузы. */
   resume(): void;
@@ -59,16 +64,26 @@ interface UpgradeRow {
   batch: HTMLButtonElement;
 }
 
-/** Строка магазина оружия. Цена одна и навсегда, поэтому кнопка одна. */
+/** Строка со стволом: в магазине и в бустерах разметка одна и та же. */
 interface WeaponRow {
   root: HTMLElement;
   buy: HTMLButtonElement;
+}
+
+/** Строка бустера с двумя кнопками: взять и вернуть. */
+interface BoosterRow extends WeaponRow {
+  name: HTMLElement;
+  stats: HTMLElement;
+  refund: HTMLButtonElement;
 }
 
 /**
  * Вкладки экрана прокачки. К трём веткам улучшений (UPGRADE_TRACKS) добавлен
  * магазин оружия: он тоже мета-прогрессия, только за деньги и разовыми
  * покупками, поэтому живёт на том же экране, а не на своём.
+ *
+ * Бустеры — наоборот, на своём (см. showBoosters): они действуют один забег, и
+ * решаются перед конкретным забегом, а не вперемешку с вечными покупками.
  */
 type ScreenTrackId = UpgradeTrackId | 'weapons';
 
@@ -117,6 +132,22 @@ function formatEarned(
 }
 
 /**
+ * Форма слова при числе: 1 стрелок, 2 стрелка, 5 стрелков.
+ *
+ * Правило полное, с сотнями: бойцов в бустерах бывает до 22, то есть в диапазон
+ * 11–14 (где «11 стрелков», а не «11 стрелок») попасть можно.
+ */
+function plural(count: number, one: string, few: string, many: string): string {
+  const tens = count % 100;
+  if (tens >= 11 && tens <= 14) return many;
+
+  const units = count % 10;
+  if (units === 1) return one;
+  if (units >= 2 && units <= 4) return few;
+  return many;
+}
+
+/**
  * Экраны результата забега и прокачки (ТЗ раздел 11).
  *
  * DOM-оверлей поверх холста, как HUD и подписи: текст резкий на любом
@@ -129,6 +160,7 @@ function formatEarned(
 export class Screens {
   private readonly resultElement: HTMLElement | null;
   private readonly upgradeElement: HTMLElement | null;
+  private readonly boostersElement: HTMLElement | null;
   private readonly pauseElement: HTMLElement | null;
   private readonly pauseInfo: HTMLElement | null;
   private readonly changelogElement: HTMLElement | null;
@@ -140,6 +172,8 @@ export class Screens {
   private readonly resultBank: HTMLElement | null;
   private readonly upgradeBank: HTMLElement | null;
   private readonly upgradeMoney: HTMLElement | null;
+  private readonly boostersMoney: HTMLElement | null;
+  private readonly boostersSummary: HTMLElement | null;
   private readonly upgradeReset: HTMLButtonElement | null;
 
   /** Сколько раз кнопку сброса нажали подряд — индекс в RESET_LABELS. */
@@ -147,6 +181,10 @@ export class Screens {
 
   private readonly rows = new Map<UpgradeId, UpgradeRow>();
   private readonly weaponRows = new Map<WeaponId, WeaponRow>();
+  /** Строки аренды: те же стволы, но на один забег. */
+  private readonly boosterWeaponRows = new Map<WeaponId, WeaponRow>();
+  /** Единственная строка бойцов на экране бустеров. null — разметки экрана нет вовсе. */
+  private boosterShooterRow: BoosterRow | null = null;
   private readonly tracks = new Map<ScreenTrackId, TrackView>();
 
   /**
@@ -161,6 +199,7 @@ export class Screens {
   ) {
     this.resultElement = document.querySelector<HTMLElement>('#screen-result');
     this.upgradeElement = document.querySelector<HTMLElement>('#screen-upgrade');
+    this.boostersElement = document.querySelector<HTMLElement>('#screen-boosters');
     this.pauseElement = document.querySelector<HTMLElement>('#screen-pause');
     this.pauseInfo = document.querySelector<HTMLElement>('#pause-info');
     this.changelogElement = document.querySelector<HTMLElement>('#screen-changelog');
@@ -172,6 +211,8 @@ export class Screens {
     this.resultBank = document.querySelector<HTMLElement>('#result-bank');
     this.upgradeBank = document.querySelector<HTMLElement>('#upgrade-bank');
     this.upgradeMoney = document.querySelector<HTMLElement>('#upgrade-money');
+    this.boostersMoney = document.querySelector<HTMLElement>('#boosters-money');
+    this.boostersSummary = document.querySelector<HTMLElement>('#boosters-kit');
     this.upgradeReset = document.querySelector<HTMLButtonElement>('#upgrade-reset');
 
     document
@@ -182,12 +223,23 @@ export class Screens {
       .querySelector<HTMLButtonElement>('#pause-resume')
       ?.addEventListener('click', () => handlers.resume());
 
-    // Один и тот же handlers.startRun() с двух экранов: путь в забег остаётся один.
+    // «Начать забег» с обоих экранов ведёт на бустеры, а не в забег: экран перед
+    // забегом один и тот же, с какой бы стороны игрок к нему ни пришёл.
     for (const selector of ['#upgrade-start', '#result-start']) {
       document
         .querySelector<HTMLButtonElement>(selector)
-        ?.addEventListener('click', () => handlers.startRun());
+        ?.addEventListener('click', () => handlers.openBoosters());
     }
+
+    document
+      .querySelector<HTMLButtonElement>('#boosters-start')
+      ?.addEventListener('click', () => handlers.startRun());
+
+    // Назад — всегда в прокачку, даже если пришли с результата: возвращаются
+    // отсюда, чтобы что-то докупить, а покупается всё именно там.
+    document
+      .querySelector<HTMLButtonElement>('#boosters-back')
+      ?.addEventListener('click', () => handlers.openUpgrade());
 
     // Промежуточные нажатия перерисовывают только саму кнопку: refreshUpgrades
     // обнуляет счётчик подтверждений, и цепочка не дошла бы до конца.
@@ -226,6 +278,7 @@ export class Screens {
     });
 
     this.buildRows();
+    this.buildBoosters();
     this.buildChangelog();
   }
 
@@ -277,7 +330,23 @@ export class Screens {
   showUpgrade(): void {
     this.refreshUpgrades();
     this.toggle(this.resultElement, false);
+    this.toggle(this.boostersElement, false);
     this.toggle(this.upgradeElement, true);
+  }
+
+  /**
+   * Экран бустеров — последний перед забегом (см. MetaProgress, «Стартовый кит»).
+   *
+   * Отдельным экраном, а не вкладкой прокачки, потому что покупка здесь другого
+   * рода: она действует один забег и потому решается прямо перед ним. На пути в
+   * бой он стоит всегда, даже когда денег нет вовсе, — иначе игрок узнавал бы о
+   * бустерах, только если сам заглянет в нужную вкладку.
+   */
+  showBoosters(): void {
+    this.refreshBoosters();
+    this.toggle(this.resultElement, false);
+    this.toggle(this.upgradeElement, false);
+    this.toggle(this.boostersElement, true);
   }
 
   /**
@@ -321,6 +390,7 @@ export class Screens {
   hide(): void {
     this.toggle(this.resultElement, false);
     this.toggle(this.upgradeElement, false);
+    this.toggle(this.boostersElement, false);
     this.toggle(this.pauseElement, false);
     this.toggle(this.changelogElement, false);
   }
@@ -351,11 +421,11 @@ export class Screens {
       group.className = 'upgrade-group';
       list.appendChild(group);
 
-      if (track !== null) {
-        for (const upgradeId of track.ids) group.appendChild(this.buildRow(upgradeId));
-      } else {
-        for (const element of this.buildWeaponRows()) group.appendChild(element);
-      }
+      const rows =
+        track !== null
+          ? track.ids.map((upgradeId) => this.buildRow(upgradeId))
+          : this.buildWeaponRows();
+      for (const element of rows) group.appendChild(element);
 
       this.tracks.set(id, { tab, group });
     }
@@ -465,11 +535,29 @@ export class Screens {
       ...shopWeapons().map((entry) => ({ id: entry.id, price: entry.price })),
     ];
 
-    return entries.map((entry) => this.buildWeaponRow(entry.id, entry.price));
+    return entries.map((entry) => {
+      const row = Screens.buildWeaponRow(entry.id, Screens.weaponStats(entry.id));
+      // Стартовому стволу кнопка досталась ради ровного ряда: она показывает
+      // «старт» и нажатий не ловит — покупать его не за что.
+      if (entry.price !== null) {
+        row.buy.addEventListener('click', () => {
+          this.meta.buyWeapon(entry.id);
+          this.refreshUpgrades();
+        });
+      }
+      this.weaponRows.set(entry.id, row);
+      return row.root;
+    });
   }
 
-  /** Одна строка магазина. Цена null — стартовый ствол, он открыт всегда. */
-  private buildWeaponRow(id: WeaponId, price: number | null): HTMLElement {
+  /**
+   * Разметка строки ствола: иконка, название, характеристики, кнопка.
+   *
+   * Одна на магазин и на бустеры — строки отличаются только тем, что написано на
+   * кнопке и что она делает, а собирать вторую такую же разметку значило бы
+   * получить два ряда, расходящихся при первой же правке вёрстки.
+   */
+  private static buildWeaponRow(id: WeaponId, stats: string): WeaponRow {
     const row = document.createElement('div');
     row.className = 'weapon';
 
@@ -494,22 +582,88 @@ export class Screens {
       name.appendChild(badge);
     }
 
-    const stats = document.createElement('div');
-    stats.className = 'weapon__stats';
-    stats.textContent = Screens.weaponStats(id);
+    const statsElement = document.createElement('div');
+    statsElement.className = 'weapon__stats';
+    statsElement.textContent = stats;
 
     const buy = document.createElement('button');
     buy.className = 'weapon__buy';
     buy.type = 'button';
-    if (price !== null) {
-      buy.addEventListener('click', () => {
-        this.meta.buyWeapon(id);
-        this.refreshUpgrades();
-      });
-    }
 
-    row.append(icon, name, stats, buy);
-    this.weaponRows.set(id, { root: row, buy });
+    row.append(icon, name, statsElement, buy);
+    return { root: row, buy };
+  }
+
+  /**
+   * Экран бустеров: строка бойцов и те же стволы, но в аренду на один забег
+   * (см. MetaProgress, «Стартовый кит»).
+   *
+   * Пистолета здесь нет, в отличие от магазина: с него забег и так начинается,
+   * и строка «купить то, что уже есть» была бы бессмысленной.
+   */
+  private buildBoosters(): void {
+    const list = document.querySelector<HTMLElement>('#boosters-list');
+    if (list === null) return;
+
+    list.appendChild(this.buildBoosterShooterRow());
+
+    for (const entry of shopWeapons()) {
+      const row = Screens.buildWeaponRow(entry.id, Screens.weaponStats(entry.id));
+      row.buy.classList.add('weapon__buy--booster');
+      row.buy.addEventListener('click', () => {
+        // Повторное нажатие по выбранному снимает выбор: пока забег не начат,
+        // набор — это намерение, и отменяется оно там же, где ставится.
+        if (this.meta.startWeapon === entry.id) this.meta.clearStartWeapon();
+        else this.meta.buyStartWeapon(entry.id);
+        this.refreshBoosters();
+      });
+      this.boosterWeaponRows.set(entry.id, row);
+      list.appendChild(row.root);
+    }
+  }
+
+  /**
+   * Строка бойцов. Единственная строка экрана с ДВУМЯ денежными кнопками:
+   * бойцы берутся по одному, и вернуть купленного нужно уметь так же поштучно.
+   */
+  private buildBoosterShooterRow(): HTMLElement {
+    const row = document.createElement('div');
+    row.className = 'weapon weapon--booster-shooters';
+
+    const icon = document.createElement('div');
+    icon.className = 'weapon__icon';
+    icon.textContent = '🧍';
+
+    const name = document.createElement('div');
+    name.className = 'weapon__name';
+
+    const stats = document.createElement('div');
+    stats.className = 'weapon__stats';
+
+    const actions = document.createElement('div');
+    actions.className = 'weapon__actions';
+
+    const refund = document.createElement('button');
+    refund.className = 'weapon__buy weapon__buy--slim';
+    refund.type = 'button';
+    refund.textContent = '−';
+    refund.setAttribute('aria-label', 'Вернуть стрелка');
+    refund.addEventListener('click', () => {
+      this.meta.refundStartShooter();
+      this.refreshBoosters();
+    });
+
+    const buy = document.createElement('button');
+    buy.className = 'weapon__buy weapon__buy--booster';
+    buy.type = 'button';
+    buy.addEventListener('click', () => {
+      this.meta.buyStartShooter();
+      this.refreshBoosters();
+    });
+
+    actions.append(refund, buy);
+    row.append(icon, name, stats, actions);
+    this.boosterShooterRow = { root: row, name, stats, buy, refund };
     return row;
   }
 
@@ -630,6 +784,85 @@ export class Screens {
     }
 
     this.tracks.get('weapons')?.tab.classList.toggle('upgrade-tab--ready', ready);
+  }
+
+  /**
+   * Экран бустеров целиком: остаток денег, строка бойцов, строки аренды и итог
+   * над кнопкой «В бой».
+   *
+   * Зовётся и при показе экрана, и после каждого нажатия на нём. Прокачку он не
+   * трогает: экраны разные, и та перерисуется на своём показе — с уже
+   * изменившимся остатком денег.
+   */
+  private refreshBoosters(): void {
+    if (this.boostersMoney !== null) this.boostersMoney.textContent = `${this.meta.money} $`;
+
+    this.refreshBoosterShooters();
+
+    const chosen = this.meta.startWeapon;
+    for (const [id, row] of this.boosterWeaponRows) {
+      const picked = chosen === id;
+
+      // Замка здесь нет, в отличие от магазина: арендовать можно любой ствол,
+      // открытый он или нет, — единственное условие остаётся денежным.
+      row.root.classList.toggle('weapon--picked', picked);
+
+      row.buy.textContent = picked ? 'убрать' : `${this.meta.startWeaponPrice(id)} $`;
+      // Выбранный ствол остаётся нажимаемым: та же кнопка снимает выбор.
+      row.buy.disabled = !picked && !this.meta.canBuyStartWeapon(id);
+    }
+
+    this.refreshBoosterSummary();
+  }
+
+  /** Строка бойцов: сколько взято, сколько можно и почём. */
+  private refreshBoosterShooters(): void {
+    const row = this.boosterShooterRow;
+    if (row === null) return;
+
+    const count = this.meta.startShooters;
+    const limit = this.meta.startShooterLimit;
+    const price = this.meta.startShooterPrice;
+
+    // Число взятых — в названии, как уровень у улучшений: это то же «сколько
+    // уже куплено», и искать его игрок будет там же.
+    row.name.textContent = count > 0 ? `Стрелок ×${count}` : 'Стрелок';
+    // Коротко до предела: колонка здесь на 40 px уже, чем в магазине (место
+    // забрала вторая кнопка). ЗАМЕРЕНО canvas-обмером при фактическом шрифте:
+    // колонка отдаёт 145 px, «в отряд на забег · до 22» занимает 129, а
+    // «в отряд на забег · не больше 2» — 167, и строка переносилась на вторую,
+    // отчего ряд стрелков был выше оружейных.
+    row.stats.textContent = `в отряд на забег · до ${limit}`;
+    row.root.classList.toggle('weapon--picked', count > 0);
+
+    row.buy.textContent = `${price} $`;
+    row.buy.disabled = !this.meta.canBuyStartShooter();
+    row.refund.disabled = count === 0;
+  }
+
+  /**
+   * Сводка «В забег: …» над кнопкой «В бой».
+   *
+   * Дублирует то, что и так обведено жёлтым в списке, и это намеренно: список
+   * может не поместиться в экран целиком, а нажатие уносит в забег без второго
+   * подтверждения. Пустой набор строку скрывает — иначе она отъедала бы высоту у
+   * тех, кто бустерами не пользуется.
+   */
+  private refreshBoosterSummary(): void {
+    if (this.boostersSummary === null) return;
+
+    const parts: string[] = [];
+
+    const shooters = this.meta.startShooters;
+    if (shooters > 0) {
+      parts.push(`${shooters} ${plural(shooters, 'стрелок', 'стрелка', 'стрелков')}`);
+    }
+
+    const weapon = this.meta.startWeapon;
+    if (weapon !== null) parts.push(WEAPON_NAMES[weapon]);
+
+    this.boostersSummary.hidden = parts.length === 0;
+    this.boostersSummary.textContent = `В забег: ${parts.join(' · ')}`;
   }
 
   /**

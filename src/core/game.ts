@@ -22,12 +22,16 @@ import { RunState } from './run';
 import { Viewport } from './viewport';
 
 /**
- * Фаза приложения: идёт забег, герой падает, показан результат или экран прокачки.
+ * Фаза приложения: идёт забег, герой падает, показан результат, экран прокачки
+ * или экран бустеров.
  *
  * 'dying' — сцена прощания между смертью героя и экраном результата: ходьба
  * остановлена, шагает только анимация падения (см. update).
+ *
+ * 'boosters' — последний экран перед забегом: покупка бойцов и ствола на этот
+ * забег. Через него проходит ЛЮБОЙ вход в игру, и с прокачки, и с результата.
  */
-export type GamePhase = 'running' | 'dying' | 'result' | 'upgrade';
+export type GamePhase = 'running' | 'dying' | 'result' | 'upgrade' | 'boosters';
 
 /**
  * Корень игры: владеет сценой, рендером, камерой и подсистемами.
@@ -141,6 +145,7 @@ export class Game {
     this.labels = new LabelLayer();
     this.screens = new Screens(this.meta, {
       openUpgrade: () => this.openUpgrade(),
+      openBoosters: () => this.openBoosters(),
       startRun: () => this.startRun(),
       resume: () => this.resume(),
     });
@@ -289,6 +294,25 @@ export class Game {
     this.screens.showUpgrade();
   }
 
+  /**
+   * Экран бустеров — то, что игрок видит между «Начать забег» и самим забегом.
+   * Забег начинается уже оттуда, кнопкой «В бой».
+   *
+   * КОГДА ПОКАЗЫВАТЬ НЕЧЕГО, ЭКРАН ПРОПУСКАЕТСЯ и забег начинается сразу: на
+   * пустом кошельке там одни недоступные кнопки, то есть лишнее нажатие по
+   * дороге в бой — а проходит по ней игрок каждый забег. Уже собранный кит
+   * экран не пропускает даже без денег: игрок должен видеть, с чем выходит.
+   */
+  private openBoosters(): void {
+    if (!this.meta.hasStartKit && !this.meta.hasAffordableBooster) {
+      this.startRun();
+      return;
+    }
+
+    this.phase = 'boosters';
+    this.screens.showBoosters();
+  }
+
   /** Новый забег: применить прокачку, обнулить всё, вернуться в игру. */
   private startRun(): void {
     // Прокачка в конфиг ДО сброса: подсистемы читают уже новые значения.
@@ -304,6 +328,20 @@ export class Game {
     this.crystals.reset();
     this.money.reset();
     this.boss.reset();
+
+    /*
+     * СТАРТОВЫЙ КИТ — оплаченные за деньги бойцы и ствол на этот забег
+     * (см. MetaProgress, «Стартовый кит»). Выдаётся ПОСЛЕ reset(): тот как раз
+     * возвращает отряд к одному герою с пистолетом, и порядок наоборот стёр бы
+     * выданное.
+     *
+     * Сначала ствол, потом бойцы: addShooters вооружает новичков ОБЩИМ оружием
+     * отряда, поэтому оплаченный автомат достаётся и им. При обратном порядке
+     * купленные бойцы вышли бы с пистолетами.
+     */
+    const kit = this.meta.consumeStartKit();
+    if (kit.weapon !== null) this.squad.equipStartWeapon(kit.weapon);
+    if (kit.shooters > 0) this.squad.addShooters(kit.shooters);
 
     // Отряд встаёт в центр, а не туда, где курсор остался с прошлого забега.
     this.input.targetPercent = 50;

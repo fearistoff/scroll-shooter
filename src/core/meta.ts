@@ -193,6 +193,13 @@ interface SavedProgress {
    * Заодно последовательность нельзя нарушить правкой сохранения руками.
    */
   weapons: number;
+  /**
+   * Стартовый кит: оплачен, но ещё не выдан. Лежит в сохранении, а не только в
+   * памяти, потому что деньги за него сняты, — иначе перезагрузка страницы между
+   * покупкой и забегом съедала бы покупку.
+   */
+  startShooters: number;
+  startWeapon: WeaponId | null;
 }
 
 /**
@@ -226,6 +233,10 @@ export class MetaProgress {
   private moneyValue = 0;
   /** Длина открытого префикса CONFIG.shop.weapons — см. SavedProgress.weapons. */
   private weaponsBought = 0;
+  /** Оплаченные бойцы стартового кита — см. «Стартовый кит» ниже. */
+  private startShootersValue = 0;
+  /** Оплаченный ствол стартового кита. null — забег начнётся с пистолета. */
+  private startWeaponValue: WeaponId | null = null;
 
   constructor() {
     this.load();
@@ -419,6 +430,159 @@ export class MetaProgress {
     return true;
   }
 
+  // --- Стартовый кит, он же «Бустеры» (за деньги, на один забег) -------------
+
+  /*
+   * Третья форма покупки и единственная ОДНОРАЗОВАЯ: оплаченные бойцы и ствол
+   * выдаются отряду в начале ближайшего забега и вместе с ним пропадают
+   * (CONFIG.shop.startBonuses — там же цены и почему они такие). Игроку это
+   * показано отдельным экраном перед забегом — «Бустеры» (см. Screens).
+   *
+   * Деньги снимаются сразу, а не на старте забега: кит лежит в сохранении, и за
+   * него уже заплачено. Пока забег не начат, любую покупку можно отменить с
+   * полным возвратом — до выдачи кит остаётся набором намерений, а не тратой, и
+   * промах пальцем не должен стоить полутора забегов дохода.
+   */
+
+  /** Сколько бойцов оплачено на старт ближайшего забега. */
+  get startShooters(): number {
+    return this.startShootersValue;
+  }
+
+  /** Оплаченный на старт ствол. null — забег начнётся со стартового пистолета. */
+  get startWeapon(): WeaponId | null {
+    return this.startWeaponValue;
+  }
+
+  /** Цена одного бойца в кит. */
+  get startShooterPrice(): number {
+    return CONFIG.shop.startBonuses.shooterPrice;
+  }
+
+  /**
+   * Сколько бойцов вообще можно взять: все места отряда, кроме места героя.
+   * Предел тот же, которым обрежет выдачу Squad.addShooters, поэтому оплатить
+   * бойца, которому не хватит места в строю, нельзя.
+   */
+  get startShooterLimit(): number {
+    return Math.max(0, CONFIG.formation.maxShooters - 1);
+  }
+
+  canBuyStartShooter(): boolean {
+    return (
+      this.startShootersValue < this.startShooterLimit &&
+      this.moneyValue >= this.startShooterPrice
+    );
+  }
+
+  buyStartShooter(): boolean {
+    if (!this.canBuyStartShooter()) return false;
+
+    this.moneyValue -= this.startShooterPrice;
+    this.startShootersValue++;
+    this.save();
+    return true;
+  }
+
+  /** Возвращает одного оплаченного бойца в кошелёк. */
+  refundStartShooter(): boolean {
+    if (this.startShootersValue <= 0) return false;
+
+    this.startShootersValue--;
+    this.moneyValue += this.startShooterPrice;
+    this.save();
+    return true;
+  }
+
+  /**
+   * Цена ствола на один забег: доля от цены его открытия в магазине.
+   * null — ствола нет в магазине (пистолет: он и так стартовый).
+   */
+  startWeaponPrice(id: WeaponId): number | null {
+    const price = this.weaponPrice(id);
+    if (price === null) return null;
+    return Math.round(price / CONFIG.shop.startBonuses.weaponPriceDivisor);
+  }
+
+  /** Сколько вернёт отмена текущего выбора. 0 — ствол в кит не взят. */
+  private startWeaponRefund(): number {
+    if (this.startWeaponValue === null) return 0;
+    return this.startWeaponPrice(this.startWeaponValue) ?? 0;
+  }
+
+  /**
+   * Можно ли взять ствол в кит.
+   *
+   * ОТКРЫТОСТЬ В МАГАЗИНЕ НЕ ТРЕБУЕТСЯ: арендовать можно любой ствол таблицы,
+   * даже тот, до которого цепочка покупок ещё не дошла (причина — в
+   * CONFIG.shop.startBonuses). Единственное условие — деньги.
+   *
+   * Ствол в ките ровно один, поэтому новый выбор заменяет прежний, а прежний
+   * возвращается в кошелёк — доплатить нужно только разницу.
+   */
+  canBuyStartWeapon(id: WeaponId): boolean {
+    const price = this.startWeaponPrice(id);
+    if (price === null) return false;
+    if (this.startWeaponValue === id) return false;
+    return this.moneyValue + this.startWeaponRefund() >= price;
+  }
+
+  /** Берёт ствол в кит, заменяя прежний выбор. */
+  buyStartWeapon(id: WeaponId): boolean {
+    if (!this.canBuyStartWeapon(id)) return false;
+
+    this.moneyValue += this.startWeaponRefund();
+    this.moneyValue -= this.startWeaponPrice(id)!;
+    this.startWeaponValue = id;
+    this.save();
+    return true;
+  }
+
+  /** Снимает ствол с кита с полным возвратом денег. */
+  clearStartWeapon(): boolean {
+    if (this.startWeaponValue === null) return false;
+
+    this.moneyValue += this.startWeaponRefund();
+    this.startWeaponValue = null;
+    this.save();
+    return true;
+  }
+
+  /** Есть ли что выдать отряду на старте забега. */
+  get hasStartKit(): boolean {
+    return this.startShootersValue > 0 || this.startWeaponValue !== null;
+  }
+
+  /**
+   * Хватает ли денег хоть на один бустер. По этому признаку Game решает, стоит
+   * ли вообще показывать экран перед забегом: без денег он предлагал бы одни
+   * недоступные кнопки, то есть был бы лишним нажатием по дороге в бой.
+   *
+   * Спрашивается теми же предикатами, что стоят на кнопках, а не сравнением с
+   * самой дешёвой ценой: правила покупки живут в одном месте и разойтись с
+   * условием показа не могут.
+   */
+  get hasAffordableBooster(): boolean {
+    if (this.canBuyStartShooter()) return true;
+    return shopWeapons().some((entry) => this.canBuyStartWeapon(entry.id));
+  }
+
+  /**
+   * Отдаёт кит и очищает его: покупка одноразовая, и списывается она здесь, а
+   * не при оплате, — иначе прерванный запуск игры терял бы оплаченное.
+   *
+   * Зовётся из Game.startRun ровно один раз за забег.
+   */
+  consumeStartKit(): { shooters: number; weapon: WeaponId | null } {
+    const kit = { shooters: this.startShootersValue, weapon: this.startWeaponValue };
+    if (!this.hasStartKit) return kit;
+
+    this.startShootersValue = 0;
+    this.startWeaponValue = null;
+    this.save();
+    return kit;
+  }
+
   /**
    * Итоговый множитель улучшения — то, что попадёт в конфиг.
    *
@@ -484,11 +648,14 @@ export class MetaProgress {
    * сброса: на чистом сохранении она предлагала бы стереть ноль.
    *
    * Спрашивается ровно то, что чистит reset(), — купленный уровень, любая из
-   * двух валют, открытый ствол. Достаточно одного: игрок, накопивший EXP, но
-   * ничего не купивший, тоже потеряет прогресс.
+   * двух валют, открытый ствол, оплаченный стартовый кит. Достаточно одного:
+   * игрок, накопивший EXP, но ничего не купивший, тоже потеряет прогресс. Кит
+   * учитывается по той же причине: игрок, спустивший все деньги на бойцов, иначе
+   * увидел бы «сбрасывать нечего» — и всё равно потерял бы их при сбросе.
    */
   get hasProgress(): boolean {
     if (this.bankValue > 0 || this.moneyValue > 0 || this.weaponsBought > 0) return true;
+    if (this.hasStartKit) return true;
     for (const level of this.levels.values()) {
       if (level > 0) return true;
     }
@@ -505,6 +672,8 @@ export class MetaProgress {
     this.bankValue = 0;
     this.moneyValue = 0;
     this.weaponsBought = 0;
+    this.startShootersValue = 0;
+    this.startWeaponValue = null;
     this.save();
     this.applyTo();
   }
@@ -555,12 +724,42 @@ export class MetaProgress {
 
         this.migrateLegacy(saved.levels as Record<string, unknown>);
       }
+
+      // Кит читается ПОСЛЕДНИМ: его предел зависит от уровня размера отряда, а
+      // тот прочитан строкой выше.
+      this.loadStartKit(saved);
     } catch {
       // Невалидный JSON — просто стартуем с нуля.
       this.levels.clear();
       this.bankValue = 0;
       this.moneyValue = 0;
       this.weaponsBought = 0;
+      this.startShootersValue = 0;
+      this.startWeaponValue = null;
+    }
+  }
+
+  /**
+   * Стартовый кит из сохранения.
+   *
+   * Предел бойцов считается по УРОВНЮ ветки размера отряда, а не по
+   * CONFIG.formation.maxShooters: applyTo() к моменту чтения ещё не вызывался, и
+   * в конфиге стоит база (3) — по ней кит игрока с прокачанным отрядом обрезался
+   * бы до двух бойцов.
+   *
+   * Ствол проверяется по списку магазина — по нему считается цена аренды, и
+   * незнакомый ключ (правка сохранения руками, укоротившийся список) остался бы
+   * без неё. Открытость при этом не спрашивается: арендовать можно и закрытое.
+   */
+  private loadStartKit(saved: Partial<SavedProgress>): void {
+    if (typeof saved.startShooters === 'number' && Number.isFinite(saved.startShooters)) {
+      const limit = Math.max(0, this.countValue('squadSize') - 1);
+      this.startShootersValue = Math.min(Math.max(Math.floor(saved.startShooters), 0), limit);
+    }
+
+    if (typeof saved.startWeapon === 'string') {
+      const id = saved.startWeapon as WeaponId;
+      if (shopWeapons().some((entry) => entry.id === id)) this.startWeaponValue = id;
     }
   }
 
@@ -599,6 +798,8 @@ export class MetaProgress {
       bank: this.bankValue,
       money: this.moneyValue,
       weapons: this.weaponsBought,
+      startShooters: this.startShootersValue,
+      startWeapon: this.startWeaponValue,
     };
     for (const id of UPGRADE_IDS) {
       const level = this.level(id);
@@ -618,6 +819,7 @@ export class MetaProgress {
     money: number;
     weapons: WeaponId[];
     nextWeapon: ShopWeapon | null;
+    startKit: { shooters: number; limit: number; weapon: WeaponId | null };
     levels: Record<string, number>;
     multipliers: Record<string, number>;
     nextCosts: Record<string, number | null>;
@@ -639,6 +841,11 @@ export class MetaProgress {
         .slice(0, this.weaponsBought)
         .map((entry) => entry.id),
       nextWeapon: this.nextWeapon(),
+      startKit: {
+        shooters: this.startShootersValue,
+        limit: this.startShooterLimit,
+        weapon: this.startWeaponValue,
+      },
       levels,
       multipliers,
       nextCosts,

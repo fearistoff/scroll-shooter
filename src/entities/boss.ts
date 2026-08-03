@@ -491,6 +491,11 @@ export class Boss {
    * Босс — тоже зомби, поэтому пробивающий снаряд (огнемёт) проходит и сквозь
    * него: урон засчитывается один раз на пересечении, а снаряд летит дальше и
    * достаёт тех, кто стоит за боссом.
+   *
+   * По той же причине хитбокс шире модели на общий с толпой множитель
+   * (CONFIG.enemies.hitboxScale): своего числа у босса нет намеренно — иначе
+   * правка хитбокса зомби тихо обходила бы гиганта стороной. Взрыва мины это,
+   * как и у зомби, не касается: damageInRadius меряет от центра.
    */
   readonly tryHit = (
     xFrom: number,
@@ -503,7 +508,7 @@ export class Boss {
   ): boolean => {
     if (!this.isActive) return false;
 
-    const reach = CONFIG.boss.capsule.radius + bulletRadius;
+    const reach = CONFIG.boss.capsule.radius * CONFIG.enemies.hitboxScale + bulletRadius;
     const touched = pierce
       ? segmentPassesCircle(0, this.posZ, reach, xFrom, zFrom, xTo, zTo)
       : segmentHitsCircle(0, this.posZ, reach, xFrom, zFrom, xTo, zTo);

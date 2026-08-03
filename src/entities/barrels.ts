@@ -625,6 +625,10 @@ export class BarrelField {
    * Z, поэтому важно, при каких x попадание засчитывается: по x круг совпадает
    * с фигурой точно, а по z ошибается максимум на 0.1 units (пуля попадает чуть
    * раньше, чем коснулась бы бока).
+   *
+   * Поверх габарита стоит hitboxScale — круг попаданий шире модели, как у зомби
+   * (см. CONFIG.barrels.hitboxScale). Наезда и взрыва это не касается: там
+   * по-прежнему настоящий размер.
    */
   readonly tryHit = (
     xFrom: number,
@@ -635,7 +639,7 @@ export class BarrelField {
     bulletRadius: number = CONFIG.weapons.bullet.radius,
     pierce = false,
   ): boolean => {
-    const reach = barrelSpanX() / 2 + bulletRadius;
+    const reach = (barrelSpanX() / 2) * CONFIG.barrels.hitboxScale + bulletRadius;
     let anyHit = false;
 
     for (let i = 0; i < this.count; ) {

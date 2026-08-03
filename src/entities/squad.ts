@@ -772,14 +772,40 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
     if (current < 0 || current >= chain.length - 1) return null;
 
     const next = chain[current + 1]!;
-    this.commonWeapon = next;
-
-    if (!isSpecialWeapon(this.heroWeapon.weaponId)) this.heroWeapon.setWeapon(next);
-    for (const ally of this.allies) {
-      if (!isSpecialWeapon(ally.weapon.weaponId)) ally.weapon.setWeapon(next);
-    }
-
+    this.setCommonWeapon(next);
     return next;
+  }
+
+  /**
+   * Выдаёт стрелковый ствол ВСЕМУ отряду. Бойцов с особым оружием пропускает —
+   * причина в комментарии к upgradeSquadWeapon.
+   *
+   * Отдельно от него, потому что источников теперь два: бочка поднимает оружие
+   * на СЛЕДУЮЩУЮ ступень, стартовый кит выдаёт КОНКРЕТНУЮ. Раздача при этом
+   * одна на оба, иначе они разошлись бы в обращении с особым оружием.
+   */
+  private setCommonWeapon(id: WeaponId): void {
+    this.commonWeapon = id;
+
+    if (!isSpecialWeapon(this.heroWeapon.weaponId)) this.heroWeapon.setWeapon(id);
+    for (const ally of this.allies) {
+      if (!isSpecialWeapon(ally.weapon.weaponId)) ally.weapon.setWeapon(id);
+    }
+  }
+
+  /**
+   * Ствол из стартового кита — оплаченный за деньги на экране бустеров
+   * (см. MetaProgress, «Стартовый кит»). Зовётся из Game.startRun сразу после
+   * reset(), то есть до того, как отряд успел что-либо подобрать.
+   *
+   * Раздаётся по тем же правилам, что и подобранный из бочки: стрелковое
+   * достаётся всему отряду, особое — одному бойцу (на старте это герой, он в
+   * отряде один). Иначе оплаченный гранатомёт вёл бы себя не так, как найденный,
+   * и «взял в кит» означало бы не то же самое, что «выбил из бочки».
+   */
+  equipStartWeapon(id: WeaponId): void {
+    if (isSpecialWeapon(id)) this.giveSpecialWeapon(id);
+    else this.setCommonWeapon(id);
   }
 
   /**
