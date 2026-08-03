@@ -20,6 +20,7 @@ import type { GateTarget } from './gates';
 import type { MineField } from './mines';
 import {
   isSpecialWeapon,
+  specialWeaponRank,
   weaponBlastDamage,
   weaponDamage,
   weaponRange,
@@ -963,17 +964,32 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
   /**
    * Бонус «особое оружие» (ТЗ раздел 6): заменяет ствол у ОДНОГО бойца.
    *
-   * Порядок выдачи по ТЗ: сначала главный герой, затем доп. стрелки в случайном
-   * порядке. Кандидат выбирается резервуарной выборкой — один проход и без
-   * промежуточного массива, зато распределение равномерное.
+   * Достаётся СЛАБЕЙШЕМУ по шкале specialWeaponRank из тех, кого ствол
+   * усиливает: гранатомёт сначала идёт тем, у кого нет ни огнемёта, ни
+   * гранатомёта, и только когда таких не осталось — заменяет огнемёт.
+   * Огнемёт поверх гранатомёта не выдаётся вовсе — это был бы даунгрейд.
    *
-   * Если особое есть уже у всех, ствол достаётся случайному доп. стрелку: иначе
-   * разбитая бочка не дала бы ничего.
+   * Внутри одной ступени порядок по ТЗ: сначала главный герой, затем доп.
+   * стрелки в случайном порядке. Кандидат выбирается резервуарной выборкой —
+   * один проход и без промежуточного массива, зато распределение равномерное.
    *
-   * Возвращает, кому досталось.
+   * Возвращает, кому досталось; null — усиливать некого, ствол пропал.
+   * Такой бочке не дают появиться проверки полезности на спавне
+   * (BarrelField.randomContent/randomSpecial), сюда null доходит только если
+   * состав отряда успел смениться между спавном бочки и вскрытием.
    */
-  giveSpecialWeapon(id: WeaponId): 'hero' | 'ally' {
-    if (!isSpecialWeapon(this.heroWeapon.weaponId)) {
+  giveSpecialWeapon(id: WeaponId): 'hero' | 'ally' | null {
+    const newRank = specialWeaponRank(id);
+
+    const heroRank = specialWeaponRank(this.heroWeapon.weaponId);
+    let weakest = heroRank < newRank ? heroRank : Infinity;
+    for (const ally of this.allies) {
+      const rank = specialWeaponRank(ally.weapon.weaponId);
+      if (rank < newRank && rank < weakest) weakest = rank;
+    }
+    if (weakest === Infinity) return null;
+
+    if (heroRank === weakest) {
       this.heroWeapon.setWeapon(id);
       return 'hero';
     }
@@ -981,23 +997,28 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
     let chosen = -1;
     let seen = 0;
     for (let i = 0; i < this.allies.length; i++) {
-      if (isSpecialWeapon(this.allies[i]!.weapon.weaponId)) continue;
+      if (specialWeaponRank(this.allies[i]!.weapon.weaponId) !== weakest) continue;
       seen++;
       if (Math.random() * seen < 1) chosen = i;
     }
 
-    if (chosen < 0 && this.allies.length > 0) {
-      chosen = Math.floor(Math.random() * this.allies.length);
-    }
+    this.allies[chosen]!.weapon.setWeapon(id);
+    return 'ally';
+  }
 
-    if (chosen >= 0) {
-      this.allies[chosen]!.weapon.setWeapon(id);
-      return 'ally';
+  /**
+   * Способен ли этот особый ствол усилить хоть кого-то в отряде — по той же
+   * шкале, что и giveSpecialWeapon. По этому предикату бочки не предлагают
+   * бесполезное особое: огнемёт отряду, полностью вооружённому гранатомётами,
+   * не выпадает вовсе.
+   */
+  specialWeaponBenefits(id: WeaponId): boolean {
+    const newRank = specialWeaponRank(id);
+    if (specialWeaponRank(this.heroWeapon.weaponId) < newRank) return true;
+    for (const ally of this.allies) {
+      if (specialWeaponRank(ally.weapon.weaponId) < newRank) return true;
     }
-
-    // Отряд — один герой, и особое у него уже есть: меняем на новое.
-    this.heroWeapon.setWeapon(id);
-    return 'hero';
+    return false;
   }
 
   /**

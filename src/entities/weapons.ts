@@ -118,6 +118,17 @@ export function isSpecialWeapon(id: WeaponId): boolean {
   return !(CONFIG.weapons.progression as WeaponId[]).includes(id);
 }
 
+/**
+ * Сила особого оружия — позиция в CONFIG.weapons.special (чем дальше, тем
+ * сильнее), у стрелкового −1. По этой шкале решается, кого выпавший ствол
+ * способен усилить: гранатомёт заменяет и стрелковое, и огнемёт, огнемёт —
+ * только стрелковое. Обратной замены (огнемёт поверх гранатомёта) нет —
+ * это был бы даунгрейд, а не бонус.
+ */
+export function specialWeaponRank(id: WeaponId): number {
+  return (CONFIG.weapons.special as WeaponId[]).indexOf(id);
+}
+
 /** Случайное особое оружие из списка в конфиге. */
 export function randomSpecialWeapon(): WeaponId {
   const list = CONFIG.weapons.special as WeaponId[];

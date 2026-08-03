@@ -57,7 +57,13 @@ export interface BonusReceiver {
   readonly weaponId: WeaponId;
 
   /** Выдаёт особое оружие одному бойцу: сначала герою, потом случайному (ТЗ раздел 6). */
-  giveSpecialWeapon(id: WeaponId): 'hero' | 'ally';
+  giveSpecialWeapon(id: WeaponId): 'hero' | 'ally' | null;
+
+  /**
+   * Способен ли особый ствол усилить хоть кого-то. По нему бочки не предлагают
+   * бесполезное особое: огнемёт не выпадает отряду, где у всех гранатомёты.
+   */
+  specialWeaponBenefits(id: WeaponId): boolean;
 
   /** Расставляет противопехотные мины перед отрядом (ТЗ раздел 7). */
   deployMines(count?: number): void;
@@ -476,10 +482,14 @@ export class BarrelField {
     return this.run.isUnlocked(weaponUnlockSeconds(id));
   }
 
-  /** Случайное особое оружие из уже разрешённых. */
+  /**
+   * Случайное особое оружие из уже разрешённых — и только из ПОЛЕЗНЫХ отряду
+   * прямо сейчас (Squad.specialWeaponBenefits): огнемёт отряду с гранатомётами
+   * у всех — пустая трата бочки, такой ствол в неё не кладётся.
+   */
   private randomSpecial(): WeaponId {
-    const available = (CONFIG.weapons.special as WeaponId[]).filter((id) =>
-      this.isWeaponAllowed(id),
+    const available = (CONFIG.weapons.special as WeaponId[]).filter(
+      (id) => this.isWeaponAllowed(id) && this.squad.specialWeaponBenefits(id),
     );
     if (available.length === 0) return randomSpecialWeapon();
     return available[Math.floor(Math.random() * available.length)]!;
@@ -498,7 +508,9 @@ export class BarrelField {
    *             ступень ещё не куплена в магазине / закрыта по времени. Бочка
    *             обещает конкретный ствол, и обещание, которое нечем исполнить,
    *             лучше не показывать.
-   *   стрелки — отряд уже упёрся в formation.maxShooters, добавить некого.
+   *   стрелки — отряд уже упёрся в formation.maxShooters, добавить некого;
+   *   особое  — ни один из разрешённых особых стволов никого не усилит
+   *             (Squad.specialWeaponBenefits): у всего отряда уже гранатомёты.
    * Проверка стоит на спавне, а не на вскрытии: бесполезную бочку игрок иначе
    * расстреливал бы впустую, а патроны и время в crowd-shooter и есть ресурс.
    *
@@ -522,7 +534,10 @@ export class BarrelField {
     if (shootersOk) total += shootersWeight;
 
     const specialOk =
-      specialWeight > 0 && (CONFIG.weapons.special as WeaponId[]).some((id) => this.isWeaponAllowed(id));
+      specialWeight > 0 &&
+      (CONFIG.weapons.special as WeaponId[]).some(
+        (id) => this.isWeaponAllowed(id) && this.squad.specialWeaponBenefits(id),
+      );
     if (specialOk) total += specialWeight;
 
     const mineOk = mineWeight > 0 && this.run.isUnlocked(unlocks.barrelMine);
