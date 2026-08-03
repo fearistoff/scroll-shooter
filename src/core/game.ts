@@ -342,6 +342,9 @@ export class Game {
     const kit = this.meta.consumeStartKit();
     if (kit.weapon !== null) this.squad.equipStartWeapon(kit.weapon);
     if (kit.shooters > 0) this.squad.addShooters(kit.shooters);
+    // Предел хода зависит от ширины строя: после выдачи кита он уже другой, и
+    // ставить его надо сразу, а не подводить плавно на первых кадрах забега.
+    this.squad.snapTravelLimit();
 
     // Отряд встаёт в центр, а не туда, где курсор остался с прошлого забега.
     this.input.targetPercent = 50;

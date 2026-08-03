@@ -110,6 +110,13 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
 
   private percent = 50;
 
+  /**
+   * Фактический предел хода, units от центра дороги. Живое число: оно зависит от
+   * ширины строя (limitXTarget) и потому меняется прямо в забеге — не мгновенно,
+   * а с ограниченной скоростью (см. easeLimit). Ставится в конструкторе и в reset.
+   */
+  private limitXCurrent = 0;
+
   // Переиспользуемые поля вместо возврата объекта из allyOffset — раскладка
   // строя считается для каждого бойца каждый кадр.
   private offsetX = 0;
@@ -159,6 +166,10 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
     this.allyMesh.frustumCulled = false;
     this.allyMesh.count = 0;
     scene.add(this.allyMesh);
+
+    // Предел хода читают снаружи (Squad.x) и до первого шага логики, поэтому он
+    // не может остаться нулём до первого easeLimit.
+    this.limitXCurrent = this.limitXTarget;
   }
 
   /** Сколько доп. стрелков влезает в визуальный потолок: сумма rowSizes = 22. */
@@ -168,9 +179,58 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
     return total;
   }
 
+  /**
+   * Насколько отряд торчит вбок от своего центра: до КРОМКИ крайней капсулы, а не
+   * до её центра. У одного героя это его радиус, дальше растёт по строю.
+   *
+   * Считается по рядам, а не перебором бойцов: места в ряду занимаются от
+   * середины наружу (см. allyOffset), поэтому дальше всех в ряду стоит последний
+   * пришедший, и хватает одного шага на ряд. Максимум берётся по всем занятым
+   * рядам, потому что широкий ряд может быть ещё не заполнен: при 11 союзниках
+   * крайний стоит в ряду из пяти, а не в начатом ряду из шести.
+   */
+  get halfWidth(): number {
+    const heroHalf = CONFIG.player.heroCapsule.radius;
+    const visible = this.visibleAllyCount;
+    if (visible === 0) return heroHalf;
+
+    const { rowSizes, spacingX } = CONFIG.formation;
+    let left = visible;
+    let widestStep = 0;
+
+    for (const nominal of rowSizes) {
+      if (left <= 0) break;
+      const inRow = Math.min(left, nominal);
+      left -= inRow;
+      widestStep = Math.max(widestStep, Squad.rowStep(inRow - 1, nominal));
+    }
+
+    return Math.max(heroHalf, widestStep * spacingX + CONFIG.player.allyCapsule.radius);
+  }
+
   /** Предел хода отряда в units от центра дороги. */
-  static get limitX(): number {
-    return (CONFIG.world.roadWidth / 2) * (CONFIG.player.travelLimitPercent / 100);
+  get limitX(): number {
+    return this.limitXCurrent;
+  }
+
+  /**
+   * Куда предел хода едет при нынешней ширине строя.
+   *
+   * travelLimitPercent задаёт предел ОДИНОЧНОГО ГЕРОЯ, и от него берётся линия,
+   * до которой отряду позволено подходить кромкой: heroLimit + радиус героя.
+   * Дальше вычитается фактическая полуширина строя — поэтому крайняя капсула
+   * всегда встаёт на одно и то же место у кромки асфальта, сколько бы бойцов в
+   * отряде ни было (ЗАМЕРЕНО: 4.86 units и у одинокого героя, и у полного отряда
+   * из 23). Раньше предел был один на любой размер, и полный отряд у кромки
+   * выносил на обочину 10 капсул из 22 — крайняя стояла центром в 6.66.
+   *
+   * Нижняя граница 0 — на случай строя шире дороги (rowSizes раздули так, что
+   * ряд не влезает): отряд просто встаёт по центру и вбок не ходит.
+   */
+  private get limitXTarget(): number {
+    const roadHalf = CONFIG.world.roadWidth / 2;
+    const heroLimit = roadHalf * (CONFIG.player.travelLimitPercent / 100);
+    return Math.max(0, heroLimit + CONFIG.player.heroCapsule.radius - this.halfWidth);
   }
 
   get positionPercent(): number {
@@ -179,7 +239,7 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
 
   /** Позиция отряда по x в мировых units. */
   get x(): number {
-    return ((this.percent - 50) / 50) * Squad.limitX;
+    return ((this.percent - 50) / 50) * this.limitX;
   }
 
   /** Всего стрелков, включая героя и «невидимых». */
@@ -251,6 +311,9 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
     this.commonWeapon = CONFIG.player.startWeapon as WeaponId;
     this.heroWeapon.setWeapon(this.commonWeapon);
     this.percent = 50;
+    // Отряд снова из одного героя — предел сразу полный, без наезда easeLimit:
+    // забег не должен начинаться с ползущей вбок границы прошлого состава.
+    this.snapTravelLimit();
     this.aimX = null;
     this.aimZ = null;
     this.heroRegenDelayLeft = 0;
@@ -268,6 +331,16 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
     this.heroMesh.position.y = Squad.heroStandY;
     // z тоже: упасть герой мог и вдоль дороги, а стоит он всегда в z = 0.
     this.heroMesh.position.z = 0;
+  }
+
+  /**
+   * Ставит предел хода ровно по нынешней ширине строя, без наезда easeLimit.
+   * Нужен старту забега: бойцы из оплаченного кита приходят ПОСЛЕ reset, и без
+   * этого забег начинался бы с границей от одиночного героя, которая первые
+   * полсекунды сползала бы к своему месту.
+   */
+  snapTravelLimit(): void {
+    this.limitXCurrent = this.limitXTarget;
   }
 
   /** Высота центра стоящей капсулы героя: подошвы на дороге, y = 0. */
@@ -327,6 +400,9 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
 
   /** Двигает отряд за вводом, раскладывает строй и стреляет. */
   update(dt: number, targetPercent: number): void {
+    // Первым делом: положение отряда считается от предела, и позади по шагу идут
+    // стрельба и раскладка строя — они должны видеть уже новое значение.
+    this.easeLimit(dt);
     this.percent += (targetPercent - this.percent) * CONFIG.player.followLerp;
 
     // Таймеры вспышек и паузы регенерации тают по игровому dt: на экранах
@@ -351,6 +427,30 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
 
     this.layoutAllies(squadX);
     this.fire(dt, squadX);
+  }
+
+  /**
+   * Подводит предел хода к нынешней ширине строя — не скачком, а с постоянной
+   * скоростью (player.travelLimitEaseSpeed).
+   *
+   * Скачок здесь заметен: бойцы приходят пачками (стена ворот, множитель у
+   * турникета), и одно новое место в ряду расширяет строй сразу на spacingX =
+   * 0.72, а пачка — и на больше (ЗАМЕРЕНО 1.02 units, когда трое приходят к
+   * одинокому герою). Отряд, стоящий у самой кромки, при мгновенной смене предела
+   * проехал бы всю эту величину за один кадр.
+   *
+   * Скорость в units/с, а не доля за шаг: dt в цикле не постоянный. ЗАМЕРЕНО, что
+   * от dt не зависит: те же 1.02 units проходят за 0.267 с при 1/60 и 0.258 с при
+   * 1/120 (разница — округление последнего шага).
+   */
+  private easeLimit(dt: number): void {
+    const target = this.limitXTarget;
+    const delta = target - this.limitXCurrent;
+    const step = CONFIG.player.travelLimitEaseSpeed * dt;
+
+    // Скорость ≤ 0 означает «мгновенно» — иначе предел не сдвинулся бы никогда.
+    if (step <= 0 || Math.abs(delta) <= step) this.limitXCurrent = target;
+    else this.limitXCurrent += Math.sign(delta) * step;
   }
 
   /**
@@ -477,15 +577,25 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
     }
 
     const nominal = rowSizes[row]!;
-    // Смещение от центра ряда в шагах spacingX. Чётный ряд начинается с ±0.5,
-    // нечётный — с 0; отсюда и берётся полушаговый сдвиг соседних рядов.
     const even = nominal % 2 === 0;
-    const step = even ? Math.floor(posInRow / 2) + 0.5 : Math.ceil(posInRow / 2);
     const positive = even ? posInRow % 2 === 0 : posInRow % 2 === 1;
 
-    this.offsetX = (positive ? step : -step) * spacingX;
+    this.offsetX = (positive ? 1 : -1) * Squad.rowStep(posInRow, nominal) * spacingX;
     // Ряды уходят назад: герой в z = 0, первый ряд союзников за ним.
     this.offsetZ = (row + 1) * spacingZ;
+  }
+
+  /**
+   * Насколько далеко от центра ряда стоит место posInRow, в шагах spacingX (знак
+   * не считается — стороны чередуются). Чётный ряд начинается с ±0.5, нечётный —
+   * с 0; отсюда и берётся полушаговый сдвиг соседних рядов.
+   *
+   * Вынесено из allyOffset, потому что ту же формулу спрашивает halfWidth: она
+   * ищет крайнее занятое место, не раскладывая весь строй. Две копии формулы
+   * разъехались бы, и предел хода перестал бы отвечать картинке.
+   */
+  private static rowStep(posInRow: number, nominal: number): number {
+    return nominal % 2 === 0 ? Math.floor(posInRow / 2) + 0.5 : Math.ceil(posInRow / 2);
   }
 
   // --- Стрельба ------------------------------------------------------------
@@ -910,6 +1020,9 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
   /** Состояние отряда — для отладки и проверок. */
   debugSnapshot(): {
     x: number;
+    limitX: number;
+    limitXTarget: number;
+    halfWidth: number;
     heroHp: number;
     weapon: WeaponId;
     visible: number;
@@ -949,6 +1062,9 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
 
     return {
       x: squadX,
+      limitX: +this.limitX.toFixed(3),
+      limitXTarget: +this.limitXTarget.toFixed(3),
+      halfWidth: +this.halfWidth.toFixed(3),
       heroHp: this.heroHp,
       weapon: this.commonWeapon,
       heroWeapon: this.heroWeapon.weaponId,
