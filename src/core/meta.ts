@@ -498,6 +498,11 @@ interface SavedProgress {
    */
   startBoosts: Partial<Record<StatBoostId, number>>;
   /**
+   * Оплаченная стартовая волна ближайшей вылазки — часть кита; 1 — обычное
+   * начало. Поля нет в старых сохранениях: там старт всегда с первой волны.
+   */
+  startWave: number;
+  /**
    * Рекорд достигнутой волны. Поля нет в сохранениях, сделанных до появления
    * замка по волне: такой игрок начинает рекорд с нуля и открывает средние
    * ступени магазина заново — уже купленное при этом остаётся купленным
@@ -562,6 +567,8 @@ export class MetaProgress {
    * кита — см. «Стартовый кит» ниже и SavedProgress.startBoosts.
    */
   private readonly startBoostsValue = new Map<StatBoostId, number>();
+  /** Оплаченная стартовая волна вылазки. 1 — обычное начало, без доплаты. */
+  private startWaveValue = 1;
 
   constructor() {
     this.load();
@@ -1162,6 +1169,55 @@ export class MetaProgress {
     return true;
   }
 
+  // --- Стартовая волна (часть кита) -------------------------------------------
+
+  /** С какой волны начнётся ближайшая вылазка. 1 — обычное начало. */
+  get startWave(): number {
+    return this.startWaveValue;
+  }
+
+  /**
+   * Самая поздняя волна, с которой можно начать: рекорд минус unlockAhead.
+   * Старт с волны W открывается, когда игрок дошёл до волны W + 2, то есть
+   * пережил босса волны W + 1 (CONFIG.shop.startBonuses.startWave).
+   */
+  get startWaveLimit(): number {
+    return Math.max(1, this.bestWaveValue - CONFIG.shop.startBonuses.startWave.unlockAhead);
+  }
+
+  /**
+   * Цена одного шага «на волну позже». Итоговая цена линейная (300, 600,
+   * 900, …), поэтому шаг всегда стоит одинаково и так же поштучно
+   * возвращается — как бойцы кита.
+   */
+  get startWavePrice(): number {
+    return CONFIG.shop.startBonuses.startWave.pricePerWave;
+  }
+
+  canBuyStartWave(): boolean {
+    return this.startWaveValue < this.startWaveLimit && this.moneyValue >= this.startWavePrice;
+  }
+
+  /** Сдвигает старт вылазки на волну позже. Возвращает true, если покупка прошла. */
+  buyStartWave(): boolean {
+    if (!this.canBuyStartWave()) return false;
+
+    this.moneyValue -= this.startWavePrice;
+    this.startWaveValue++;
+    this.save();
+    return true;
+  }
+
+  /** Возвращает старт на волну раньше, с возвратом цены шага. */
+  refundStartWave(): boolean {
+    if (this.startWaveValue <= 1) return false;
+
+    this.startWaveValue--;
+    this.moneyValue += this.startWavePrice;
+    this.save();
+    return true;
+  }
+
   /** Стоимость содержимого кита по текущим ценам аренды. */
   private startKitWorth(): number {
     let worth = this.startShootersValue * this.startShooterPrice;
@@ -1174,6 +1230,7 @@ export class MetaProgress {
     for (const [id, count] of this.startBoostsValue) {
       worth += this.statBoostPrice(id) * count;
     }
+    worth += (this.startWaveValue - 1) * this.startWavePrice;
     return worth;
   }
 
@@ -1192,6 +1249,7 @@ export class MetaProgress {
     this.startWeaponValue = null;
     this.startSpecialValue = null;
     this.startBoostsValue.clear();
+    this.startWaveValue = 1;
     this.save();
   }
 
@@ -1201,7 +1259,8 @@ export class MetaProgress {
       this.startShootersValue > 0 ||
       this.startWeaponValue !== null ||
       this.startSpecialValue !== null ||
-      this.startBoostsValue.size > 0
+      this.startBoostsValue.size > 0 ||
+      this.startWaveValue > 1
     );
   }
 
@@ -1216,6 +1275,7 @@ export class MetaProgress {
    */
   get hasAffordableBooster(): boolean {
     if (this.canBuyStartShooter()) return true;
+    if (this.canBuyStartWave()) return true;
     if (STAT_BOOST_IDS.some((id) => this.canBuyStatBoost(id))) return true;
     return shopWeapons().some((entry) => this.canBuyStartWeapon(entry.id));
   }
@@ -1231,6 +1291,7 @@ export class MetaProgress {
     weapon: WeaponId | null;
     special: WeaponId | null;
     boosts: Partial<Record<StatBoostId, number>>;
+    startWave: number;
   } {
     const boosts: Partial<Record<StatBoostId, number>> = {};
     for (const [id, count] of this.startBoostsValue) boosts[id] = count;
@@ -1240,6 +1301,7 @@ export class MetaProgress {
       weapon: this.startWeaponValue,
       special: this.startSpecialValue,
       boosts,
+      startWave: this.startWaveValue,
     };
     if (!this.hasStartKit) return kit;
 
@@ -1247,6 +1309,7 @@ export class MetaProgress {
     this.startWeaponValue = null;
     this.startSpecialValue = null;
     this.startBoostsValue.clear();
+    this.startWaveValue = 1;
     this.save();
     return kit;
   }
@@ -1388,6 +1451,7 @@ export class MetaProgress {
     this.startWeaponValue = null;
     this.startSpecialValue = null;
     this.startBoostsValue.clear();
+    this.startWaveValue = 1;
     this.specialsPicked.clear();
     this.bestWaveValue = 0;
     this.save();
@@ -1482,6 +1546,7 @@ export class MetaProgress {
         this.startWeaponValue = null;
         this.startSpecialValue = null;
         this.startBoostsValue.clear();
+        this.startWaveValue = 1;
       }
     } catch {
       // Невалидный JSON — просто стартуем с нуля.
@@ -1494,6 +1559,7 @@ export class MetaProgress {
       this.startWeaponValue = null;
       this.startSpecialValue = null;
       this.startBoostsValue.clear();
+      this.startWaveValue = 1;
       this.specialsPicked.clear();
       this.bestWaveValue = 0;
     }
@@ -1536,6 +1602,16 @@ export class MetaProgress {
     if (typeof saved.startShooters === 'number' && Number.isFinite(saved.startShooters)) {
       const limit = this.startShooterLimit;
       this.startShootersValue = Math.min(Math.max(Math.floor(saved.startShooters), 0), limit);
+    }
+
+    // Стартовая волна зажимается открытым пределом: он считается от рекорда
+    // (bestWave прочитан раньше кита), и правка сохранения руками не должна
+    // покупать старт дальше честно открытого.
+    if (typeof saved.startWave === 'number' && Number.isFinite(saved.startWave)) {
+      this.startWaveValue = Math.min(
+        Math.max(Math.floor(saved.startWave), 1),
+        this.startWaveLimit,
+      );
     }
 
     const inShop = (id: WeaponId): boolean => shopWeapons().some((entry) => entry.id === id);
@@ -1608,6 +1684,7 @@ export class MetaProgress {
       startWeapon: this.startWeaponValue,
       startSpecial: this.startSpecialValue,
       startBoosts: {},
+      startWave: this.startWaveValue,
       specialsPicked: [...this.specialsPicked],
       bestWave: this.bestWaveValue,
     };
@@ -1641,6 +1718,8 @@ export class MetaProgress {
       special: WeaponId | null;
       boosts: Partial<Record<StatBoostId, number>>;
       boostPrices: Record<string, number>;
+      startWave: number;
+      startWaveLimit: number;
     };
     specialsPicked: WeaponId[];
     levels: Record<string, number>;
@@ -1677,6 +1756,8 @@ export class MetaProgress {
         boostPrices: Object.fromEntries(
           STAT_BOOST_IDS.map((id) => [id, this.statBoostPrice(id)]),
         ),
+        startWave: this.startWaveValue,
+        startWaveLimit: this.startWaveLimit,
       },
       specialsPicked: [...this.specialsPicked],
       levels,

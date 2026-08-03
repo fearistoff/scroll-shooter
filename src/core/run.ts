@@ -52,11 +52,18 @@ export class RunState {
     this.reset();
   }
 
-  reset(): void {
+  /**
+   * Сброс к началу забега. startWave > 1 — оплаченный в ките старт с поздней
+   * волны (CONFIG.shop.startBonuses.startWave): номер задаёт бюджет, состав и
+   * множители первой волны вылазки, а часы забега всё равно идут с нуля —
+   * разгон плотности и разблокировки по секундам (run.unlocks) стартуют как в
+   * обычной вылазке. Куплен только пропуск ранних волн, а не перемотка забега.
+   */
+  reset(startWave = 1): void {
     this.expTotal = 0;
     this.moneyTotal = 0;
     this.elapsed = 0;
-    this.wave = 1;
+    this.wave = Math.max(1, Math.floor(startWave));
     // Забег начинается идущим миром: прошлый мог закончиться смертью героя прямо
     // на боссфайте, то есть с остановленной дорогой.
     this.worldMoves = true;

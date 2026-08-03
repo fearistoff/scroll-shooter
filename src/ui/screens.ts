@@ -262,6 +262,8 @@ export class Screens {
   private readonly boosterWeaponRows = new Map<WeaponId, WeaponRow>();
   /** Единственная строка бойцов на экране бустеров. null — разметки экрана нет вовсе. */
   private boosterShooterRow: BoosterRow | null = null;
+  /** Строка стартовой волны на экране бустеров. null — разметки экрана нет вовсе. */
+  private startWaveRow: BoosterRow | null = null;
   /** Строки бустов характеристик — по одной на каждый StatBoostId. */
   private readonly statBoostRows = new Map<StatBoostId, BoosterRow>();
   private readonly tracks = new Map<ScreenTrackId, TrackView>();
@@ -832,6 +834,10 @@ export class Screens {
     const list = document.querySelector<HTMLElement>('#boosters-list');
     if (list === null) return;
 
+    // Стартовая волна — первой строкой: она задаёт, ГДЕ начнётся вылазка,
+    // остальные строки решают, с чем в неё выйти.
+    list.appendChild(this.buildStartWaveRow());
+
     list.appendChild(this.buildBoosterShooterRow());
 
     // Бусты характеристик — сразу за бойцами, до стволов: предел отряда двигает
@@ -859,7 +865,53 @@ export class Screens {
   }
 
   /**
-   * Строка бойцов. Единственная строка экрана с ДВУМЯ денежными кнопками:
+   * Строка стартовой волны: с какой волны начнётся вылазка. Кнопки как у
+   * бойцов — волны берутся по шагу «на одну позже» и так же поштучно
+   * возвращаются (итоговая цена линейная, см. MetaProgress.startWavePrice).
+   */
+  private buildStartWaveRow(): HTMLElement {
+    const row = document.createElement('div');
+    row.className = 'weapon weapon--start-wave';
+
+    const icon = document.createElement('div');
+    icon.className = 'weapon__icon';
+    icon.textContent = '⏩';
+
+    const name = document.createElement('div');
+    name.className = 'weapon__name';
+
+    const stats = document.createElement('div');
+    stats.className = 'weapon__stats';
+
+    const actions = document.createElement('div');
+    actions.className = 'weapon__actions';
+
+    const refund = document.createElement('button');
+    refund.className = 'weapon__buy weapon__buy--slim';
+    refund.type = 'button';
+    refund.textContent = '−';
+    refund.setAttribute('aria-label', 'Начать на волну раньше');
+    refund.addEventListener('click', () => {
+      this.meta.refundStartWave();
+      this.refreshBoosters();
+    });
+
+    const buy = document.createElement('button');
+    buy.className = 'weapon__buy weapon__buy--booster';
+    buy.type = 'button';
+    buy.addEventListener('click', () => {
+      this.meta.buyStartWave();
+      this.refreshBoosters();
+    });
+
+    actions.append(refund, buy);
+    row.append(icon, name, stats, actions);
+    this.startWaveRow = { root: row, name, stats, buy, refund };
+    return row;
+  }
+
+  /**
+   * Строка бойцов. Как и у стартовой волны, ДВЕ денежные кнопки:
    * бойцы берутся по одному, и вернуть купленного нужно уметь так же поштучно.
    */
   private buildBoosterShooterRow(): HTMLElement {
@@ -1212,6 +1264,7 @@ export class Screens {
 
     if (this.boostersMoney !== null) this.boostersMoney.textContent = `${this.meta.money} $`;
 
+    this.refreshStartWave();
     this.refreshBoosterShooters();
     this.refreshStatBoosts();
 
@@ -1259,6 +1312,35 @@ export class Screens {
     }
 
     this.refreshBoosterSummary();
+  }
+
+  /**
+   * Строка стартовой волны: выбранная волна, открытый предел и цена шага.
+   *
+   * Пока старт не открыт вовсе (рекорд ниже 2 + unlockAhead), вместо предела
+   * стоит условие словами — «Дойди до волны 4»: замок здесь без оверлея, как
+   * у бустов, — скрывать размытием в строке нечего.
+   */
+  private refreshStartWave(): void {
+    const row = this.startWaveRow;
+    if (row === null) return;
+
+    const wave = this.meta.startWave;
+    const limit = this.meta.startWaveLimit;
+    const { unlockAhead } = CONFIG.shop.startBonuses.startWave;
+
+    // Выбранная волна — в названии, как число бойцов у стрелков: это то же
+    // «сколько уже куплено», и искать его игрок будет там же.
+    row.name.textContent = wave > 1 ? `Стартовая волна · ${wave}` : 'Стартовая волна';
+    // «до N» — самый поздний открытый старт: волна W открывается рекордом
+    // W + unlockAhead (MetaProgress.startWaveLimit).
+    row.stats.textContent =
+      limit > 1 ? `Начать с волны · до ${limit}` : `Дойди до волны ${2 + unlockAhead}`;
+    row.root.classList.toggle('weapon--picked', wave > 1);
+
+    row.buy.textContent = `${this.meta.startWavePrice} $`;
+    row.buy.disabled = !this.meta.canBuyStartWave();
+    if (row.refund !== null) row.refund.disabled = wave <= 1;
   }
 
   /** Строка бойцов: сколько взято, сколько можно и почём. */
@@ -1339,6 +1421,11 @@ export class Screens {
     if (this.boostersSummary === null) return;
 
     const parts: string[] = [];
+
+    // Стартовая волна — первой, как и её строка в списке: она говорит, где
+    // начнётся вылазка, остальное — с чем.
+    const startWave = this.meta.startWave;
+    if (startWave > 1) parts.push(`старт с ${startWave}-й волны`);
 
     const shooters = this.meta.startShooters;
     if (shooters > 0) {
