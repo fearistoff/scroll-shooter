@@ -599,7 +599,8 @@ export class Game {
 
   /**
    * Одна ссылка на всю игру — полоски собираются каждый кадр.
-   * scale по умолчанию 1: стрелки его не передают, размер у них базовый.
+   * scale по умолчанию 1, brightness по умолчанию 0: зомби перелива лечения не
+   * знают и последний аргумент не передают.
    */
   private readonly addHpBar = (
     x: number,
@@ -607,7 +608,8 @@ export class Game {
     z: number,
     fraction: number,
     scale = 1,
-  ): void => this.labels.addBar(x, y, z, fraction, scale);
+    brightness = 0,
+  ): void => this.labels.addBar(x, y, z, fraction, scale, brightness);
 
   private render(): void {
     this.renderer.render(this.scene, this.camera);

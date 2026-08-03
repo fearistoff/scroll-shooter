@@ -85,6 +85,8 @@ export class BulletPool {
   private readonly spread: Float32Array;
   /** Пробивающий снаряд: цель его не гасит. 1/0 вместо boolean — тот же пул. */
   private readonly pierce: Uint8Array;
+  /** Множитель скорости снаряда (1 — базовая bullet.speed). */
+  private readonly speedScale: Float32Array;
   /**
    * Взрыв в точке попадания: радиус 0 — снаряд обычный. Хранится у снаряда, а не
    * берётся по оружию в момент попадания, по той же причине, что и урон: боец
@@ -130,6 +132,7 @@ export class BulletPool {
     this.lengthScale = new Float32Array(size);
     this.spread = new Float32Array(size);
     this.pierce = new Uint8Array(size);
+    this.speedScale = new Float32Array(size);
     this.blastRadius = new Float32Array(size);
     this.blastDamage = new Float32Array(size);
 
@@ -209,6 +212,7 @@ export class BulletPool {
     this.lengthScale[i] = style.lengthScale;
     this.spread[i] = style.spread ?? 1;
     this.pierce[i] = style.pierce === true ? 1 : 0;
+    this.speedScale[i] = style.speedScale ?? 1;
     this.blastRadius[i] = blastDamage > 0 ? weaponBlastRadius(weapon) : 0;
     this.blastDamage[i] = blastDamage;
 
@@ -226,9 +230,11 @@ export class BulletPool {
    */
   update(dt: number, tryHit?: BulletHitTest): void {
     const { speed, muzzleY, radius: bulletRadius } = CONFIG.weapons.bullet;
-    const step = speed * dt;
+    const baseStep = speed * dt;
 
     for (let i = 0; i < this.count; ) {
+      // Шаг у каждого снаряда свой: у пламени скорость вдвое ниже базовой.
+      const step = baseStep * this.speedScale[i]!;
       const xFrom = this.posX[i]!;
       const zFrom = this.posZ[i]!;
       this.posX[i]! += this.dirX[i]! * step;
@@ -323,6 +329,7 @@ export class BulletPool {
       this.lengthScale[i] = this.lengthScale[last]!;
       this.spread[i] = this.spread[last]!;
       this.pierce[i] = this.pierce[last]!;
+      this.speedScale[i] = this.speedScale[last]!;
       this.blastRadius[i] = this.blastRadius[last]!;
       this.blastDamage[i] = this.blastDamage[last]!;
     }
@@ -340,6 +347,7 @@ export class BulletPool {
     damage: number;
     width: number;
     pierce: boolean;
+    speedScale: number;
     blastRadius: number;
     blastDamage: number;
   }> {
@@ -354,6 +362,7 @@ export class BulletPool {
         damage: this.damage[i]!,
         width: +this.widthScale(i).toFixed(3),
         pierce: this.pierce[i] === 1,
+        speedScale: this.speedScale[i]!,
         blastRadius: this.blastRadius[i]!,
         blastDamage: this.blastDamage[i]!,
       });

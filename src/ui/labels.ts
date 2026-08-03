@@ -81,11 +81,14 @@ export class LabelLayer {
   /**
    * Полоска HP над точкой (x, y, z) мира. fraction — доля запаса, 0…1.
    * scale — множитель размера: у обычных зомби полоска мельче (см. конфиг).
+   * brightness — доля белого в заливке, 0…1: так переливается полоска
+   * лечащегося стрелка (ui.hpBar.healPulse). Фазу перелива считает вызывающий,
+   * здесь только текущее значение.
    *
    * Заливка масштабируется по X, а не меняет width: transform не вызывает
    * пересчёт раскладки, а полосок в кадре может быть под сотню.
    */
-  addBar(x: number, y: number, z: number, fraction: number, scale = 1): void {
+  addBar(x: number, y: number, z: number, fraction: number, scale = 1, brightness = 0): void {
     if (!this.project(x, y, z)) return;
 
     const clamped = fraction < 0 ? 0 : fraction > 1 ? 1 : fraction;
@@ -104,6 +107,24 @@ export class LabelLayer {
     if (element.dataset.fill !== String(percent)) {
       fill.style.transform = `scaleX(${percent / 100})`;
       element.dataset.fill = String(percent);
+    }
+
+    // Перелив — прозрачность БЕЛОГО СЛОЯ поверх заливки, а не смена её цвета:
+    // фон здесь градиент, а градиенты по opacity не смешиваются ни переходом,
+    // ни присвоением — пришлось бы считать два цвета вручную. Слой лежит ВНУТРИ
+    // заливки, поэтому масштабируется вместе с ней и не залезает на пустую часть
+    // дорожки.
+    //
+    // Округляем до 5%: значение меняется каждый кадр, а разница ниже этого на
+    // полоске в 26 × 4 px не видна — зато лишних записей в стиль на порядок
+    // меньше. Ставится на КАЖДОМ вызове по той же причине, что и размер: элемент
+    // из общего пула мог в прошлом кадре обслуживать другую цель.
+    const clampedBright = brightness < 0 ? 0 : brightness > 1 ? 1 : brightness;
+    const step = String(Math.round(clampedBright * 20));
+    if (element.dataset.bright !== step) {
+      const glow = fill.firstElementChild as HTMLElement;
+      glow.style.opacity = String(Number(step) / 20);
+      element.dataset.bright = step;
     }
   }
 
@@ -173,6 +194,10 @@ export class LabelLayer {
 
       const fill = document.createElement('div');
       fill.className = 'world-bar__fill';
+      // Белый слой перелива лечения: прозрачен, пока addBar не скажет иначе.
+      const glow = document.createElement('div');
+      glow.className = 'world-bar__glow';
+      fill.appendChild(glow);
       element.appendChild(fill);
 
       this.root!.appendChild(element);

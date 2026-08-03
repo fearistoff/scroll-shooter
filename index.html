@@ -978,10 +978,25 @@
       }
 
       .world-bar__fill {
+        position: relative;
         width: 100%;
         height: 100%;
         transform-origin: left center;
         background: linear-gradient(180deg, #ff5a4a, #cc1f10);
+      }
+
+      /* Перелив полоски лечащегося стрелка (ui.hpBar.healPulse): белый слой
+         поверх красной заливки, прозрачность ему выставляет игровой цикл.
+         Лежит внутри заливки, поэтому масштабируется вместе с ней.
+
+         Ни transition, ни animation здесь нет намеренно: плавность даёт сам
+         игровой цикл, считающий фазу по игровому dt, — а CSS продолжал бы
+         переливаться на паузе и на экранах, где лечение стоит. */
+      .world-bar__glow {
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(180deg, #ffffff, #dcdcdc);
+        opacity: 0;
       }
     </style>
   </head>

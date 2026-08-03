@@ -74,6 +74,14 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
   private heroFlashLeft = 0;
 
   /**
+   * Фаза мигания полосок лечащихся стрелков (ui.hpBar.healPulse), секунды от
+   * начала цикла. Одна на весь отряд — см. конфиг. Идёт всегда, а не только
+   * когда кто-то лечится: включать её по событию незачем, читают её только те
+   * полоски, у которых лечение уже пошло.
+   */
+  private healPulseTime = 0;
+
+  /**
    * Остаток падения героя, секунды. Ставится в startHeroDeath и убывает только в
    * updateHeroDeath: обычный update в это время уже не зовут — отряд не ходит.
    */
@@ -318,6 +326,7 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
     this.aimZ = null;
     this.heroRegenDelayLeft = 0;
     this.heroFlashLeft = 0;
+    this.healPulseTime = 0;
     this.heroMaterial.color.copy(this.heroColor);
     this.allyMesh.count = 0;
     this.allyMesh.instanceMatrix.needsUpdate = true;
@@ -418,6 +427,11 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
       if (ally.spawnLeft > 0) ally.spawnLeft -= dt;
     }
 
+    // Фаза мигания — тоже по игровому dt: на паузе и на экранах полоска замирает
+    // в том состоянии, в котором её застали, а не мигает над стоящей игрой.
+    const pulsePeriod = CONFIG.ui.hpBar.healPulse.periodSeconds;
+    if (pulsePeriod > 0) this.healPulseTime = (this.healPulseTime + dt) % pulsePeriod;
+
     this.regenerate(dt);
 
     const squadX = this.x;
@@ -472,7 +486,9 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
    *
    * Полоску HP регенерация не прячет и не зажигает: у стрелков полоска висит,
    * пока запас не полный, поэтому рост виден сам собой и гаснет она ровно в тот
-   * момент, когда HP отыгралось.
+   * момент, когда HP отыгралось. Пока отыгрыш идёт, полоска мигает
+   * (ui.hpBar.healPulse) — условие мигания повторяет условие начисления ниже,
+   * см. isRegenerating.
    */
   private regenerate(dt: number): void {
     const { regen, heroHp, allyHp, heroMultipliers, allyMultipliers } = CONFIG.player;
@@ -490,6 +506,32 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
       if (ally.regenDelayLeft > 0) continue;
       ally.hp = Math.min(allyHp, ally.hp + allyGain);
     }
+  }
+
+  /**
+   * Идёт ли отыгрыш HP у бойца с таким остатком паузы. Условие ровно то же, что
+   * в regenerate: полоска мигает тогда и только тогда, когда HP реально растёт.
+   * Потолок здесь не проверяется — полоски у бойца с полным запасом всё равно нет.
+   */
+  private static isRegenerating(regenDelayLeft: number): boolean {
+    const { regen } = CONFIG.player;
+    if (regen.intervalSeconds <= 0 || regen.hpPerInterval <= 0) return false;
+    return regenDelayLeft <= 0;
+  }
+
+  /**
+   * Доля белого в заливке на этом кадре, 0…1 (ui.hpBar.healPulse): 0 — своя
+   * красная, 1 — белая, между ними смесь.
+   *
+   * Косинус, а не пила: у обоих краёв производная нулевая, поэтому полоска
+   * задерживается в чистом красном и в чистом белом, а перетекает между ними
+   * быстро. Цикл начинается с красного — момент, когда лечение пошло, виден
+   * как нарастание, а не как готовое белое пятно.
+   */
+  private get healPulseBrightness(): number {
+    const period = CONFIG.ui.hpBar.healPulse.periodSeconds;
+    if (period <= 0) return 0;
+    return (1 - Math.cos((2 * Math.PI * this.healPulseTime) / period)) / 2;
   }
 
   // --- Строй ---------------------------------------------------------------
@@ -975,15 +1017,31 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
    *
    * Бойцы за визуальным потолком пропущены: у них нет своего места в строю, рисовать
    * полоску не над чем.
+   *
+   * Последним аргументом уходит доля белого в заливке: у того, кто прямо сейчас
+   * отыгрывает HP, полоска переливается (ui.hpBar.healPulse), у остальных 0.
+   * Размер стрелки передают базовый — множитель мельче только у обычных зомби.
    */
-  forEachHpBar(visit: (x: number, y: number, z: number, fraction: number) => void): void {
+  forEachHpBar(
+    visit: (
+      x: number,
+      y: number,
+      z: number,
+      fraction: number,
+      scale: number,
+      brightness: number,
+    ) => void,
+  ): void {
     const { heroCapsule, allyCapsule, heroHp, allyHp } = CONFIG.player;
     const offsetY = CONFIG.ui.hpBar.offsetY;
     const squadX = this.x;
+    // Фаза общая на весь отряд, поэтому считается один раз на кадр.
+    const brightness = this.healPulseBrightness;
 
     if (this.heroHp < heroHp) {
       const top = heroCapsule.length + heroCapsule.radius * 2;
-      visit(squadX, top + offsetY, 0, this.heroHp / heroHp);
+      const healing = Squad.isRegenerating(this.heroRegenDelayLeft) ? brightness : 0;
+      visit(squadX, top + offsetY, 0, this.heroHp / heroHp, 1, healing);
     }
 
     const allyTop = allyCapsule.length + allyCapsule.radius * 2;
@@ -993,7 +1051,8 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
       if (ally.hp >= allyHp) continue;
 
       this.allyOffset(i);
-      visit(squadX + this.offsetX, allyTop + offsetY, this.offsetZ, ally.hp / allyHp);
+      const healing = Squad.isRegenerating(ally.regenDelayLeft) ? brightness : 0;
+      visit(squadX + this.offsetX, allyTop + offsetY, this.offsetZ, ally.hp / allyHp, 1, healing);
     }
   }
 
