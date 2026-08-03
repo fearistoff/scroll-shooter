@@ -1,4 +1,4 @@
-import { AxesHelper, Scene, Vector3, WebGLRenderer } from 'three';
+import { AxesHelper, Scene, WebGLRenderer } from 'three';
 import { CONFIG } from '../config';
 import { BarrelField } from '../entities/barrels';
 import { BonusSlot } from '../entities/bonusSlot';
@@ -13,7 +13,7 @@ import { Squad } from '../entities/squad';
 import { Hud } from '../ui/hud';
 import { LabelLayer } from '../ui/labels';
 import { Screens } from '../ui/screens';
-import { createGameCamera, screenToWorld } from '../world/camera';
+import { CameraSpace, createGameCamera } from '../world/camera';
 import { World } from '../world/world';
 import { PointerInput } from './input';
 import { GameLoop } from './loop';
@@ -76,12 +76,11 @@ export class Game {
   private deathLeft = 0;
 
   /**
-   * Куда летит подобранное: мировые точки, которые проецируются в плашки
-   * счётчиков HUD. Пересчитываются каждый кадр (плашка ездит вместе с числом), но
-   * в одни и те же векторы — по кадру ничего не создаётся.
+   * Проекция экран ↔ мир для полёта выпавшего в счётчики HUD. Живёт здесь,
+   * потому что камера и размеры холста есть только у Game: пулы получают её
+   * готовой и о камере не знают.
    */
-  private readonly expTarget = new Vector3();
-  private readonly moneyTarget = new Vector3();
+  private readonly space: CameraSpace;
 
   /**
    * Пауза. НЕ фаза, а отдельный признак поверх неё, и по двум причинам.
@@ -103,6 +102,7 @@ export class Game {
 
     // Реальный aspect выставит Viewport сразу в конструкторе.
     this.camera = createGameCamera(1);
+    this.space = new CameraSpace(this.camera);
     this.viewport = new Viewport(canvas, this.renderer, this.camera);
 
     // Миру нужен забег: скорость наезда дороги — его состояние, на боссфайте она
@@ -259,7 +259,7 @@ export class Game {
     // экрана результата.
     this.resume();
 
-    // Летящее к счётчикам уже подобрано игроком: зачисляем до подсчёта итогов,
+    // Летящее к счётчикам уже принадлежит игроку: зачисляем до подсчёта итогов,
     // иначе забег недосчитывался бы всего, что не долетело за pickupFlight.seconds.
     this.crystals.flushPending(this.collectExp);
     this.money.flushPending(this.collectMoney);
@@ -352,11 +352,14 @@ export class Game {
     // Мины после зомби: подход проверяется по их актуальным координатам.
     this.mines.update(dt);
     this.bullets.update(dt, this.tryHitAnything);
-    this.updatePickupTargets();
-    // Кристаллы после пуль: выпавшие с только что убитого зомби едут сразу.
-    this.crystals.update(dt, this.squad.x, this.expTarget, this.collectExp);
+    // Кристаллы после пуль: выпавший с только что убитого зомби стартует сразу.
+    // Проекция синхронизируется перед ними обоими — камера и холст общие.
+    this.space.sync(this.viewport.cssWidth, this.viewport.cssHeight);
+    const expAnchor = this.hud.expAnchor;
+    this.crystals.update(dt, this.space, expAnchor.x, expAnchor.y, this.collectExp);
     // Монеты — там же и по той же причине: выпадают в той же воронке смерти.
-    this.money.update(dt, this.squad.x, this.moneyTarget, this.collectMoney);
+    const moneyAnchor = this.hud.moneyAnchor;
+    this.money.update(dt, this.space, moneyAnchor.x, moneyAnchor.y, this.collectMoney);
     this.world.update(dt);
 
     this.hud.update({
@@ -392,24 +395,6 @@ export class Game {
     });
 
     this.checkRunEnd();
-  }
-
-  /**
-   * Цели полёта подобранного — плашки счётчиков EXP и денег.
-   *
-   * Мостик между интерфейсом и миром: HUD знает свои плашки только в пикселях
-   * холста, а пулу нужна мировая точка. Считается здесь, а не в пуле, потому что
-   * ни камеры, ни размеров холста, ни HUD пул не видит и видеть не должен.
-   */
-  private updatePickupTargets(): void {
-    const distance = CONFIG.pickupFlight.cameraDistance;
-    const width = this.viewport.cssWidth;
-    const height = this.viewport.cssHeight;
-    const exp = this.hud.expAnchor;
-    const money = this.hud.moneyAnchor;
-
-    screenToWorld(this.camera, exp.x, exp.y, width, height, distance, this.expTarget);
-    screenToWorld(this.camera, money.x, money.y, width, height, distance, this.moneyTarget);
   }
 
   /**

@@ -15,19 +15,31 @@ import { cubicBezierEase } from '../core/easing';
 export type CollectHandler = (value: number) => void;
 
 /**
+ * Проекция в обе стороны, которая нужна пулу для полёта. Реализует её CameraSpace
+ * (world/camera.ts), но объявлена она здесь, на стороне потребителя: ни камеры,
+ * ни холста пул не видит и видеть не должен.
+ */
+export interface FlightSpace {
+  /** Мировая точка → out = (пиксель x, пиксель y, расстояние до камеры). */
+  project(x: number, y: number, z: number, out: Vector3): Vector3;
+  /** Пиксель холста + расстояние от камеры → мировая точка. */
+  unproject(screenX: number, screenY: number, distance: number, out: Vector3): Vector3;
+}
+
+/**
  * Числа движения, которые читаются КАЖДЫЙ КАДР, а не запоминаются при создании:
  * их крутят на живой игре через __config.
  */
 export interface PickupMotion {
-  /** Высота парения над дорогой. */
+  /** Высота, на которой предмет появляется над точкой выпадения. */
   y: number;
-  /** Во сколько раз предмет летит быстрее дороги. */
-  speedScale: number;
-  /** Сближение с отрядом по x — доля остатка за шаг. */
-  magnetLerp: number;
-  /** z, на котором предмет считается подобранным и уходит к счётчику. */
-  collectZ: number;
   spinPerSecond: number;
+  /**
+   * Форма дуги: true — сначала вверх, потом вбок, false — наоборот. Кристаллы и
+   * монеты летят в разные плашки, и разная форма пути помогает не путать потоки
+   * там, где они идут одновременно.
+   */
+  flightVerticalFirst: boolean;
 }
 
 /** Что задаётся один раз при создании пула. */
@@ -42,18 +54,21 @@ export interface PickupShape {
 /**
  * Общий пул подбираемых предметов: кристаллы EXP и монеты денег.
  *
- * Оба ведут себя ОДИНАКОВО — выпадают в точке смерти, едут к отряду быстрее
- * дороги, стягиваются к нему по x, а с его линии уходят дугой в свой счётчик в
- * углу экрана, — и различаются только формой, цветом и тем, куда идёт значение.
- * Поэтому механика живёт здесь, а наследники задают вид и числа.
+ * Оба ведут себя ОДИНАКОВО — появляются в точке смерти и сразу улетают дугой в
+ * свой счётчик в углу экрана, — и различаются только формой, цветом, стороной
+ * дуги и тем, куда идёт значение. Поэтому механика живёт здесь, а наследники
+ * задают вид и числа.
  *
- * ПУТЬ ИЗ ДВУХ ЧАСТЕЙ, и переключает их одно место — пересечение collectZ:
- *   дорога — предмет везёт к отряду поток (posX/posZ, скорость от worldSpeed);
- *   полёт  — предмет подобран и летит по кривой Безье в счётчик; на её конце
- *            зовётся onCollect, и только тогда значение попадает в забег.
- * Значение начисляется в конце полёта, а не при подборе, намеренно: счётчик
- * должен щёлкать в тот момент, когда в него что-то прилетело. Ничего при этом
- * не теряется — недолетевшее забирает flushPending на выходе из забега.
+ * ПУТЬ СЧИТАЕТСЯ В ЭКРАННЫХ КООРДИНАТАХ, а мировое положение получается обратной
+ * проекцией (FlightSpace). Причина в том, что и цель, и форма дуги заданы
+ * экраном: плашка счётчика живёт в DOM-оверлее, а «сначала вверх, потом влево» —
+ * это про то, что видит игрок. В мире та же дуга выглядела бы по-разному с
+ * разных концов дороги, потому что перспектива растягивает мировой x тем сильнее,
+ * чем ближе точка к камере.
+ *
+ * Значение попадает в забег в КОНЦЕ полёта, а не при выпадении: счётчик должен
+ * щёлкать в тот момент, когда в него что-то прилетело. Ничего при этом не
+ * теряется — недолетевшее забирает flushPending на выходе из забега.
  *
  * Пул на одном InstancedMesh по образцу пуль: данные в Float32Array, гашение
  * через swap-remove, активные непрерывно в [0, count). За забег предметов сотни,
@@ -66,24 +81,30 @@ export abstract class PickupPool {
   private readonly rotation = new Quaternion();
   private readonly spinAxis: Vector3;
   private readonly scale = new Vector3(1, 1, 1);
+  /** Черновик проекции: заполняется project/unproject, живёт один вызов. */
+  private readonly probe = new Vector3();
 
+  // Мировое положение — только для матрицы инстанса; ведёт его экранный путь.
   private readonly posX: Float32Array;
-  /** Высота. На дороге постоянная, в полёте её ведёт дуга. */
   private readonly posY: Float32Array;
   private readonly posZ: Float32Array;
   private readonly value: Float32Array;
 
-  // Полёт к счётчику. Отдельным признаком, а не «flightT > 0»: у Float32Array
-  // ноль — это и «не летит», и «только что стартовал».
-  private readonly flying: Uint8Array;
+  /**
+   * Полёт начат: точка старта спроецирована, дуга выбрана. Отдельным признаком,
+   * потому что выпадение и первый шаг полёта разнесены во времени — spawn зовут
+   * из воронок смерти, а проекция бывает только в update, где есть FlightSpace.
+   */
+  private readonly launched: Uint8Array;
   /** Доля пройденного времени полёта, 0…1. */
   private readonly flightT: Float32Array;
-  private readonly startX: Float32Array;
-  private readonly startY: Float32Array;
-  private readonly startZ: Float32Array;
-  /** Смещение контрольной точки дуги — своё у каждого предмета. */
-  private readonly arcX: Float32Array;
-  private readonly arcY: Float32Array;
+  /** Точка выпадения в пикселях холста и расстояние до неё от камеры. */
+  private readonly startPx: Float32Array;
+  private readonly startPy: Float32Array;
+  private readonly startDistance: Float32Array;
+  /** Смещение контрольной точки дуги, пиксели — своё у каждого предмета. */
+  private readonly jitterX: Float32Array;
+  private readonly jitterY: Float32Array;
 
   private count = 0;
   /** Общая фаза вращения: все предметы блестят синхронно, зато один кватернион. */
@@ -109,13 +130,13 @@ export abstract class PickupPool {
     this.posY = new Float32Array(shape.poolSize);
     this.posZ = new Float32Array(shape.poolSize);
     this.value = new Float32Array(shape.poolSize);
-    this.flying = new Uint8Array(shape.poolSize);
+    this.launched = new Uint8Array(shape.poolSize);
     this.flightT = new Float32Array(shape.poolSize);
-    this.startX = new Float32Array(shape.poolSize);
-    this.startY = new Float32Array(shape.poolSize);
-    this.startZ = new Float32Array(shape.poolSize);
-    this.arcX = new Float32Array(shape.poolSize);
-    this.arcY = new Float32Array(shape.poolSize);
+    this.startPx = new Float32Array(shape.poolSize);
+    this.startPy = new Float32Array(shape.poolSize);
+    this.startDistance = new Float32Array(shape.poolSize);
+    this.jitterX = new Float32Array(shape.poolSize);
+    this.jitterY = new Float32Array(shape.poolSize);
   }
 
   /**
@@ -140,15 +161,6 @@ export abstract class PickupPool {
     return this.collectedTotal;
   }
 
-  /** Сколько предметов сейчас летит к счётчику — подобраны, но не зачислены. */
-  get flyingCount(): number {
-    let flying = 0;
-    for (let i = 0; i < this.count; i++) {
-      if (this.flying[i] === 1) flying++;
-    }
-    return flying;
-  }
-
   /** Роняет предмет в точке смерти зомби или разбитой бочки. */
   spawn(x: number, z: number, value: number): void {
     if (this.count >= this.capacity) return;
@@ -158,36 +170,30 @@ export abstract class PickupPool {
     this.posY[i] = this.motion.y;
     this.posZ[i] = z;
     this.value[i] = value;
-    // Состояние полёта гасится здесь же: слот мог достаться от предмета, который
-    // улетал к счётчику, и новый унаследовал бы его дугу. Точку старта и форму
-    // дуги при этом обнулять не нужно — их читают только при flying = 1, а
-    // выставляет beginFlight, и всегда все сразу.
-    this.flying[i] = 0;
+    // Полёт начнётся на ближайшем шаге: точку старта нужно спроецировать, а
+    // проекция есть только в update. Гасим признак — слот мог достаться от
+    // предмета, который уже летел, и новый унаследовал бы его дугу.
+    this.launched[i] = 0;
     this.flightT[i] = 0;
     this.spawnedTotal++;
   }
 
   /**
-   * Движение к отряду, подбор на его линии и полёт в счётчик.
-   *
-   * target — мировая точка счётчика (её считает Game по плашке HUD, см.
-   * screenToWorld). Передаётся каждый кадр, а не запоминается на старте полёта:
-   * плашка меняет ширину вместе с числом, и цель должна ехать за ней.
+   * Полёт к счётчику. anchorX/anchorY — центр плашки в пикселях холста, его
+   * меряет Hud. Передаётся каждый кадр, а не запоминается на старте: плашка
+   * меняет ширину вместе с числом, и цель должна ехать за ней.
    *
    * onCollect вызывается в конце полёта с ценностью предмета.
    */
-  update(dt: number, squadX: number, target: Vector3, onCollect: CollectHandler): void {
-    const { worldSpeed } = CONFIG.world;
-    const { y, speedScale, magnetLerp, collectZ, spinPerSecond } = this.motion;
+  update(
+    dt: number,
+    space: FlightSpace,
+    anchorX: number,
+    anchorY: number,
+    onCollect: CollectHandler,
+  ): void {
+    const { spinPerSecond, flightVerticalFirst } = this.motion;
     const flight = CONFIG.pickupFlight;
-    // Предмет летит быстрее дороги: скорость мира, умноженная на speedScale.
-    //
-    // Скорость берётся НОМИНАЛЬНАЯ (конфиг), а не текущая скорость забега, и это
-    // единственное исключение среди всего, что движется к +Z. Предмет не едет с
-    // дорогой — его тянет к отряду, а дорога тут только мерка скорости. На
-    // остановленном мире (боссфайт) кристалл с расстрелянной бочки иначе повис бы
-    // в воздухе до конца боя, и это читалось бы как поломка, а не как остановка.
-    const step = worldSpeed * speedScale * dt;
     // Ноль допустим и означает мгновенное зачисление (полёт пропускается).
     const flightStep = flight.seconds > 0 ? dt / flight.seconds : 1;
 
@@ -195,42 +201,57 @@ export abstract class PickupPool {
     this.rotation.setFromAxisAngle(this.spinAxis, this.spin);
 
     for (let i = 0; i < this.count; ) {
-      if (this.flying[i] === 1) {
-        this.flightT[i]! += flightStep;
+      if (this.launched[i] === 0) this.launch(i, space);
 
-        if (this.flightT[i]! >= 1) {
-          onCollect(this.value[i]!);
-          this.collectedTotal++;
-          this.recycle(i);
-          // i не увеличиваем: в этот слот переехал последний активный.
-          continue;
-        }
+      this.flightT[i]! += flightStep;
 
-        // Время → доля пути по заданной кривой скорости, и уже она ведёт и
-        // положение, и размер: иначе предмет замедлялся бы, не уменьшаясь.
-        const eased = cubicBezierEase(
-          flight.ease.x1,
-          flight.ease.y1,
-          flight.ease.x2,
-          flight.ease.y2,
-          this.flightT[i]!,
-        );
-        this.trace(i, eased, target);
-        this.write(i, 1 + (flight.endScale - 1) * eased);
-        i++;
+      if (this.flightT[i]! >= 1) {
+        onCollect(this.value[i]!);
+        this.collectedTotal++;
+        this.recycle(i);
+        // i не увеличиваем: в этот слот переехал последний активный.
         continue;
       }
 
-      this.posZ[i]! += step;
-      // Стягивание к отряду: доля остатка за фиксированный шаг, как у самого отряда.
-      this.posX[i]! += (squadX - this.posX[i]!) * magnetLerp;
-      this.posY[i] = y;
+      // Время → доля пути по заданной кривой скорости, и уже она ведёт и
+      // положение, и размер: иначе предмет замедлялся бы, не уменьшаясь.
+      const eased = cubicBezierEase(
+        flight.ease.x1,
+        flight.ease.y1,
+        flight.ease.x2,
+        flight.ease.y2,
+        this.flightT[i]!,
+      );
 
-      // Подобран: дальше не едет, а летит к счётчику. Кадр он ещё отрисовывается
-      // на линии отряда — с неё и начинается дуга.
-      if (this.posZ[i]! >= collectZ) this.beginFlight(i);
+      /*
+       * КВАДРАТИЧНАЯ КРИВАЯ БЕЗЬЕ В ПИКСЕЛЯХ: старт → контрольная точка → плашка.
+       *
+       * Контрольная точка и задаёт «угол» дуги. Взять её на пересечении вертикали
+       * старта и горизонтали цели — и путь пойдёт сначала вверх, потом вбок;
+       * взять на пересечении горизонтали старта и вертикали цели — наоборот.
+       * Кривая срезает этот угол, поэтому получается дуга, а не ломаная.
+       */
+      const controlX = (flightVerticalFirst ? this.startPx[i]! : anchorX) + this.jitterX[i]!;
+      const controlY = (flightVerticalFirst ? anchorY : this.startPy[i]!) + this.jitterY[i]!;
 
-      this.write(i, 1);
+      const inv = 1 - eased;
+      const wStart = inv * inv;
+      const wControl = 2 * inv * eased;
+      const wTarget = eased * eased;
+
+      const screenX = wStart * this.startPx[i]! + wControl * controlX + wTarget * anchorX;
+      const screenY = wStart * this.startPy[i]! + wControl * controlY + wTarget * anchorY;
+      // Расстояние до камеры идёт от точки выпадения к цели по той же доле пути:
+      // предмет с дальнего конца дороги приближается, а не прыгает вперёд.
+      const distance =
+        this.startDistance[i]! + (flight.cameraDistance - this.startDistance[i]!) * eased;
+
+      space.unproject(screenX, screenY, distance, this.probe);
+      this.posX[i] = this.probe.x;
+      this.posY[i] = this.probe.y;
+      this.posZ[i] = this.probe.z;
+
+      this.write(i, 1 + (flight.endScale - 1) * eased);
       i++;
     }
 
@@ -240,34 +261,25 @@ export abstract class PickupPool {
 
   /**
    * Зачисляет всё, что не долетело до счётчика, и убирает его с экрана.
-   * Зовётся на выходе из забега: летящее уже подобрано игроком, и потерять его
-   * из-за того, что забег кончился за 0.55 с до зачисления, нельзя.
+   * Зовётся на выходе из забега: выпавшее уже принадлежит игроку, и потерять его
+   * из-за того, что забег кончился за полсекунды до зачисления, нельзя.
    *
-   * Едущее по дороге не трогает: оно не подобрано, и раньше пропадало так же.
    * Возвращает число зачисленных предметов — для замерочных скриптов.
    */
   flushPending(onCollect: CollectHandler): number {
-    let flushed = 0;
+    const flushed = this.count;
 
-    for (let i = 0; i < this.count; ) {
-      if (this.flying[i] !== 1) {
-        i++;
-        continue;
-      }
+    for (let i = 0; i < this.count; i++) onCollect(this.value[i]!);
 
-      onCollect(this.value[i]!);
-      this.collectedTotal++;
-      flushed++;
-      this.recycle(i);
-    }
-
-    this.mesh.count = this.count;
+    this.collectedTotal += flushed;
+    this.count = 0;
+    this.mesh.count = 0;
     this.mesh.instanceMatrix.needsUpdate = true;
 
     return flushed;
   }
 
-  /** Убирает всё с дороги и обнуляет статистику забега. */
+  /** Убирает всё с экрана и обнуляет статистику забега. */
   reset(): void {
     this.count = 0;
     this.mesh.count = 0;
@@ -276,39 +288,22 @@ export abstract class PickupPool {
     this.collectedTotal = 0;
   }
 
-  /** Начало полёта к счётчику: запоминается точка подбора и форма дуги. */
-  private beginFlight(i: number): void {
-    const { arcX, arcY } = CONFIG.pickupFlight;
+  /** Начало полёта: точка выпадения переводится в пиксели, выбирается дуга. */
+  private launch(i: number, space: FlightSpace): void {
+    const { arcJitterPx } = CONFIG.pickupFlight;
 
-    this.flying[i] = 1;
+    space.project(this.posX[i]!, this.posY[i]!, this.posZ[i]!, this.probe);
+    this.startPx[i] = this.probe.x;
+    this.startPy[i] = this.probe.y;
+    this.startDistance[i] = this.probe.z;
+
+    // Дуга у каждого предмета чуть своя: без этого пара кристаллов, выпавших в
+    // одной точке, шла бы к счётчику ровно одним следом.
+    this.jitterX[i] = (Math.random() * 2 - 1) * arcJitterPx;
+    this.jitterY[i] = (Math.random() * 2 - 1) * arcJitterPx;
+
+    this.launched[i] = 1;
     this.flightT[i] = 0;
-    this.startX[i] = this.posX[i]!;
-    this.startY[i] = this.posY[i]!;
-    this.startZ[i] = this.posZ[i]!;
-    // «Произвольная дуга»: сторона и высота свои у каждого предмета, иначе
-    // собранные подряд кристаллы уходили бы в угол одной линией.
-    this.arcX[i] = (Math.random() * 2 - 1) * arcX;
-    this.arcY[i] = arcY * (0.35 + Math.random() * 0.65);
-  }
-
-  /**
-   * Точка на дуге по доле пути: квадратичная кривая Безье от места подбора к
-   * счётчику. Контрольная точка — середина прямой, сдвинутая вбок и вверх на
-   * случайные arcX/arcY, они и делают путь дугой, а не отрезком.
-   */
-  private trace(i: number, eased: number, target: Vector3): void {
-    const inv = 1 - eased;
-    const wStart = inv * inv;
-    const wControl = 2 * inv * eased;
-    const wTarget = eased * eased;
-
-    const controlX = (this.startX[i]! + target.x) * 0.5 + this.arcX[i]!;
-    const controlY = (this.startY[i]! + target.y) * 0.5 + this.arcY[i]!;
-    const controlZ = (this.startZ[i]! + target.z) * 0.5;
-
-    this.posX[i] = wStart * this.startX[i]! + wControl * controlX + wTarget * target.x;
-    this.posY[i] = wStart * this.startY[i]! + wControl * controlY + wTarget * target.y;
-    this.posZ[i] = wStart * this.startZ[i]! + wControl * controlZ + wTarget * target.z;
   }
 
   /** Кладёт текущее положение слота в матрицу инстанса. */
@@ -328,14 +323,14 @@ export abstract class PickupPool {
       this.posZ[i] = this.posZ[last]!;
       this.value[i] = this.value[last]!;
       // Состояние полёта переезжает целиком: без него предмет, попавший в
-      // освободившийся слот, терял бы дугу и начинал путь заново.
-      this.flying[i] = this.flying[last]!;
+      // освободившийся слот, потерял бы свою дугу и начал путь заново.
+      this.launched[i] = this.launched[last]!;
       this.flightT[i] = this.flightT[last]!;
-      this.startX[i] = this.startX[last]!;
-      this.startY[i] = this.startY[last]!;
-      this.startZ[i] = this.startZ[last]!;
-      this.arcX[i] = this.arcX[last]!;
-      this.arcY[i] = this.arcY[last]!;
+      this.startPx[i] = this.startPx[last]!;
+      this.startPy[i] = this.startPy[last]!;
+      this.startDistance[i] = this.startDistance[last]!;
+      this.jitterX[i] = this.jitterX[last]!;
+      this.jitterY[i] = this.jitterY[last]!;
     }
 
     this.count--;
@@ -350,8 +345,8 @@ export abstract class PickupPool {
         y: +this.posY[i]!.toFixed(3),
         z: +this.posZ[i]!.toFixed(3),
         value: this.value[i]!,
-        // −1 — едет по дороге, 0…1 — доля пройденного полёта к счётчику.
-        flightT: this.flying[i] === 1 ? +this.flightT[i]!.toFixed(3) : -1,
+        // −1 — выпал, но ещё не сделал первый шаг полёта.
+        flightT: this.launched[i] === 1 ? +this.flightT[i]!.toFixed(3) : -1,
       });
     }
     return out;
