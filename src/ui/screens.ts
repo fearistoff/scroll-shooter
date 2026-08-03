@@ -40,8 +40,10 @@ export interface RunResult {
   collectedExp: number;
   /** Сколько EXP ушло в банк: собранное × множитель. */
   earnedExp: number;
-  /** Собрано денег. Множителя у них нет, поэтому число одно. */
-  money: number;
+  /** Собрано монет, без множителя прокачки — то же число, что было в HUD. */
+  collectedMoney: number;
+  /** Сколько денег ушло в банк: собранное × множитель. */
+  earnedMoney: number;
   elapsedSeconds: number;
   wave: number;
 }
@@ -95,6 +97,26 @@ interface TrackView {
 const RESET_LABELS: readonly string[] = ['Сбросить прогресс', 'Вы уверены?', 'Точно?'];
 
 /**
+ * Строка итога по валюте на экране результата: «280 × 1.04 = 291 EXP».
+ *
+ * При множителе 1 умножать нечего и остаётся только сумма — «280 EXP»: писать
+ * «× 1.00 =» на чистом сохранении значило бы показывать шум вместо результата.
+ *
+ * Показанное произведение может расходиться с показанными множителями на
+ * единицу: collected у EXP дробный, а зачисляется целое (см. RunState.expEarned),
+ * и в строку идёт уже округлённое. Верное здесь — итог, он же ушёл в банк.
+ */
+function formatEarned(
+  collected: number,
+  multiplier: number,
+  earned: number,
+  unit: string,
+): string {
+  if (multiplier === 1) return `${earned} ${unit}`;
+  return `${collected} × ${multiplier.toFixed(2)} = ${earned} ${unit}`;
+}
+
+/**
  * Экраны результата забега и прокачки (ТЗ раздел 11).
  *
  * DOM-оверлей поверх холста, как HUD и подписи: текст резкий на любом
@@ -113,7 +135,6 @@ export class Screens {
   private readonly changelogList: HTMLElement | null;
   private readonly resultTitle: HTMLElement | null;
   private readonly resultTime: HTMLElement | null;
-  private readonly resultExpCaption: HTMLElement | null;
   private readonly resultRunExp: HTMLElement | null;
   private readonly resultRunMoney: HTMLElement | null;
   private readonly resultBank: HTMLElement | null;
@@ -146,7 +167,6 @@ export class Screens {
     this.changelogList = document.querySelector<HTMLElement>('#changelog-list');
     this.resultTitle = document.querySelector<HTMLElement>('#result-title');
     this.resultTime = document.querySelector<HTMLElement>('#result-time');
-    this.resultExpCaption = document.querySelector<HTMLElement>('#result-exp-caption');
     this.resultRunExp = document.querySelector<HTMLElement>('#result-run-exp');
     this.resultRunMoney = document.querySelector<HTMLElement>('#result-run-money');
     this.resultBank = document.querySelector<HTMLElement>('#result-bank');
@@ -224,22 +244,27 @@ export class Screens {
       this.resultTime.textContent = `Герой погиб · время ${formatRunTime(result.elapsedSeconds)}`;
     }
 
-    // Множитель опыта применяется только здесь, поэтому число на экране больше
-    // того, что стояло в HUD. Без подписи это выглядит ошибкой счётчика, поэтому
-    // при множителе ≠ 1 рядом написано, из чего оно получилось.
-    const multiplier = CONFIG.player.expMultiplier;
-    if (this.resultExpCaption !== null) {
-      this.resultExpCaption.textContent =
-        multiplier === 1
-          ? 'Опыт за забег'
-          : `Опыт за забег · ${Math.floor(result.collectedExp)} × ${multiplier.toFixed(2)}`;
-    }
+    // Множители прокачки применяются только на выходе из забега, поэтому числа
+    // на экране больше тех, что стояли в HUD. Показываем умножение целиком —
+    // «собрано × множитель = зачислено», иначе разница читается как ошибка
+    // счётчика. Обе валюты показываются всегда, даже нулевые: пустая строка
+    // выглядела бы поломкой, а ноль честно говорит, что за забег не выпало.
     if (this.resultRunExp !== null) {
-      this.resultRunExp.textContent = `+${Math.floor(result.earnedExp)} EXP`;
+      this.resultRunExp.textContent = formatEarned(
+        Math.floor(result.collectedExp),
+        CONFIG.player.expMultiplier,
+        Math.floor(result.earnedExp),
+        'EXP',
+      );
     }
-    // Деньги показываются всегда, даже нулевые: пустая строка выглядела бы
-    // поломкой счётчика, а ноль честно говорит, что монет за забег не выпало.
-    if (this.resultRunMoney !== null) this.resultRunMoney.textContent = `+${result.money} $`;
+    if (this.resultRunMoney !== null) {
+      this.resultRunMoney.textContent = formatEarned(
+        result.collectedMoney,
+        CONFIG.player.moneyMultiplier,
+        result.earnedMoney,
+        '$',
+      );
+    }
     if (this.resultBank !== null) {
       this.resultBank.textContent = `Всего: ${this.meta.bankDisplay} EXP · ${this.meta.money} $`;
     }

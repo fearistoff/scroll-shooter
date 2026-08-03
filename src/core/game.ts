@@ -250,9 +250,10 @@ export class Game {
    * EXP уходит в банк: копить за проигрыш нормально для rogue-like, иначе
    * неудачный забег не даёт вообще ничего.
    *
-   * ЗДЕСЬ ЖЕ СРАБАТЫВАЕТ МНОЖИТЕЛЬ ОПЫТА (run.expEarned): во время забега счётчик
-   * показывает собранное как есть, а прокачка прибавляет один раз на выходе.
-   * Экран результата получает оба числа, чтобы объяснить разницу.
+   * ЗДЕСЬ ЖЕ СРАБАТЫВАЮТ МНОЖИТЕЛИ ПРОКАЧКИ (run.expEarned, run.moneyEarned): во
+   * время забега счётчики показывают собранное как есть, а прокачка прибавляет
+   * один раз на выходе. Экран результата получает по обеих валютам оба числа,
+   * чтобы показать умножение целиком.
    */
   private finishRun(): void {
     // Штатно паузы здесь быть не может: на ней шаг из цикла не идёт, а значит и
@@ -269,15 +270,15 @@ export class Game {
     const collected = this.run.exp;
     const earned = this.run.expEarned;
     this.meta.deposit(earned);
-    // Деньги уходят в банк как есть: множителя у них нет, и собранное за забег
-    // равно зачисленному. Отдельным вызовом, а не внутри deposit: это разные
-    // валюты, и общая точка зачисления скрыла бы, что одна из них множится.
-    this.meta.depositMoney(this.run.money);
+    // Деньги зачисляются отдельным вызовом, а не внутри deposit: это разные
+    // валюты со своими множителями, и общая точка скрыла бы, что их два.
+    this.meta.depositMoney(this.run.moneyEarned);
     this.phase = 'result';
     this.screens.showResult({
       collectedExp: collected,
       earnedExp: earned,
-      money: this.run.money,
+      collectedMoney: this.run.money,
+      earnedMoney: this.run.moneyEarned,
       elapsedSeconds: this.run.elapsedSeconds,
       wave: this.run.waveNumber,
     });

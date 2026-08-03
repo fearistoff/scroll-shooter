@@ -456,6 +456,15 @@
         color: #ffcc33;
       }
 
+      /* Подпись и сумма — одна пара: свой gap вместо общего 14px у .screen, иначе
+         подпись стоит от своей суммы так же далеко, как от чужой. */
+      .screen__gain {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 2px;
+      }
+
       /* Два банка в одну строку. gap заметно больше обычного: числа набраны
          одним кеглем и без разрыва читались бы как одно длинное. */
       .screen__banks {
@@ -920,12 +929,17 @@
       <div id="screen-result" class="screen">
         <div id="result-title" class="screen__title"></div>
         <div id="result-time" class="screen__row"></div>
-        <!-- Текст ставит screens.ts: при множителе опыта ≠ 1 сюда дописывается,
-             из чего получилась итоговая сумма. -->
-        <div id="result-exp-caption" class="screen__row">Опыт за забег</div>
-        <div id="result-run-exp" class="screen__exp"></div>
-        <!-- Деньги отдельной строкой: множителя у них нет, объяснять нечего -->
-        <div id="result-run-money" class="screen__exp screen__exp--money"></div>
+        <!-- Обе валюты одинаково: подпись, под ней сумма своим цветом. Текст сумм
+             ставит screens.ts — при множителе прокачки ≠ 1 там всё умножение
+             целиком, «280 × 1.04 = 291 EXP». -->
+        <div class="screen__gain">
+          <div class="screen__row">Опыт за забег</div>
+          <div id="result-run-exp" class="screen__exp"></div>
+        </div>
+        <div class="screen__gain">
+          <div class="screen__row">Деньги за забег</div>
+          <div id="result-run-money" class="screen__exp screen__exp--money"></div>
+        </div>
         <div id="result-bank" class="screen__row"></div>
         <button id="result-continue" class="screen__button" type="button">Прокачка</button>
         <!-- Прямой перезапуск: чтобы не заходить в прокачку, когда тратить нечего -->

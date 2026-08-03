@@ -1,4 +1,5 @@
 import {
+  BufferGeometry,
   Color,
   CylinderGeometry,
   LatheGeometry,
@@ -92,7 +93,30 @@ function contentIcon(
 type BarrelVariant = 'intact' | 'cracked50' | 'cracked25';
 
 /**
- * Радиус тела бочки на высоте t, где t — доля полувысоты в [-1, 1].
+ * Полудлина бочки вдоль её собственной оси и радиус в самом широком месте.
+ * Геометрия строится в СВОИХ координатах, где ось тела вращения направлена по y;
+ * куда эта ось смотрит в мире, решает стиль (см. barrelSpanX).
+ */
+const halfLength = (): number => CONFIG.barrels.length / 2;
+const maxRadius = (): number => CONFIG.barrels.diameter / 2;
+
+/** Лежит ли бочка на боку — тогда она ещё и катится. */
+const isRolling = (): boolean => CONFIG.barrels.style === 'rolling';
+
+/**
+ * Габарит бочки по мировым осям. Стоящая обращена к дороге диаметром, лежащая —
+ * длиной; глубина (Z) у обеих равна диаметру, потому что вдоль дороги в обоих
+ * случаях смотрит одна и та же окружность.
+ *
+ * Считается функциями, а не одним объектом: barrelSpanX спрашивают на каждую
+ * пулю, и аллокация вектора там недопустима.
+ */
+const barrelSpanX = (): number => (isRolling() ? CONFIG.barrels.length : CONFIG.barrels.diameter);
+const barrelSpanY = (): number => (isRolling() ? CONFIG.barrels.diameter : CONFIG.barrels.length);
+const barrelSpanZ = (): number => CONFIG.barrels.diameter;
+
+/**
+ * Радиус тела бочки в точке t, где t — доля полудлины в [-1, 1].
  *
  * Косинус, а не парабола: у косинуса производная в середине нулевая, поэтому в
  * самом широком месте бок плавный, а к донышкам сходится быстрее — ровно тот
@@ -100,41 +124,39 @@ type BarrelVariant = 'intact' | 'cracked50' | 'cracked25';
  */
 function barrelRadiusAt(t: number): number {
   const { endRadiusRatio } = CONFIG.barrels.shape;
-  const maxRadius = CONFIG.barrels.size.x / 2;
-  return maxRadius * (endRadiusRatio + (1 - endRadiusRatio) * Math.cos((t * Math.PI) / 2));
+  return maxRadius() * (endRadiusRatio + (1 - endRadiusRatio) * Math.cos((t * Math.PI) / 2));
 }
 
 /**
  * Тело бочки — фигура вращения по профилю barrelRadiusAt.
  *
  * Крайние точки лежат НА ОСИ (x = 0): из них LatheGeometry собирает донышки.
- * Без них бочка была бы трубой, и сквозь верх было бы видно дорогу.
+ * Без них бочка была бы трубой, и сквозь торец было бы видно дорогу.
  */
 function buildBarrelBody(): LatheGeometry {
   const { radialSegments, heightSegments } = CONFIG.barrels.shape;
-  const halfY = CONFIG.barrels.size.y / 2;
+  const half = halfLength();
 
-  const points = [new Vector2(0, -halfY)];
+  const points = [new Vector2(0, -half)];
   for (let s = 0; s <= heightSegments; s++) {
     const t = -1 + (2 * s) / heightSegments;
-    points.push(new Vector2(barrelRadiusAt(t), t * halfY));
+    points.push(new Vector2(barrelRadiusAt(t), t * half));
   }
-  points.push(new Vector2(0, halfY));
+  points.push(new Vector2(0, half));
 
   return new LatheGeometry(points, radialSegments);
 }
 
 /**
- * Обруч на высоте offsetRatio (доля полувысоты, знак — вверх/вниз).
+ * Обруч в точке offsetRatio (доля полудлины, знак — к одному или другому торцу).
  *
  * Открытый цилиндр: изнутри обруч не виден никогда, а торцы съедаются телом.
- * Радиусы сверху и снизу берутся с профиля тела, поэтому обруч ложится по боку,
+ * Радиусы с двух сторон берутся с профиля тела, поэтому обруч ложится по боку,
  * а не висит цилиндром на пузатой бочке.
  */
 function buildHoopGeometry(offsetRatio: number): CylinderGeometry {
   const { radialSegments, hoopHeight, hoopOverhang } = CONFIG.barrels.shape;
-  const halfY = CONFIG.barrels.size.y / 2;
-  const half = hoopHeight / 2 / halfY;
+  const half = hoopHeight / 2 / halfLength();
 
   return new CylinderGeometry(
     barrelRadiusAt(offsetRatio + half) + hoopOverhang,
@@ -147,22 +169,53 @@ function buildHoopGeometry(offsetRatio: number): CylinderGeometry {
 }
 
 /**
- * Обод по верхней кромке — тор, лежащий в плоскости XZ.
+ * Обод по кромке донышка — тор в плоскости самого донышка.
  *
  * Радиус кольца равен радиусу кромки, поэтому тор садится НА неё: половина
- * ширины снаружи силуэта, половина поверх крышки. Так сверху видно тёмное кольцо
- * и цветную середину — и «бочка», и состояние прочности одновременно.
+ * ширины снаружи силуэта, половина поверх донышка. Так видно тёмное кольцо и
+ * цветную середину — и «бочка», и состояние прочности одновременно.
  */
-function buildLidRimGeometry(): TorusGeometry {
-  const { radialSegments, lidRimTube } = CONFIG.barrels.shape;
+function buildEndRimGeometry(): TorusGeometry {
+  const { radialSegments, endRimTube } = CONFIG.barrels.shape;
   // 6 сегментов на сечение: тор тонкий, гранёности сечения на экране не видно.
-  return new TorusGeometry(barrelRadiusAt(1), lidRimTube / 2, 6, radialSegments);
+  return new TorusGeometry(barrelRadiusAt(1), endRimTube / 2, 6, radialSegments);
+}
+
+/**
+ * Продольный шов между клёпками — узкая полоска по боку бочки от торца до торца.
+ *
+ * Ровно то, по чему видно вращение: тело и обручи вокруг оси симметричны, и без
+ * швов катящаяся бочка на экране неотличима от скользящей. Строится тем же
+ * профилем, что и тело, но приподнятым на staveLift и обрезанным по углу
+ * (phiStart/phiLength у LatheGeometry), поэтому шов повторяет пузо и не тонет
+ * в нём у донышек, как утонула бы прямая планка.
+ */
+function buildStaveGeometry(index: number): LatheGeometry {
+  const { heightSegments, staveCount, staveWidth, staveLift } = CONFIG.barrels.shape;
+  const half = halfLength();
+  const phiLength = staveWidth / maxRadius();
+  const phiStart = (index * 2 * Math.PI) / staveCount - phiLength / 2;
+
+  const points: Vector2[] = [];
+  for (let s = 0; s <= heightSegments; s++) {
+    const t = -1 + (2 * s) / heightSegments;
+    points.push(new Vector2(barrelRadiusAt(t) + staveLift, t * half));
+  }
+
+  // 2 сегмента по дуге: полоска узкая, кривизны внутри неё не видно.
+  return new LatheGeometry(points, 2, phiStart, phiLength);
 }
 
 /**
  * Бочки-бонусы (ТЗ раздел 7).
  *
- * Едут сверху вниз вместе с миром. Над бочкой — число прочности; попадания его
+ * Едут сверху вниз вместе с миром. Модель у бочки одна, а стоять на дороге она
+ * умеет двумя способами (CONFIG.barrels.style): 'standing' — на донышке, как
+ * поставленная бочка; 'rolling' — на боку поперёк дороги, и тогда она ещё и
+ * катится на отряд (угол качения привязан к пройденному пути, поэтому бочка не
+ * «скользит» на месте). Стиль решает и положение меша, и габарит хитбокса.
+ *
+ * Над бочкой — число прочности; попадания его
  * уменьшают, на 50% и 25% меняется вид, при нуле бочка ломается и отдаёт
  * содержимое отряду. От целой бочки можно увернуться: тогда ни бонуса, ни урона.
  * Контакт целой бочки с отрядом бьёт стрелков.
@@ -223,7 +276,7 @@ export class BarrelField {
     private readonly bonusSlot: BonusSlot,
     private readonly shop: WeaponUnlocks,
   ) {
-    const { size, poolSize, colors, shape } = CONFIG.barrels;
+    const { poolSize, colors, shape } = CONFIG.barrels;
 
     this.bodyColors = {
       intact: new Color(colors.intact),
@@ -239,14 +292,25 @@ export class BarrelField {
     // Геометрия одна на все бочки, материал — свой на каждую (нужен свой цвет).
     // Обручи же одинаковые у всех и цвет не меняют — им хватает одного материала.
     const bodyGeometry = buildBarrelBody();
-    const halfY = size.y / 2;
-    // Накладки: два обруча по бокам и обод по верхней кромке. Тор задан в
-    // плоскости XY, поэтому его кладут набок поворотом на четверть оборота.
-    const trims = [
-      { geometry: buildHoopGeometry(-shape.hoopOffsetRatio), y: -shape.hoopOffsetRatio * halfY, flat: false },
-      { geometry: buildHoopGeometry(shape.hoopOffsetRatio), y: shape.hoopOffsetRatio * halfY, flat: false },
-      { geometry: buildLidRimGeometry(), y: halfY, flat: true },
+    const half = halfLength();
+    // Накладки: два обруча, ободы по обеим кромкам и продольные швы. Тор задан
+    // в плоскости XY, поэтому его кладут поперёк оси поворотом на четверть
+    // оборота; швы уже построены вдоль оси и доворота не требуют.
+    //
+    // Модель СИММЕТРИЧНА и одинакова для обоих стилей — в том числе поэтому
+    // ободов два, а не один по верхней кромке. Так стиль ни на что не влияет в
+    // конструкторе, и его можно переключать на живой игре (__config.barrels.style),
+    // как и остальные числа конфига. У стоящей бочки нижний обод виден тоже —
+    // тёмное кольцо у самого асфальта, оно её только приземляет.
+    const trims: Array<{ geometry: BufferGeometry; y: number; flat: boolean }> = [
+      { geometry: buildHoopGeometry(-shape.hoopOffsetRatio), y: -shape.hoopOffsetRatio * half, flat: false },
+      { geometry: buildHoopGeometry(shape.hoopOffsetRatio), y: shape.hoopOffsetRatio * half, flat: false },
+      { geometry: buildEndRimGeometry(), y: -half, flat: true },
+      { geometry: buildEndRimGeometry(), y: half, flat: true },
     ];
+    for (let s = 0; s < shape.staveCount; s++) {
+      trims.push({ geometry: buildStaveGeometry(s), y: 0, flat: false });
+    }
     const hoopMaterial = new MeshStandardMaterial({
       color: shape.hoopColor,
       roughness: 0.6,
@@ -477,21 +541,26 @@ export class BarrelField {
   update(dt: number): void {
     this.spawnStream(dt);
 
-    const { size } = CONFIG.barrels;
     const { despawnZ } = CONFIG.world;
     const heroRadius = CONFIG.player.heroCapsule.radius;
 
-    // Бочка «катится» вместе с миром — своей скорости у неё нет. Значит, и на
-    // боссфайте она стоит: не докатившаяся бочка дождётся конца боя на месте.
+    // Бочка едет вместе с миром — своей скорости у неё нет. Значит, и на
+    // боссфайте она стоит: не доехавшая бочка дождётся конца боя на месте.
     const step = this.run.worldSpeed * dt;
-    // Зона контакта: полглубины бочки плюс радиус стрелка.
-    const contactZ = size.z / 2 + heroRadius;
-    const contactReachX = size.x / 2 + heroRadius;
+    // Зона контакта: полдиаметра бочки плюс радиус стрелка по Z, поперечный
+    // полуразмер плюс радиус по X — лежащая бочка проходит колонну своей длиной.
+    const contactZ = barrelSpanZ() / 2 + heroRadius;
+    const contactReachX = barrelSpanX() / 2 + heroRadius;
     // Урон при наезде равен урону крупного зомби. Своего числа у бочки нет
     // намеренно: требование задано именно как «в размере урона большого зомби»,
     // и две независимые константы рано или поздно разошлись бы.
     const contactDamage = CONFIG.enemies.big.damagePerHit;
-    const y = size.y / 2;
+    // Центр по высоте — полвысоты силуэта: у стоящей это половина длины, у
+    // лежащей радиус. И та и другая при этом стоят ровно на асфальте.
+    const y = barrelSpanY() / 2;
+    // Катится бочка по своему самому широкому сечению, то есть по радиусу.
+    const rolling = isRolling();
+    const rollRadius = CONFIG.barrels.diameter / 2;
 
     for (let i = 0; i < this.count; ) {
       this.posZ[i]! += step;
@@ -521,6 +590,22 @@ export class BarrelField {
       const mesh = this.meshes[i]!;
       mesh.visible = true;
       mesh.position.set(this.posX[i]!, y, this.posZ[i]!);
+      // Поворот ставится каждый кадр целиком, а не один раз при создании:
+      // тогда стиль переключается на живой игре, без пересборки поля.
+      //
+      // Лежащую бочку кладёт набок rotation.z: ось тела вращения (своя y) уходит
+      // поперёк дороги. Порядок поворотов у three — XYZ, то есть rotation.z
+      // применяется ПЕРВЫМ, а rotation.x после него, уже вокруг мировой оси X.
+      // Поэтому качение — это именно rotation.x, и бочка вращается вокруг
+      // собственной оси, а не заваливается набок ещё раз.
+      //
+      // Угол качения считается от ПРОЙДЕННОГО пути, а не накоплением по dt:
+      // отдельного массива под угол не нужно (значит, и переноса в recycle),
+      // качение точно совпадает с движением при любом dt, а на боссфайте
+      // останавливается вместе с дорогой само собой. Вращение вокруг +X уводит
+      // верхнюю точку в +Z — то есть бочка катится НА отряд.
+      const roll = rolling ? (this.posZ[i]! - CONFIG.world.spawnZ) / rollRadius : 0;
+      mesh.rotation.set(roll, 0, rolling ? Math.PI / 2 : 0);
       this.materials[i]!.color.copy(this.colorFor(i));
 
       i++;
@@ -533,8 +618,13 @@ export class BarrelField {
 
   /**
    * Попадание пули на отрезке её полёта за шаг (передаётся в BulletPool.update).
-   * Бочка считается кругом в плоскости XZ — модель и есть фигура вращения,
-   * так что круг радиусом size.x / 2 совпадает с её самым широким сечением.
+   *
+   * Бочка считается кругом в плоскости XZ радиусом в половину ПОПЕРЕЧНОГО
+   * размера. У стоящей это точно её сечение: тело вращения и есть круг. У
+   * лежащей след на дороге — прямоугольник 1.4 × 1.2, но пули летят почти вдоль
+   * Z, поэтому важно, при каких x попадание засчитывается: по x круг совпадает
+   * с фигурой точно, а по z ошибается максимум на 0.1 units (пуля попадает чуть
+   * раньше, чем коснулась бы бока).
    */
   readonly tryHit = (
     xFrom: number,
@@ -545,7 +635,7 @@ export class BarrelField {
     bulletRadius: number = CONFIG.weapons.bullet.radius,
     pierce = false,
   ): boolean => {
-    const reach = CONFIG.barrels.size.x / 2 + bulletRadius;
+    const reach = barrelSpanX() / 2 + bulletRadius;
     let anyHit = false;
 
     for (let i = 0; i < this.count; ) {
@@ -595,7 +685,7 @@ export class BarrelField {
    * Возвращает число задетых бочек.
    */
   damageInRadius(x: number, z: number, radius: number, damage: number): number {
-    const reach = radius + CONFIG.barrels.size.x / 2;
+    const reach = radius + barrelSpanX() / 2;
     const reachSq = reach * reach;
     let hit = 0;
 

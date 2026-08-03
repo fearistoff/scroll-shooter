@@ -294,14 +294,22 @@ export class RunState {
   /**
    * Собранные за забег деньги — валюта магазина оружия (CONFIG.shop).
    *
-   * Всегда целые: находка округляется на выпадении (MoneyPool.dropFrom), там же
-   * применён и множитель прокачки (player.moneyMultiplier). Тем и отличается от
-   * EXP: там сумма дробная, а множитель применяется один раз на выходе из
-   * забега, поэтому число на экране результата больше того, что было в HUD.
-   * У денег такого расхождения нет — сколько подобрано, столько и зачислено.
+   * Всегда целые: находка округляется на выпадении (MoneyPool.dropFrom).
+   * Множителя прокачки здесь нет — это то самое число, что стояло в HUD.
    */
   get money(): number {
     return this.moneyTotal;
+  }
+
+  /**
+   * Сколько денег забег отдаст в банк: собранное × множитель прокачки.
+   *
+   * Устроено ровно как expEarned, и по той же причине (см. его комментарий):
+   * множитель применяется ОДИН РАЗ здесь, а не на каждой монете. Округление
+   * вниз — банк целочисленный, а вверх дало бы монету из воздуха на пустом забеге.
+   */
+  get moneyEarned(): number {
+    return Math.floor(this.moneyTotal * CONFIG.player.moneyMultiplier);
   }
 
   /** Начисляет деньги с подобранной монеты. Единственная точка. */
@@ -385,6 +393,7 @@ export class RunState {
     exp: number;
     expEarned: number;
     money: number;
+    moneyEarned: number;
     hasBoss: boolean;
     elapsed: number;
     wave: number;
@@ -405,6 +414,7 @@ export class RunState {
       exp: this.expTotal,
       expEarned: +this.expEarned.toFixed(2),
       money: this.moneyTotal,
+      moneyEarned: this.moneyEarned,
       hasBoss: this.hasBoss,
       elapsed: +this.elapsed.toFixed(2),
       wave: this.wave,
