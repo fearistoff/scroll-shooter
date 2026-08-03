@@ -1,6 +1,7 @@
 import { CONFIG } from '../config';
 import {
   shopWeapons,
+  weaponUnlockWave,
   type ShooterKind,
   type ShopWeapon,
   type WeaponId,
@@ -389,6 +390,13 @@ interface SavedProgress {
    */
   startShooters: number;
   startWeapon: WeaponId | null;
+  /**
+   * Рекорд достигнутой волны. Поля нет в сохранениях, сделанных до появления
+   * замка по волне: такой игрок начинает рекорд с нуля и открывает средние
+   * ступени магазина заново — уже купленное при этом остаётся купленным
+   * (weapons — отдельное поле).
+   */
+  bestWave: number;
 }
 
 /**
@@ -426,6 +434,8 @@ export class MetaProgress {
   private startShootersValue = 0;
   /** Оплаченный ствол стартового кита. null — забег начнётся с пистолета. */
   private startWeaponValue: WeaponId | null = null;
+  /** Рекорд достигнутой волны за всё время — см. «Магазин оружия» ниже. */
+  private bestWaveValue = 0;
 
   constructor() {
     this.load();
@@ -558,7 +568,71 @@ export class MetaProgress {
    *
    * Покупка строго последовательная, поэтому открытое хранится длиной префикса,
    * а не набором ключей: непоследовательное состояние просто нечем выразить.
+   *
+   * У СРЕДНИХ СТУПЕНЕЙ ЕСТЬ ВТОРОЕ УСЛОВИЕ, кроме денег: автомат и пулемёт не
+   * продаются, пока игрок ни разу не дошёл до своей волны (2-й и 3-й
+   * соответственно). Требование задано в CONFIG.run.unlocks.weapons тем же
+   * числом, которым заперто выпадение ступени из бочек, — открывать ствол,
+   * которому ещё негде выпасть, незачем. Рекорд волны копится в bestWave и
+   * растёт только вверх: неудачная вылазка уже открытого не отбирает.
    */
+
+  /**
+   * Рекорд достигнутой волны за всё время. 0 — вылазок ещё не было.
+   *
+   * Единственное в мета-прогрессии, что не покупается, а зарабатывается игрой:
+   * по нему открываются средние ступени магазина. Сбросом прогресса стирается
+   * вместе с остальным — иначе «как в первый раз» не получилось бы.
+   */
+  get bestWave(): number {
+    return this.bestWaveValue;
+  }
+
+  /**
+   * Запоминает волну законченной вылазки. Зовётся из Game.finishRun один раз за
+   * забег; РЕКОРД ТОЛЬКО РАСТЁТ, поэтому порядок вызовов значения не имеет.
+   */
+  registerWave(wave: number): void {
+    if (wave <= this.bestWaveValue) return;
+    this.bestWaveValue = wave;
+    this.save();
+  }
+
+  /**
+   * Дошёл ли игрок до волны, с которой ствол продаётся.
+   *
+   * Ствол без замка (weaponUnlockWave === 1) проходит проверку ВСЕГДА, а не
+   * сравнением с рекордом: первая волна есть в любой вылазке, но у игрока,
+   * который ни одной ещё не закончил, рекорд равен нулю, и сравнение заперло бы
+   * ему пистолет-пулемёт.
+   */
+  isWeaponWaveReached(id: WeaponId): boolean {
+    const need = weaponUnlockWave(id);
+    return need <= 1 || this.bestWaveValue >= need;
+  }
+
+  /**
+   * Стволы, чей замок по волне закрывает ИМЕННО ЭТА вылазка: рекорд ещё не
+   * дотягивал до их волны, а достигнутая дотягивает. Нужно экрану результата —
+   * «что открылось за вылазку».
+   *
+   * Считается ДО registerWave, иначе рекорд уже поднят и разницы не видно.
+   * Уже открытые стволы отбрасываются: в сохранениях, сделанных до появления
+   * замка по волне, автомат и пулемёт могли быть куплены раньше.
+   *
+   * Стволы без замка (need <= 1) отбрасываются отдельным условием, а не
+   * сравнением с рекордом: при рекорде 0 условие «1 > 0» верно для каждого из
+   * них, и первая же вылазка объявляла бы «открылось» про весь магазин.
+   */
+  weaponsOpenedByWave(wave: number): WeaponId[] {
+    return shopWeapons()
+      .map((entry) => entry.id)
+      .filter((id) => {
+        const need = weaponUnlockWave(id);
+        if (need <= 1 || this.isWeaponUnlocked(id)) return false;
+        return need > this.bestWaveValue && need <= wave;
+      });
+  }
 
   /** Накопленные деньги. Целые: находка округляется на выпадении. */
   get money(): number {
@@ -597,10 +671,14 @@ export class MetaProgress {
     return shopWeapons().find((entry) => entry.id === id)?.price ?? null;
   }
 
-  /** Можно ли купить прямо сейчас: это следующий по очереди и денег хватает. */
+  /**
+   * Можно ли купить прямо сейчас: это следующий по очереди, рекорд волны дотянул
+   * до его замка и денег хватает.
+   */
   canBuyWeapon(id: WeaponId): boolean {
     const next = this.nextWeapon();
-    return next !== null && next.id === id && this.moneyValue >= next.price;
+    if (next === null || next.id !== id) return false;
+    return this.isWeaponWaveReached(id) && this.moneyValue >= next.price;
   }
 
   /**
@@ -863,6 +941,7 @@ export class MetaProgress {
     this.weaponsBought = 0;
     this.startShootersValue = 0;
     this.startWeaponValue = null;
+    this.bestWaveValue = 0;
     this.save();
     this.applyTo();
   }
@@ -904,6 +983,10 @@ export class MetaProgress {
         this.weaponsBought = Math.min(Math.max(Math.floor(saved.weapons), 0), shopWeapons().length);
       }
 
+      if (typeof saved.bestWave === 'number' && Number.isFinite(saved.bestWave)) {
+        this.bestWaveValue = Math.max(Math.floor(saved.bestWave), 0);
+      }
+
       if (typeof saved.levels === 'object' && saved.levels !== null) {
         for (const id of UPGRADE_IDS) {
           const value = saved.levels[id];
@@ -925,6 +1008,7 @@ export class MetaProgress {
       this.weaponsBought = 0;
       this.startShootersValue = 0;
       this.startWeaponValue = null;
+      this.bestWaveValue = 0;
     }
   }
 
@@ -989,6 +1073,7 @@ export class MetaProgress {
       weapons: this.weaponsBought,
       startShooters: this.startShootersValue,
       startWeapon: this.startWeaponValue,
+      bestWave: this.bestWaveValue,
     };
     for (const id of UPGRADE_IDS) {
       const level = this.level(id);
@@ -1006,6 +1091,7 @@ export class MetaProgress {
   debugSnapshot(): {
     bank: number;
     money: number;
+    bestWave: number;
     weapons: WeaponId[];
     nextWeapon: ShopWeapon | null;
     startKit: { shooters: number; limit: number; weapon: WeaponId | null };
@@ -1026,6 +1112,7 @@ export class MetaProgress {
     return {
       bank: +this.bankValue.toFixed(2),
       money: this.moneyValue,
+      bestWave: this.bestWaveValue,
       weapons: shopWeapons()
         .slice(0, this.weaponsBought)
         .map((entry) => entry.id),

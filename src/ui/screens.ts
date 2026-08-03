@@ -19,6 +19,7 @@ import {
   weaponFireRate,
   weaponIcon,
   weaponRange,
+  weaponUnlockWave,
   WEAPON_NAMES,
   type WeaponId,
 } from '../entities/weapons';
@@ -58,6 +59,12 @@ export interface RunResult {
   earnedMoney: number;
   elapsedSeconds: number;
   wave: number;
+  /**
+   * Стволы, которые эта вылазка открыла к покупке: рекорд волны дотянул до их
+   * замка (MetaProgress.weaponsOpenedByWave). Пустой список — открывать было
+   * нечего, и строки на экране не будет.
+   */
+  unlockedWeapons: readonly WeaponId[];
 }
 
 interface UpgradeRow {
@@ -196,6 +203,7 @@ export class Screens {
   private readonly resultTime: HTMLElement | null;
   private readonly resultRunExp: HTMLElement | null;
   private readonly resultRunMoney: HTMLElement | null;
+  private readonly resultUnlocked: HTMLElement | null;
   private readonly resultBank: HTMLElement | null;
   private readonly upgradeBank: HTMLElement | null;
   private readonly upgradeMoney: HTMLElement | null;
@@ -235,6 +243,7 @@ export class Screens {
     this.resultTime = document.querySelector<HTMLElement>('#result-time');
     this.resultRunExp = document.querySelector<HTMLElement>('#result-run-exp');
     this.resultRunMoney = document.querySelector<HTMLElement>('#result-run-money');
+    this.resultUnlocked = document.querySelector<HTMLElement>('#result-unlocked');
     this.resultBank = document.querySelector<HTMLElement>('#result-bank');
     this.upgradeBank = document.querySelector<HTMLElement>('#upgrade-bank');
     this.upgradeMoney = document.querySelector<HTMLElement>('#upgrade-money');
@@ -339,15 +348,15 @@ export class Screens {
    * Экран результата забега.
    *
    * Исход всегда один — смерть героя: босс забег не заканчивает, а открывает
-   * следующую волну, поэтому «победы» не существует. Достижением стала волна, до
-   * которой игрок дошёл, и она вынесена в заголовок вместо слова «Поражение».
-   * Время — тот же счётчик, что и в секундомере HUD.
+   * следующую волну, поэтому «победы» не существует. В заголовке поэтому не
+   * «Поражение», а нейтральное «Вылазка завершена»; достижением остаётся волна,
+   * до которой игрок дошёл, и она стоит первой строкой под заголовком рядом со
+   * временем — тем же счётчиком, что в секундомере HUD.
    */
   showResult(result: RunResult): void {
-    if (this.resultTitle !== null) this.resultTitle.textContent = `Волна ${result.wave}`;
+    if (this.resultTitle !== null) this.resultTitle.textContent = 'Вылазка завершена';
     if (this.resultTime !== null) {
-      // Причина конца забега в строке, а не в заголовке: заголовок занят счётом.
-      this.resultTime.textContent = `Герой погиб · время ${formatRunTime(result.elapsedSeconds)}`;
+      this.resultTime.textContent = `Волна ${result.wave} · время ${formatRunTime(result.elapsedSeconds)}`;
     }
 
     // Множители прокачки применяются только на выходе из забега, поэтому числа
@@ -355,28 +364,61 @@ export class Screens {
     // «собрано × множитель = зачислено», иначе разница читается как ошибка
     // счётчика. Обе валюты показываются всегда, даже нулевые: пустая строка
     // выглядела бы поломкой, а ноль честно говорит, что за забег не выпало.
+    //
+    // Подпись стоит в той же строке, что и сумма: крупных цветных сумм на этом
+    // экране больше нет, а подпись без своего числа рядом читалась бы как
+    // заголовок следующей строки.
     if (this.resultRunExp !== null) {
-      this.resultRunExp.textContent = formatEarned(
+      const exp = formatEarned(
         Math.floor(result.collectedExp),
         CONFIG.player.expMultiplier,
         Math.floor(result.earnedExp),
         'EXP',
       );
+      this.resultRunExp.textContent = `Опыт за вылазку: ${exp}`;
     }
     if (this.resultRunMoney !== null) {
-      this.resultRunMoney.textContent = formatEarned(
+      const money = formatEarned(
         result.collectedMoney,
         CONFIG.player.moneyMultiplier,
         result.earnedMoney,
         '$',
       );
+      this.resultRunMoney.textContent = `Деньги за вылазку: ${money}`;
     }
+
+    this.refreshResultUnlocked(result.unlockedWeapons);
+
     if (this.resultBank !== null) {
       this.resultBank.textContent = `Всего: ${this.meta.bankDisplay} EXP · ${this.meta.money} $`;
     }
 
     this.toggle(this.resultElement, true);
     this.toggle(this.upgradeElement, false);
+  }
+
+  /**
+   * Строка «что открылось» — единственная новость экрана результата: волна, до
+   * которой дошла эта вылазка, сняла замок с ступени магазина.
+   *
+   * Цена стоит рядом с названием, потому что открылось именно ПРАВО КУПИТЬ, а не
+   * сам ствол: без цены строку можно прочитать как «оружие получено».
+   *
+   * Пусто — строки нет вовсе (как у сводки бустеров): «ничего не открылось»
+   * писать незачем, это обычный исход почти каждой вылазки.
+   */
+  private refreshResultUnlocked(weapons: readonly WeaponId[]): void {
+    if (this.resultUnlocked === null) return;
+
+    this.resultUnlocked.hidden = weapons.length === 0;
+    if (weapons.length === 0) return;
+
+    // Через запятую, а не через « · », как в остальных строках экранов: строка
+    // длинная и на телефоне переносится (ЗАМЕРЕНО при 375 px: два ствола дают
+    // две строки), а точка-разделитель, оставшаяся висеть в конце первой из них,
+    // читается как обрыв. Запятая на переносе выглядит обычным списком.
+    const parts = weapons.map((id) => `${WEAPON_NAMES[id]} — ${this.meta.weaponPrice(id) ?? 0} $`);
+    this.resultUnlocked.textContent = `Открылось в магазине: ${parts.join(', ')}`;
   }
 
   /** Экран прокачки. */
@@ -902,9 +944,9 @@ export class Screens {
   }
 
   /**
-   * Магазин: у каждой строки ровно три состояния — открыто, продаётся сейчас,
-   * заперто предыдущим стволом. Последнее не прячется, а показывается тусклым с
-   * ценой: игрок должен видеть всю цепочку и её стоимость наперёд.
+   * Магазин: у каждой строки ровно четыре состояния — открыто, продаётся сейчас,
+   * заперто предыдущим стволом, заперто недостигнутой волной. Ни одно не
+   * прячется: игрок должен видеть всю цепочку, её стоимость и её условия наперёд.
    */
   private refreshWeapons(): void {
     const next = this.meta.nextWeapon();
@@ -917,11 +959,28 @@ export class Screens {
       const canBuy = this.meta.canBuyWeapon(id);
       ready ||= canBuy;
 
+      // Волна, до которой ещё не дошли, 0 — по волне ствол не заперт. У
+      // полученного не спрашиваем вовсе: замок он уже прошёл.
+      const waveLock = owned || this.meta.isWeaponWaveReached(id) ? 0 : weaponUnlockWave(id);
+
       // Числа ствола зависят от прокачки урона и темпа, а её покупают на соседней
       // вкладке этого же экрана — значит пересчитывать надо на каждой перерисовке.
       Screens.refreshWeaponStats(id, row);
 
+      // Требование по волне — в примечание, перед примечанием особого (у
+      // автомата и пулемёта того нет, но порядок должен быть определён). Замок на
+      // кнопке говорит только «нельзя», а причину, которую не купишь за деньги,
+      // нужно написать словами.
+      if (waveLock > 0) {
+        const note = row.note.textContent ?? '';
+        row.note.textContent = `Нужно дойти до волны ${waveLock}. ${note}`.trimEnd();
+        row.note.hidden = false;
+      }
+
       row.root.classList.toggle('weapon--owned', owned);
+      // Тусклым — только заперто цепочкой: до такой строки очередь ещё не дошла.
+      // Запертая волной остаётся яркой — она следующая на покупку, и её условие
+      // нужно прочитать.
       row.root.classList.toggle('weapon--locked', !owned && !onSale);
 
       // Полученное — подписью «Получено» вместо кнопки, и одинаково для купленного
@@ -932,8 +991,8 @@ export class Screens {
 
       if (!owned) {
         // Запертому — замок вместо цены: цена та же, но нажать нельзя, пока не
-        // куплен предыдущий.
-        row.buy.textContent = onSale ? `${price} $` : `🔒 ${price} $`;
+        // куплен предыдущий или не пройдена его волна.
+        row.buy.textContent = onSale && waveLock === 0 ? `${price} $` : `🔒 ${price} $`;
       }
       row.buy.disabled = !canBuy;
     }

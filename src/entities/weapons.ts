@@ -151,6 +151,38 @@ export function shopWeapons(): readonly ShopWeapon[] {
   return CONFIG.shop.weapons as readonly ShopWeapon[];
 }
 
+/** Замок ступени оружия — секунда забега ИЛИ номер волны, см. CONFIG.run.unlocks.weapons. */
+interface WeaponUnlockGate {
+  atSeconds?: number;
+  fromWave?: number;
+}
+
+/**
+ * Замок ствола из конфига. Приведение здесь, по той же причине, что и у
+ * shopWeapons() выше: одно место на всю игру.
+ */
+function unlockGate(id: WeaponId): WeaponUnlockGate {
+  const gates = CONFIG.run.unlocks.weapons as Partial<Record<WeaponId, WeaponUnlockGate>>;
+  return gates[id] ?? {};
+}
+
+/**
+ * Секунда забега, с которой ствол может выпасть. 0 — замка по времени нет
+ * (RunState.isUnlocked(0) верно с первого кадра).
+ */
+export function weaponUnlockSeconds(id: WeaponId): number {
+  return unlockGate(id).atSeconds ?? 0;
+}
+
+/**
+ * Волна, с которой ствол может выпасть, она же волна, до которой нужно дойти,
+ * чтобы открыть ствол в магазине. 1 — замка по волне нет: первая волна есть в
+ * любой вылазке.
+ */
+export function weaponUnlockWave(id: WeaponId): number {
+  return unlockGate(id).fromWave ?? 1;
+}
+
 /**
  * Обёртка нарисованной иконки. Высоту задаёт CSS, ширину — viewBox: чем длиннее
  * ствол, тем шире иконка, и разница в длине видна ещё до того, как разглядишь

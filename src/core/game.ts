@@ -278,6 +278,12 @@ export class Game {
     // Деньги зачисляются отдельным вызовом, а не внутри deposit: это разные
     // валюты со своими множителями, и общая точка скрыла бы, что их два.
     this.meta.depositMoney(this.run.moneyEarned);
+
+    // Что открылось волной, считается ДО записи рекорда: после неё рекорд уже
+    // равен достигнутой волне, и разницы между «было» и «стало» не остаётся.
+    const opened = this.meta.weaponsOpenedByWave(this.run.waveNumber);
+    this.meta.registerWave(this.run.waveNumber);
+
     this.phase = 'result';
     this.screens.showResult({
       collectedExp: collected,
@@ -286,6 +292,7 @@ export class Game {
       earnedMoney: this.run.moneyEarned,
       elapsedSeconds: this.run.elapsedSeconds,
       wave: this.run.waveNumber,
+      unlockedWeapons: opened,
     });
   }
 

@@ -16,7 +16,13 @@ import type { BonusSlot } from './bonusSlot';
 import type { CrystalPool } from './crystals';
 import type { SquadTarget } from './enemies';
 import { makeFlashColor } from './flash';
-import { randomSpecialWeapon, weaponIcon, type WeaponId } from './weapons';
+import {
+  randomSpecialWeapon,
+  weaponIcon,
+  weaponUnlockSeconds,
+  weaponUnlockWave,
+  type WeaponId,
+} from './weapons';
 
 /** Что лежит в бочке (ТЗ раздел 7). */
 export type BarrelContent = 'weapon' | 'shooters' | 'special' | 'mine';
@@ -27,9 +33,9 @@ export type BarrelContent = 'weapon' | 'shooters' | 'special' | 'mine';
  * Узкий интерфейс у потребителя, как SquadTarget и BonusReceiver: бочки не
  * должны знать ни про деньги, ни про MetaProgress — только про запрет.
  *
- * Купленное оружие — ВТОРОЙ замок поверх разблокировки по времени
- * (CONFIG.run.unlocks.weapons), а не замена ей: ствол должен быть и куплен
- * между забегами, и дожит до своей секунды внутри забега.
+ * Купленное оружие — ВТОРОЙ замок поверх замка внутри забега
+ * (CONFIG.run.unlocks.weapons), а не замена ему: ствол должен быть и куплен
+ * между вылазками, и дожить до своей секунды или своей волны внутри вылазки.
  */
 export interface WeaponUnlocks {
   /** true — этот ствол куплен и может выпадать. Пистолет открыт всегда. */
@@ -456,15 +462,18 @@ export class BarrelField {
   }
 
   /**
-   * Разрешён ли ствол прямо сейчас: куплен в магазине И дожил до своей секунды
-   * забега. Оба замка сходятся здесь, в одной функции, — иначе пришлось бы
+   * Разрешён ли ствол прямо сейчас: куплен в магазине И дожил до своего замка в
+   * забеге. Все замки сходятся здесь, в одной функции, — иначе пришлось бы
    * помнить про покупку в каждой из трёх точек выбора содержимого.
+   *
+   * Замок в забеге у каждой ступени свой (CONFIG.run.unlocks.weapons): у одних
+   * это секунда забега, у автомата и пулемёта — номер волны. Проверяются оба,
+   * потому что незаданный замок в аксессорах отдаёт пропускающее значение (0 и 1).
    */
   private isWeaponAllowed(id: WeaponId): boolean {
     if (!this.shop.isWeaponUnlocked(id)) return false;
-    const unlocks = CONFIG.run.unlocks.weapons as Record<string, number | undefined>;
-    const at = unlocks[id];
-    return at === undefined || this.run.isUnlocked(at);
+    if (this.run.waveNumber < weaponUnlockWave(id)) return false;
+    return this.run.isUnlocked(weaponUnlockSeconds(id));
   }
 
   /** Случайное особое оружие из уже разрешённых. */
@@ -494,7 +503,8 @@ export class BarrelField {
    * расстреливал бы впустую, а патроны и время в crowd-shooter и есть ресурс.
    *
    * НА СТАРТЕ ИГРЫ, пока не куплен ни один ствол, бочек с оружием и особым не
-   * бывает вовсе — остаются стрелки и мины. Так и задумано: пистолет один до
+   * бывает вовсе — остаются только стрелки (мины выключены нулевым весом,
+   * CONFIG.barrels.content.mineWeight). Так и задумано: пистолет один до
    * первой покупки в магазине.
    */
   private randomContent(): BarrelContent | null {

@@ -345,14 +345,16 @@ export class EnemyPool {
   update(dt: number, squad: SquadTarget): void {
     this.spawnStream(dt, squad);
 
-    const { normal, big, extraSpeed, attackInterval, attackAnim } = CONFIG.enemies;
+    const { normal, big, extraSpeed, bigSpeedScale, attackInterval, attackAnim } = CONFIG.enemies;
     const { despawnZ } = CONFIG.world;
     // Скорость мира — текущая (run), а не номинальная: на боссфайте дорога стоит,
     // и зомби на ней шёл бы только своими ногами. Живых зомби в этот момент нет
     // (босс выходит на пустое поле), но правило одно на всех, кого везёт дорога.
     const worldSpeed = this.run.worldSpeed;
-    // Зомби идут сами плюс их несёт наезжающий мир.
+    // Зомби идут сами плюс их несёт наезжающий мир. Крупный подходит медленнее —
+    // множитель на всю скорость подхода, см. enemies.bigSpeedScale.
     const step = (worldSpeed + extraSpeed) * dt;
+    const bigStep = step * bigSpeedScale;
 
     let normalDrawn = 0;
     let bigDrawn = 0;
@@ -369,7 +371,7 @@ export class EnemyPool {
 
       if (!arrived) {
         // Ещё идёт. Не перескакиваем линию остановки за шаг.
-        this.posZ[i] = Math.min(this.posZ[i]! + step, this.stopAt[i]!);
+        this.posZ[i] = Math.min(this.posZ[i]! + (bigOne ? bigStep : step), this.stopAt[i]!);
       } else {
         // Дошёл: бьёт ближайшего стрелка с периодом attackInterval.
         this.attackTimer[i]! += dt;
