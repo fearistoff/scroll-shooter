@@ -92,6 +92,15 @@ interface WeaponRow {
   stats: HTMLElement;
   /** Примечание особого ствола (Screens.weaponNote). Тоже с прокачкой. */
   note: HTMLElement;
+  /**
+   * Оверлей замка поверх всей строки: иконка и условие разблокировки на
+   * размытом фоне (backdrop-filter). Показывается перерисовкой, когда строка
+   * недоступна: в магазине — цепочкой или волной, в бустерах — доступностью
+   * аренды. Заодно перехватывает клики по накрытой кнопке.
+   */
+  lock: HTMLElement;
+  /** Текст условия разблокировки внутри оверлея. */
+  lockText: HTMLElement;
   /** Подпись «Получено» на месте кнопки, когда ствол уже открыт. */
   owned: HTMLElement;
 }
@@ -747,8 +756,20 @@ export class Screens {
     owned.textContent = 'Получено';
     owned.hidden = true;
 
-    row.append(icon, name, statsElement, note, buy, owned);
-    return { root: row, buy, stats: statsElement, note, owned };
+    // Оверлей замка — последним ребёнком: он absolute поверх всей строки и
+    // должен рисоваться над остальным содержимым (см. .weapon__lock).
+    const lock = document.createElement('div');
+    lock.className = 'weapon__lock';
+    lock.hidden = true;
+    const lockIcon = document.createElement('div');
+    lockIcon.className = 'weapon__lock-icon';
+    lockIcon.textContent = '🔒';
+    const lockText = document.createElement('div');
+    lockText.className = 'weapon__lock-text';
+    lock.append(lockIcon, lockText);
+
+    row.append(icon, name, statsElement, note, buy, owned, lock);
+    return { root: row, buy, stats: statsElement, note, owned, lock, lockText };
   }
 
   /**
@@ -1009,21 +1030,26 @@ export class Screens {
       // вкладке этого же экрана — значит пересчитывать надо на каждой перерисовке.
       Screens.refreshWeaponStats(id, row);
 
-      // Требование по волне — в примечание, перед примечанием особого (у
-      // автомата и пулемёта того нет, но порядок должен быть определён). Замок на
-      // кнопке говорит только «нельзя», а причину, которую не купишь за деньги,
-      // нужно написать словами.
+      /*
+       * ЗАМОК — ОВЕРЛЕЕМ поверх всей строки (решение пользователя,
+       * 2026-08-03): иконка и условие разблокировки на размытом фоне, а не
+       * замок на кнопке и причина в примечании. Условие цепочки называет
+       * предыдущий ствол по имени; условие волны — её номер.
+       */
+      const chainLocked = !owned && !onSale;
+      let lockText = '';
       if (waveLock > 0) {
-        const note = row.note.textContent ?? '';
-        row.note.textContent = `Нужно дойти до волны ${waveLock}. ${note}`.trimEnd();
-        row.note.hidden = false;
+        lockText = `Дойди до волны ${waveLock}`;
+      } else if (chainLocked) {
+        const list = shopWeapons();
+        const prev = list[list.findIndex((entry) => entry.id === id) - 1];
+        lockText = prev ? `Сначала открой ${WEAPON_NAMES[prev.id]}` : 'Пока недоступно';
       }
+      row.lock.hidden = lockText === '';
+      row.lockText.textContent = lockText;
 
       row.root.classList.toggle('weapon--owned', owned);
-      // Тусклым — только заперто цепочкой: до такой строки очередь ещё не дошла.
-      // Запертая волной остаётся яркой — она следующая на покупку, и её условие
-      // нужно прочитать.
-      row.root.classList.toggle('weapon--locked', !owned && !onSale);
+      row.root.classList.toggle('weapon--locked', chainLocked);
 
       // Полученное — подписью «Получено» вместо кнопки, и одинаково для купленного
       // и для стартового пистолета: игроку важно, что ствол у него есть, а не то,
@@ -1031,11 +1057,8 @@ export class Screens {
       row.buy.hidden = owned;
       row.owned.hidden = !owned;
 
-      if (!owned) {
-        // Запертому — замок вместо цены: цена та же, но нажать нельзя, пока не
-        // куплен предыдущий или не пройдена его волна.
-        row.buy.textContent = onSale && waveLock === 0 ? `${price} $` : `🔒 ${price} $`;
-      }
+      // Цена без замка: недоступность теперь показывает оверлей.
+      if (!owned) row.buy.textContent = `${price} $`;
       row.buy.disabled = !canBuy;
 
       // Вторая цепочка — доступ доп. стрелков: та же логика состояний, что у
@@ -1080,16 +1103,37 @@ export class Screens {
     const chosenSpecial = this.meta.startSpecialWeapon;
     for (const [id, row] of this.boosterWeaponRows) {
       const picked = chosenFirearm === id || chosenSpecial === id;
+      // Замок доступности: стрелковое — по рекорду волны, особое — по первому
+      // подбору из бочки (MetaProgress.isStartWeaponAvailable). Причина
+      // пишется словами в примечание, как в магазине: замок на кнопке говорит
+      // только «нельзя».
+      const available = this.meta.isStartWeaponAvailable(id);
 
       // Без урона и темпа: на этом экране выбирают, ЧТО взять на забег, а не
       // сравнивают стволы по числам — для этого есть магазин.
       Screens.refreshWeaponStats(id, row, false);
 
-      // Замка здесь нет, в отличие от магазина: арендовать можно любой ствол,
-      // открытый он или нет.
-      row.root.classList.toggle('weapon--picked', picked);
+      // Замок — оверлеем поверх строки, как в магазине (см. refreshWeapons):
+      // стрелковое заперто цепочкой покупок — причина называет предыдущий
+      // ствол, особое — первым подбором из бочки.
+      let lockText = '';
+      if (!available) {
+        const list = shopWeapons();
+        const prev = list[list.findIndex((entry) => entry.id === id) - 1];
+        // Ствол назван по имени: содержимое строки под размытием не прочесть,
+        // и «его» было бы не к чему отнести.
+        lockText = isSpecialWeapon(id)
+          ? `Подбери ${WEAPON_NAMES[id]} в вылазке`
+          : `Сначала открой ${prev ? WEAPON_NAMES[prev.id] : 'предыдущий ствол'} в улучшениях`;
+      }
+      row.lock.hidden = lockText === '';
+      row.lockText.textContent = lockText;
 
-      row.buy.textContent = picked ? 'Убрать' : `${this.meta.startWeaponPrice(id)} $`;
+      row.root.classList.toggle('weapon--picked', picked);
+      row.root.classList.toggle('weapon--locked', !available);
+
+      const price = this.meta.startWeaponPrice(id);
+      row.buy.textContent = picked ? 'Убрать' : `${price} $`;
       // Выбранный ствол остаётся нажимаемым: та же кнопка снимает выбор.
       // Остальные строки его типа canBuyStartWeapon гасит — замены выбором
       // другой строки нет, и по серым кнопкам одного типа видно, что оружие

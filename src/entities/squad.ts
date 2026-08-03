@@ -80,8 +80,9 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
 
   /**
    * Арендованные в кит стволы этого забега: аренда обходит замки магазина,
-   * включая доступ стрелков (allyMayHold). Наполняет equipStartWeapon,
-   * чистит reset. Стволов максимум два — стрелковый и особый.
+   * включая доступ стрелков (allyMayHold), — оплаченный на забег ствол держат
+   * все. Наполняет equipStartWeapon, чистит reset. Стволов максимум два —
+   * стрелковый и особый.
    */
   private readonly rentedWeapons: WeaponId[] = [];
 
@@ -908,8 +909,18 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
     const free = CONFIG.formation.maxShooters - this.shooterCount;
     const added = Math.max(0, Math.min(count, free));
 
-    // Новичкам — общий ствол в пределах их доступа (см. setCommonWeapon).
-    const allyId = this.allyWeaponFor(this.commonWeapon);
+    /*
+     * Новичок выходит с ЛУЧШИМ из двух: общий ствол в пределах доступа
+     * (см. setCommonWeapon) или высшая ступень, открытая стрелкам сама по
+     * себе (решение пользователя, 2026-08-03). Купленный доступ «Доп.
+     * стрелкам» — гарантированный уровень новичка: бустерные бойцы не выходят
+     * с пистолетами, когда стрелкам уже открыт автомат, даже если общий ствол
+     * отряда пока ниже.
+     */
+    const chain = CONFIG.weapons.progression as WeaponId[];
+    const fromCommon = this.allyWeaponFor(this.commonWeapon);
+    const best = this.bestAllyFirearm();
+    const allyId = chain.indexOf(best) > chain.indexOf(fromCommon) ? best : fromCommon;
     for (let i = 0; i < added; i++) {
       this.allies.push({
         hp: CONFIG.player.allyHp,
@@ -971,9 +982,12 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
   }
 
   /**
-   * Вправе ли доп. стрелок держать этот ствол: открыт ему в магазине ЛИБО
-   * арендован в кит на этот забег — аренда обходит замки магазина целиком,
-   * включая доступ стрелков (см. CONFIG.shop.startBonuses).
+   * Вправе ли доп. стрелок держать этот ствол: открыт ему в магазине
+   * («Доп. стрелкам») ЛИБО арендован в кит на этот забег — аренда обходит
+   * замки магазина целиком, включая доступ стрелков (см.
+   * CONFIG.shop.startBonuses). Правило возвращено пользователем 2026-08-03
+   * после короткого отката: без него кит «автомат + стрелки» терял смысл —
+   * оплаченный ствол доставался одному герою.
    */
   private allyMayHold(id: WeaponId): boolean {
     return this.allyAccess.isAllyWeaponUnlocked(id) || this.rentedWeapons.includes(id);
@@ -989,6 +1003,18 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
 
     const chain = CONFIG.weapons.progression as WeaponId[];
     for (let i = chain.indexOf(id) - 1; i >= 0; i--) {
+      if (this.allyMayHold(chain[i]!)) return chain[i]!;
+    }
+    return chain[0]!;
+  }
+
+  /**
+   * Высшая стрелковая ступень, открытая доп. стрелкам сама по себе, без
+   * оглядки на общий ствол. Пол выдачи новичка в addShooters.
+   */
+  private bestAllyFirearm(): WeaponId {
+    const chain = CONFIG.weapons.progression as WeaponId[];
+    for (let i = chain.length - 1; i >= 0; i--) {
       if (this.allyMayHold(chain[i]!)) return chain[i]!;
     }
     return chain[0]!;

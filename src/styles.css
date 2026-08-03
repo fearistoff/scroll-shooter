@@ -726,6 +726,8 @@ body {
    не по содержимому: иконки разной длины (пистолет 16, пулемёт 34 единицы
    viewBox), и от плавающей колонки названия съезжали бы лесенкой. */
 .weapon {
+  /* relative — под оверлей замка (.weapon__lock, absolute поверх строки). */
+  position: relative;
   display: grid;
   grid-template-columns: 40px 1fr auto;
   grid-template-areas: 'icon name buy' 'icon stats buy' 'icon note buy';
@@ -831,8 +833,50 @@ body {
   opacity: 0.4;
 }
 
+/* Заблокированная строка не приглушается своей прозрачностью: поверх неё
+   лежит оверлей замка с размытием, и двойное гашение делало бы содержимое
+   нечитаемым даже сквозь блюр. Класс остаётся как признак для проверок. */
 .weapon--locked {
-  opacity: 0.45;
+  opacity: 1;
+}
+
+/* Оверлей замка поверх всей строки: иконка и условие разблокировки на
+   размытом фоне (задано пользователем: backdrop-filter blur 10px). Строка
+   под ним видна мутно — понятно, ЧТО заперто, и не читается как доступное.
+   Заодно перехватывает клики по накрытой кнопке. */
+.weapon__lock {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 8px;
+  /* Радиус строки, иначе углы размытия торчали бы из скругления. */
+  border-radius: 8px;
+  background: rgba(11, 11, 14, 0.35);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  text-align: center;
+}
+
+/* display: flex перебивает UA-стиль атрибута hidden — возвращаем его силу. */
+.weapon__lock[hidden] {
+  display: none;
+}
+
+.weapon__lock-icon {
+  font-size: 20px;
+  line-height: 1;
+}
+
+.weapon__lock-text {
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.3;
+  opacity: 0.9;
 }
 
 /* Строка «Доп. стрелкам» — четвёртый ряд сетки, только у стволов магазина

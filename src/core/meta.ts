@@ -119,8 +119,8 @@ const COMBAT_LABELS = {
   fireRate: { title: 'Скорострельность', effect: 'Выстрелов в минуту' },
   range: { title: 'Дальность', effect: 'Расстояние, которое проходит пуля' },
   damageTaken: { title: 'Защита', effect: 'Сколько урона поглощается' },
-  regenRate: { title: 'Восстановление HP', effect: 'Скорость лечения' },
-  regenDelay: { title: 'Задержка лечения', effect: 'Пауза перед началом лечения' },
+  regenRate: { title: 'Восст. HP', effect: 'Скорость лечения' },
+  regenDelay: { title: 'Пауза лечения', effect: 'Пауза перед началом лечения' },
 } as const satisfies Record<string, UpgradeLabel>;
 
 /** Человеческие названия и описание эффекта — для экрана прокачки. */
@@ -141,8 +141,8 @@ export const UPGRADE_LABELS: Record<UpgradeId, UpgradeLabel> = {
 
   // Единственное улучшение-счётчик: в строке стоит не множитель, а «3 → 4».
   squadSize: { title: 'Размер отряда', effect: 'Стрелков в отряде' },
-  exp: { title: 'Получаемый опыт', effect: 'Опыт за вылазку' },
-  money: { title: 'Объём дропа денег', effect: 'Размер находки с убитых зомби' },
+  exp: { title: 'Опыт', effect: 'Множитель за вылазку' },
+  money: { title: 'Деньги', effect: 'Множитель за вылазку' },
 };
 
 /**
@@ -403,6 +403,12 @@ interface SavedProgress {
   /** Особое оружие кита — второй слот. Поля нет в сохранениях до его появления. */
   startSpecial: WeaponId | null;
   /**
+   * Особое, подобранное из бочки хоть раз, — открывает его аренду в бустерах.
+   * Поля нет в старых сохранениях: такой игрок открывает аренду особого заново
+   * первым же подбором.
+   */
+  specialsPicked: WeaponId[];
+  /**
    * Рекорд достигнутой волны. Поля нет в сохранениях, сделанных до появления
    * замка по волне: такой игрок начинает рекорд с нуля и открывает средние
    * ступени магазина заново — уже купленное при этом остаётся купленным
@@ -456,6 +462,12 @@ export class MetaProgress {
   private startSpecialValue: WeaponId | null = null;
   /** Рекорд достигнутой волны за всё время — см. «Магазин оружия» ниже. */
   private bestWaveValue = 0;
+  /**
+   * Особое оружие, подобранное из бочки хоть раз за всё время. Открывает его
+   * аренду в бустерах (isStartWeaponAvailable): пока ствол ни разу не был в
+   * руках, предлагать его в кит нечего.
+   */
+  private readonly specialsPicked = new Set<WeaponId>();
 
   constructor() {
     this.load();
@@ -775,6 +787,22 @@ export class MetaProgress {
     return true;
   }
 
+  /**
+   * Отметка «особое подобрано из бочки»: зовёт BarrelField при фактической
+   * выдаче ствола бойцу (WeaponUnlocks.markSpecialPicked). Стрелковые сюда не
+   * попадают — их аренда открывается рекордом волны, а не подбором.
+   */
+  markSpecialPicked(id: WeaponId): void {
+    if (this.specialsPicked.has(id)) return;
+    this.specialsPicked.add(id);
+    this.save();
+  }
+
+  /** Подбирал ли игрок это особое хоть раз. */
+  wasSpecialPicked(id: WeaponId): boolean {
+    return this.specialsPicked.has(id);
+  }
+
   // --- Стартовый кит, он же «Бустеры» (за деньги, на один забег) -------------
 
   /*
@@ -884,11 +912,32 @@ export class MetaProgress {
   }
 
   /**
+   * Доступен ли ствол для аренды в кит (решение пользователя, 2026-08-03).
+   *
+   * СТРЕЛКОВОЕ — по цепочке ПОКУПОК магазина: арендуется всё купленное плюс
+   * СЛЕДУЮЩАЯ ступень. Ничего не куплено — доступен один пистолет-пулемёт,
+   * куплен ПП — открывается аренда автомата, куплен автомат — пулемёта.
+   * Аренда так остаётся витриной ровно одной ещё не купленной ступени.
+   * Рекорд волны здесь не спрашивается — он остаётся условием ПОКУПКИ
+   * следующей ступени (canBuyWeapon), а не её аренды.
+   *
+   * ОСОБОЕ — только после первого ПОДБОРА из бочки (markSpecialPicked): в
+   * магазине улучшений оно продаётся сразу, а в кит не предлагается, пока
+   * игрок ни разу не держал его в руках. «Следующая ступень» на особое не
+   * распространяется: после покупки всего стрелкового nextWeapon указывает
+   * на огнемёт, но его аренду открывает подбор, а не очередь.
+   */
+  isStartWeaponAvailable(id: WeaponId): boolean {
+    if (isSpecialWeapon(id)) return this.specialsPicked.has(id);
+    return this.isWeaponUnlocked(id) || this.nextWeapon()?.id === id;
+  }
+
+  /**
    * Можно ли взять ствол в кит.
    *
-   * ОТКРЫТОСТЬ В МАГАЗИНЕ НЕ ТРЕБУЕТСЯ: арендовать можно любой ствол таблицы,
-   * даже тот, до которого цепочка покупок ещё не дошла (причина — в
-   * CONFIG.shop.startBonuses).
+   * Открытость в магазине не требуется, но доступность — да
+   * (isStartWeaponAvailable): стрелковое по рекорду волны, особое по первому
+   * подбору.
    *
    * Слотов в ките ДВА — стрелковый и особый, по одному на тип. Занятый слот
    * своего типа блокирует покупку целиком: замены выбором другой строки нет,
@@ -905,6 +954,7 @@ export class MetaProgress {
   canBuyStartWeapon(id: WeaponId): boolean {
     const price = this.startWeaponPrice(id);
     if (price === null) return false;
+    if (!this.isStartWeaponAvailable(id)) return false;
     if (this.startSlot(id) !== null) return false;
     if (this.otherStartSlot(id) !== null && this.startShootersValue === 0) return false;
     return this.moneyValue >= price;
@@ -930,6 +980,35 @@ export class MetaProgress {
     else this.startWeaponValue = null;
     this.save();
     return true;
+  }
+
+  /** Стоимость содержимого кита по текущим ценам аренды. */
+  private startKitWorth(): number {
+    let worth = this.startShootersValue * this.startShooterPrice;
+    if (this.startWeaponValue !== null) {
+      worth += this.startWeaponPrice(this.startWeaponValue) ?? 0;
+    }
+    if (this.startSpecialValue !== null) {
+      worth += this.startWeaponPrice(this.startSpecialValue) ?? 0;
+    }
+    return worth;
+  }
+
+  /**
+   * Возвращает весь кит в кошелёк и чистит его.
+   *
+   * Выбор бустеров живёт, только пока открыт их экран (решение пользователя,
+   * 2026-08-03): уход с экрана назад — отмена всего набора с полным возвратом.
+   * Зовёт Game.openUpgrade — это единственный путь с бустеров, кроме боя.
+   */
+  refundStartKit(): void {
+    if (!this.hasStartKit) return;
+
+    this.moneyValue += this.startKitWorth();
+    this.startShootersValue = 0;
+    this.startWeaponValue = null;
+    this.startSpecialValue = null;
+    this.save();
   }
 
   /** Есть ли что выдать отряду на старте забега. */
@@ -1069,6 +1148,7 @@ export class MetaProgress {
     this.startShootersValue = 0;
     this.startWeaponValue = null;
     this.startSpecialValue = null;
+    this.specialsPicked.clear();
     this.bestWaveValue = 0;
     this.save();
     this.applyTo();
@@ -1124,6 +1204,16 @@ export class MetaProgress {
         this.bestWaveValue = Math.max(Math.floor(saved.bestWave), 0);
       }
 
+      if (Array.isArray(saved.specialsPicked)) {
+        for (const id of saved.specialsPicked) {
+          // Только настоящие особые: правка руками или сменившийся список не
+          // должны открывать аренду стрелкового мимо замка по волне.
+          if (typeof id === 'string' && isSpecialWeapon(id as WeaponId)) {
+            this.specialsPicked.add(id as WeaponId);
+          }
+        }
+      }
+
       if (typeof saved.levels === 'object' && saved.levels !== null) {
         for (const id of UPGRADE_IDS) {
           const value = saved.levels[id];
@@ -1137,6 +1227,21 @@ export class MetaProgress {
       // Кит читается ПОСЛЕДНИМ: его предел зависит от уровня размера отряда, а
       // тот прочитан строкой выше.
       this.loadStartKit(saved);
+
+      /*
+       * КИТ НЕ ПЕРЕЖИВАЕТ ПЕРЕЗАГРУЗКУ: выбор бустеров живёт, пока открыт их
+       * экран (см. refundStartKit). В сохранении он остаётся только затем,
+       * чтобы закрытая вкладка не съела уже снятые деньги: здесь содержимое
+       * возвращается в кошелёк по текущим ценам аренды. Нарочно БЕЗ save() —
+       * load не должен писать; повторная загрузка того же сохранения
+       * конвертирует кит так же, а первый же save() зафиксирует результат.
+       */
+      if (this.hasStartKit) {
+        this.moneyValue += this.startKitWorth();
+        this.startShootersValue = 0;
+        this.startWeaponValue = null;
+        this.startSpecialValue = null;
+      }
     } catch {
       // Невалидный JSON — просто стартуем с нуля.
       this.levels.clear();
@@ -1147,6 +1252,7 @@ export class MetaProgress {
       this.startShootersValue = 0;
       this.startWeaponValue = null;
       this.startSpecialValue = null;
+      this.specialsPicked.clear();
       this.bestWaveValue = 0;
     }
   }
@@ -1237,6 +1343,7 @@ export class MetaProgress {
       startShooters: this.startShootersValue,
       startWeapon: this.startWeaponValue,
       startSpecial: this.startSpecialValue,
+      specialsPicked: [...this.specialsPicked],
       bestWave: this.bestWaveValue,
     };
     for (const id of UPGRADE_IDS) {
@@ -1265,6 +1372,7 @@ export class MetaProgress {
       weapon: WeaponId | null;
       special: WeaponId | null;
     };
+    specialsPicked: WeaponId[];
     levels: Record<string, number>;
     multipliers: Record<string, number>;
     nextCosts: Record<string, number | null>;
@@ -1296,6 +1404,7 @@ export class MetaProgress {
         weapon: this.startWeaponValue,
         special: this.startSpecialValue,
       },
+      specialsPicked: [...this.specialsPicked],
       levels,
       multipliers,
       nextCosts,

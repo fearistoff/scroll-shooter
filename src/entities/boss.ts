@@ -527,9 +527,9 @@ export class Boss {
    * него: урон засчитывается один раз на пересечении, а снаряд летит дальше и
    * достаёт тех, кто стоит за боссом.
    *
-   * По той же причине хитбокс шире модели на общий с толпой множитель
-   * (CONFIG.enemies.hitboxScale): своего числа у босса нет намеренно — иначе
-   * правка хитбокса зомби тихо обходила бы гиганта стороной. Взрыва мины это,
+   * Хитбокс — СВОЙ множитель CONFIG.boss.hitboxScale (1 — ровно по модели),
+   * а не общий с толпой enemies.hitboxScale: гигант в припуске «зацепить
+   * краем» не нуждается, обоснование у числа в конфиге. Взрыва мины это,
    * как и у зомби, не касается: damageInRadius меряет от центра.
    */
   readonly tryHit = (
@@ -543,7 +543,7 @@ export class Boss {
   ): boolean => {
     if (!this.isActive) return false;
 
-    const reach = CONFIG.boss.capsule.radius * CONFIG.enemies.hitboxScale + bulletRadius;
+    const reach = CONFIG.boss.capsule.radius * CONFIG.boss.hitboxScale + bulletRadius;
     const touched = pierce
       ? segmentPassesCircle(0, this.posZ, reach, xFrom, zFrom, xTo, zTo)
       : segmentHitsCircle(0, this.posZ, reach, xFrom, zFrom, xTo, zTo);

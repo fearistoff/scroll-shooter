@@ -40,6 +40,12 @@ export type BarrelContent = 'weapon' | 'shooters' | 'special' | 'mine';
 export interface WeaponUnlocks {
   /** true — этот ствол куплен и может выпадать. Пистолет открыт всегда. */
   isWeaponUnlocked(id: WeaponId): boolean;
+
+  /**
+   * Отметка «особое подобрано из бочки» — открывает его аренду в бустерах.
+   * Зовётся при фактической выдаче ствола бойцу, см. applyContent.
+   */
+  markSpecialPicked(id: WeaponId): void;
 }
 
 /** Отряд, который может получить содержимое бочки. */
@@ -775,9 +781,13 @@ export class BarrelField {
       case 'shooters':
         this.squad.addShooters(Math.max(1, Math.round(amount)));
         break;
-      case 'special':
-        this.squad.giveSpecialWeapon(special ?? randomSpecialWeapon());
+      case 'special': {
+        const id = special ?? randomSpecialWeapon();
+        // Отметка только по фактической выдаче: ствол, который никому не
+        // достался (null), игрок в руках не держал — аренду он не открывает.
+        if (this.squad.giveSpecialWeapon(id) !== null) this.shop.markSpecialPicked(id);
         break;
+      }
       case 'mine':
         this.squad.deployMines(Math.max(1, Math.round(amount)));
         break;

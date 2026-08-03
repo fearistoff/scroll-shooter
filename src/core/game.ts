@@ -303,6 +303,10 @@ export class Game {
   }
 
   private openUpgrade(): void {
+    // Уход с бустеров назад отменяет кит целиком с возвратом денег: выбор
+    // живёт, только пока открыт их экран. На остальных путях сюда кит пуст,
+    // и вызов ничего не делает.
+    this.meta.refundStartKit();
     this.phase = 'upgrade';
     this.screens.showUpgrade();
   }
