@@ -489,19 +489,34 @@
         cursor: default;
       }
 
-      /* Версия сборки. Абсолютом, а не последней строкой потока: экран
-         центрирован по вертикали, и обычный элемент встал бы вплотную к кнопкам
-         посреди экрана, а не внизу. Клики не перехватывает — под ней край экрана. */
+      /* Версия сборки, она же вход в историю версий.
+
+         Прижата к низу автоматическим верхним отступом, а не абсолютом, как было
+         раньше. Абсолют держался за нижний край ВИДИМОЙ части экрана, а не за
+         конец содержимого: стоило списку улучшений перестать помещаться в кадр —
+         и кнопка сброса, уехав вниз по потоку, оказывалась ровно под версией.
+         Подпись это переживала (нажатий она не ловила), кнопка — нет: версия
+         перехватывала бы нажатие на сброс. ЗАМЕРЕНО при 1280×720: перекрытие
+         было 28 px из 34, наружу торчала полоска в 6 px.
+
+         Плата за это — содержимое экрана прижато к верху, а не центрировано:
+         свободную высоту забирает как раз тот самый отступ. На телефоне её
+         полсотни пикселей, на переполненном экране нет вовсе.
+
+         Отступы вокруг текста 10 px по вертикали: сама строка 11-м кеглем даёт
+         около 14 px, пальцем в неё иначе не попасть. */
       .screen__version {
-        position: absolute;
-        left: 0;
-        right: 0;
-        bottom: calc(6px + var(--safe-bottom));
-        text-align: center;
+        margin-top: auto;
+        align-self: center;
+        padding: 10px 16px;
+        border: 0;
+        background: none;
+        color: inherit;
+        font: inherit;
         font-size: 11px;
         opacity: 0.35;
         font-variant-numeric: tabular-nums;
-        pointer-events: none;
+        cursor: pointer;
       }
 
       /* Таббар прокачки: кого качаем — героя, доп. стрелков или общее.
@@ -752,6 +767,102 @@
         opacity: 0.45;
       }
 
+      /* --- История версий --- */
+
+      /* Единственный экран, где содержимое заведомо длиннее кадра, поэтому
+         прокручивается не он сам, а список внутри: заголовок и «Назад» должны
+         остаться на месте. Прижат к верху — при justify-content: center верх
+         длинного списка уезжает за край и до него не домотать. */
+      .screen--changelog {
+        justify-content: flex-start;
+        overflow: hidden;
+        /* Непрозрачный, в отличие от остальных экранов: под ним не стоп-кадр
+           забега, а прокачка, и её строки, просвечивая сквозь 14% общего фона,
+           читались вперемешку со списком версий. */
+        background: #0a0b0f;
+      }
+
+      .changelog {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        width: 100%;
+        max-width: 340px;
+        /* min-height обязателен: без него flex-элемент не сжимается меньше
+           содержимого, список вылезает за экран и прокрутки не возникает. */
+        min-height: 0;
+        flex: 1 1 auto;
+        overflow-y: auto;
+        text-align: left;
+      }
+
+      .changelog__entry {
+        padding: 10px 12px;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.07);
+      }
+
+      /* Версия и дата в одну строку по краям: номер слева читается столбиком
+         при прокрутке, дата не мешает ему и не перебивает по яркости. */
+      .changelog__head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 6px;
+      }
+
+      .changelog__version {
+        font-size: 15px;
+        font-weight: 800;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .changelog__date {
+        font-size: 11px;
+        opacity: 0.45;
+      }
+
+      /* Метка у сборки, в которую играют сейчас: без неё в списке из двух
+         десятков номеров непонятно, где ты находишься. */
+      .changelog__current {
+        margin-left: 6px;
+        padding: 1px 5px;
+        border-radius: 4px;
+        background: rgba(111, 230, 245, 0.18);
+        color: #6fe6f5;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.3px;
+        vertical-align: 1px;
+      }
+
+      /* Маркеры свои: у списка по умолчанию отступ около 40 px, а колонка узкая
+         и каждый пиксель ширины уходит в текст. */
+      .changelog__changes {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        font-size: 13px;
+        opacity: 0.8;
+      }
+
+      .changelog__changes li {
+        position: relative;
+        padding-left: 12px;
+      }
+
+      .changelog__changes li + li {
+        margin-top: 4px;
+      }
+
+      .changelog__changes li::before {
+        content: '·';
+        position: absolute;
+        left: 3px;
+        opacity: 0.6;
+      }
+
       /* Полоски HP над стрелками и зомби: видны 3 секунды после урона.
          Дорожка нужна, чтобы полный запас отличался от половины. */
       .world-bar {
@@ -841,8 +952,23 @@
           type="button"
           hidden
         ></button>
-        <!-- Текст ставит screens.ts из __APP_VERSION__ (package.json) -->
-        <div id="upgrade-version" class="screen__version"></div>
+        <!-- Текст ставит screens.ts из __APP_VERSION__ (package.json). Кнопка,
+             а не подпись: по нажатию открывается история версий. -->
+        <button
+          id="upgrade-version"
+          class="screen__version"
+          type="button"
+          aria-label="История версий"
+        ></button>
+      </div>
+
+      <!-- История версий. Открывается только с экрана прокачки, поэтому в
+           разметке стоит сразу за ним и перекрывает его целиком. Список
+           собирает screens.ts по CHANGELOG. -->
+      <div id="screen-changelog" class="screen screen--changelog">
+        <div class="screen__title">Что нового</div>
+        <div id="changelog-list" class="changelog"></div>
+        <button id="changelog-close" class="screen__button" type="button">Назад</button>
       </div>
 
       <!-- Пауза. Последней в разметке намеренно: экраны перекрывают друг друга

@@ -15,6 +15,7 @@ import {
   WEAPON_NAMES,
   type WeaponId,
 } from '../entities/weapons';
+import { CHANGELOG, formatChangelogDate } from './changelog';
 import { formatRunTime } from './time';
 
 /** Что экраны умеют сообщать наружу. */
@@ -108,6 +109,8 @@ export class Screens {
   private readonly upgradeElement: HTMLElement | null;
   private readonly pauseElement: HTMLElement | null;
   private readonly pauseInfo: HTMLElement | null;
+  private readonly changelogElement: HTMLElement | null;
+  private readonly changelogList: HTMLElement | null;
   private readonly resultTitle: HTMLElement | null;
   private readonly resultTime: HTMLElement | null;
   private readonly resultExpCaption: HTMLElement | null;
@@ -139,6 +142,8 @@ export class Screens {
     this.upgradeElement = document.querySelector<HTMLElement>('#screen-upgrade');
     this.pauseElement = document.querySelector<HTMLElement>('#screen-pause');
     this.pauseInfo = document.querySelector<HTMLElement>('#pause-info');
+    this.changelogElement = document.querySelector<HTMLElement>('#screen-changelog');
+    this.changelogList = document.querySelector<HTMLElement>('#changelog-list');
     this.resultTitle = document.querySelector<HTMLElement>('#result-title');
     this.resultTime = document.querySelector<HTMLElement>('#result-time');
     this.resultExpCaption = document.querySelector<HTMLElement>('#result-exp-caption');
@@ -177,11 +182,31 @@ export class Screens {
       this.refreshUpgrades();
     });
 
-    // Версия ставится один раз: в течение сессии она не меняется.
+    // Версия ставится один раз: в течение сессии она не меняется. Нажатие на
+    // неё открывает историю версий — отдельной кнопки для неё на экране нет:
+    // номер сборки и есть та подпись, у которой историю ищут.
     const version = document.querySelector<HTMLElement>('#upgrade-version');
-    if (version !== null) version.textContent = `v${__APP_VERSION__}`;
+    if (version !== null) {
+      version.textContent = `v${__APP_VERSION__}`;
+      version.addEventListener('click', () => this.showChangelog());
+    }
+
+    document
+      .querySelector<HTMLButtonElement>('#changelog-close')
+      ?.addEventListener('click', () => this.hideChangelog());
+
+    // Esc закрывает историю. Пауза тот же Esc ловит своим слушателем в Game, но
+    // открыта история только с экрана прокачки, где пауза и так запрещена, —
+    // разойтись эти два обработчика не могут.
+    window.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape') return;
+      if (this.changelogElement?.classList.contains('visible') !== true) return;
+      event.preventDefault();
+      this.hideChangelog();
+    });
 
     this.buildRows();
+    this.buildChangelog();
   }
 
   /**
@@ -246,11 +271,33 @@ export class Screens {
     this.toggle(this.pauseElement, false);
   }
 
+  /**
+   * История версий поверх прокачки. Экран под ней не гасится: возвращаются с
+   * истории всегда туда, откуда пришли, и лишнее переключение прокачки заново
+   * дёргало бы её вкладки.
+   */
+  showChangelog(): void {
+    this.toggle(this.changelogElement, true);
+
+    // Список длинный, а элемент один на все открытия: без сброса прокрутки
+    // второй заход начинался бы с того места, где закончился первый, — то есть
+    // не с последней версии, ради которой сюда и заходят. Строго ПОСЛЕ показа:
+    // у скрытого display: none элемента раскладки нет, и присвоение scrollTop
+    // молча ничего не делает — ЗАМЕРЕНО, при обратном порядке прокрутка
+    // оставалась на 1689 px.
+    if (this.changelogList !== null) this.changelogList.scrollTop = 0;
+  }
+
+  hideChangelog(): void {
+    this.toggle(this.changelogElement, false);
+  }
+
   /** Скрывает всё: идёт забег. */
   hide(): void {
     this.toggle(this.resultElement, false);
     this.toggle(this.upgradeElement, false);
     this.toggle(this.pauseElement, false);
+    this.toggle(this.changelogElement, false);
   }
 
   /**
@@ -289,6 +336,53 @@ export class Screens {
     }
 
     this.selectTrack(this.activeTrack);
+  }
+
+  /**
+   * Собирает список версий один раз при запуске.
+   *
+   * Данные постоянные, перерисовывать нечего, а собрать их лениво при первом
+   * открытии значило бы поймать сборку двух десятков записей ровно в момент
+   * нажатия. Двадцать записей в скрытом поддереве ничего не стоят.
+   */
+  private buildChangelog(): void {
+    if (this.changelogList === null) return;
+
+    for (const entry of CHANGELOG) {
+      const root = document.createElement('div');
+      root.className = 'changelog__entry';
+
+      const head = document.createElement('div');
+      head.className = 'changelog__head';
+
+      const version = document.createElement('span');
+      version.className = 'changelog__version';
+      version.textContent = `v${entry.version}`;
+
+      if (entry.version === __APP_VERSION__) {
+        const badge = document.createElement('span');
+        badge.className = 'changelog__current';
+        badge.textContent = 'сейчас';
+        version.appendChild(badge);
+      }
+
+      const date = document.createElement('span');
+      date.className = 'changelog__date';
+      date.textContent = formatChangelogDate(entry.date);
+
+      head.append(version, date);
+
+      const changes = document.createElement('ul');
+      changes.className = 'changelog__changes';
+      for (const text of entry.changes) {
+        const item = document.createElement('li');
+        item.textContent = text;
+        changes.appendChild(item);
+      }
+
+      root.append(head, changes);
+      this.changelogList.appendChild(root);
+    }
   }
 
   /** Одна строка улучшения. Возвращает готовый элемент, регистрируя его в rows. */
