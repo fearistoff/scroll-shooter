@@ -1,0 +1,987 @@
+/*
+ * Стили игры целиком: страница, холст, HUD, подписи и полоски мирового
+ * оверлея, экраны результата, прокачки, бустеров и «Что нового».
+ *
+ * Подключены из index.html обычным <link> — почему именно так, написано там же.
+ * Разметка, к которой они относятся, живёт в index.html, а классы мирового
+ * оверлея (.world-label, .world-bar) ставит src/ui/labels.ts: элементы под них
+ * создаются в рантайме и в разметке их нет.
+ *
+ * Порядок правил смысловой и повторяет порядок разметки: сначала страница и
+ * холст, потом HUD, потом экраны. Числа тут ЗАМЕРЕНЫ ровно так же, как в
+ * src/config.ts, — рядом со значением написано, откуда оно взялось.
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* Безопасные отступы устройства: вырез, статус-бар, домашняя полоска.
+     env() отдаёт значения только при viewport-fit=cover — он в meta viewport
+     в index.html. Через переменные, а не напрямую: так значения можно подставить
+     руками и проверить раскладку на десктопе, где вырезов нет. */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  /* Двойной тап не масштабирует страницу: manipulation оставляет прокрутку
+     экранов результата и прокачки, но снимает double-tap zoom (и заодно
+     300 мс задержки клика). Именно в универсальном селекторе, а не на body:
+     touch-action НЕ наследуется, с правилом на body у .screen и кнопок
+     оставалось auto — ЗАМЕРЕНО через getComputedStyle. Холст ниже
+     перекрывает это на none, у него специфичность выше. */
+  touch-action: manipulation;
+}
+
+html,
+body {
+  width: 100%;
+  /* Обычный запуск в браузере: dvh — динамическая высота, она сжимается и
+     растёт вместе с адресной строкой, поэтому холст не уезжает под неё. */
+  height: 100dvh;
+  overflow: hidden;
+  background: #0b0b0e;
+  /* Портретный холст центрируется, по бокам — тёмные поля */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Никаких резиновых прокруток и выделения текста при драге отряда */
+  overscroll-behavior: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  font-family: system-ui, -apple-system, sans-serif;
+}
+
+/*
+ * Установленное приложение (PWA): vh вместо dvh.
+ *
+ * Адресной строки здесь нет, менять высоту нечему, поэтому динамическая
+ * единица только вредит: на iOS в standalone dvh на момент запуска отдаёт
+ * заниженное значение и само не обновляется. vh берёт полную высоту сразу.
+ *
+ * minimal-ui в список не включён намеренно: там браузерная обвязка есть, и
+ * dvh для него подходит больше.
+ */
+@media (display-mode: standalone), (display-mode: fullscreen) {
+  html,
+  body {
+    height: 100vh;
+  }
+}
+
+/* Размер задаётся из viewport.ts (letterbox под соотношение телефона).
+   Контейнер нужен, чтобы HUD ложился ровно на холст, а не на всё окно. */
+#stage {
+  position: relative;
+  line-height: 0;
+}
+
+#game-canvas {
+  display: block;
+  background: #000;
+  /* Драг по холсту не должен скроллить страницу на тач-устройствах */
+  touch-action: none;
+}
+
+/* Отладочный HUD слоя 3. В слое 9 его заменит настоящий интерфейс. */
+#hud {
+  position: absolute;
+  inset: 0;
+  /* Не перехватывает касания — управление отрядом важнее */
+  pointer-events: none;
+  /* Элементы обычного потока (плашка EXP) не должны попадать под вырез и
+     статус-бар. Абсолютно позиционированные дети padding не наследуют,
+     поэтому отступы у каждого из них прописаны отдельно ниже. */
+  padding: calc(14px + var(--safe-top)) calc(16px + var(--safe-right))
+    calc(14px + var(--safe-bottom)) calc(16px + var(--safe-left));
+  line-height: 1.3;
+  color: #fff;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.9);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Счётчики валют слева вверху — как в референсе (3.png, 4.png).
+   Колонкой, деньги под опытом и того же размера: обе плашки — цель полёта
+   подобранного (Hud.expAnchor / moneyAnchor), и разный кегль читался бы
+   как разная важность валюты, хотя набираются они одинаково по ходу забега.
+   align-items обязателен: без него плашки растянулись бы на всю ширину
+   HUD, и центр, в который летят кристаллы, уехал бы на середину экрана.
+   ЗАМЕРЕНО на узком холсте (446 px при пороге viewport.narrowWidthPx 460)
+   с предельными числами «EXP 9999» и «$ 9999»: плашки занимают x 16…122 и
+   x 16…99, колонка целиком — y 14…74. Верхний блок волны в режиме narrow
+   начинается с y 46 (4 px под нижней плашкой EXP) и с x 128 (29 px правее
+   плашки денег), секундомер справа с x 347. */
+#hud-counters {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+#hud-exp,
+#hud-money {
+  padding: 3px 10px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.45);
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+}
+
+#hud-exp {
+  color: #6fe6f5;
+}
+
+/* Цвет золотой, как у монет на дороге: по нему валюта и опознаётся. */
+#hud-money {
+  color: #ffcc33;
+}
+
+/* Полоса волны по центру вверху, череп над ней = в конце будет босс */
+#hud-wave {
+  position: absolute;
+  top: calc(10px + var(--safe-top));
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+#hud-wave-skull {
+  font-size: 20px;
+  line-height: 1;
+}
+
+#hud-wave-bar {
+  position: relative;
+  width: 190px;
+  height: 22px;
+  border: 2px solid rgba(0, 0, 0, 0.55);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+
+#hud-wave-fill {
+  position: absolute;
+  inset: 0;
+  transform-origin: left center;
+  background: linear-gradient(180deg, #e04a3a, #a81f14);
+}
+
+#hud-wave-count {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  font-weight: 800;
+}
+
+/* Полоса босса шире полосы волны и красная (ТЗ раздел 10) */
+#hud-wave.boss #hud-wave-bar {
+  width: 230px;
+  height: 26px;
+}
+
+#hud-wave.boss #hud-wave-count {
+  color: #ff3a2a;
+  font-size: 18px;
+}
+
+/* Полоса и множитель в одной строке. Множитель НЕ внутри полосы: у той
+   overflow: hidden для обрезки заливки, и всё за её краем пропадало. */
+#hud-wave-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+/* Множитель «×N» — сколько слоёв полосы осталось.
+   Позиционируется абсолютно, чтобы не сдвигать полосу с центра экрана. */
+#hud-wave-layers {
+  position: absolute;
+  top: 50%;
+  left: calc(100% + 8px);
+  transform: translateY(-50%);
+  font-size: 16px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+/* Узкий холст (класс ставит viewport.ts): в верхнюю строку не влезают
+   одновременно EXP, полоса волны и секундомер, поэтому полоса вместе с
+   номером волны опускается под них. */
+#stage.narrow #hud-wave {
+  top: calc(46px + var(--safe-top));
+}
+
+/* Номер волны под полосой: босс не конец забега, после него волна следующая */
+#hud-wave-number {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 1.5px;
+  opacity: 0.8;
+}
+
+/* Секундомер забега — правый верхний угол, симметрично EXP слева.
+   Он же кнопка паузы: нажимается ВЕСЬ контейнер, а не значок в нём —
+   отдельная кнопка рядом с часами была бы вдвое мельче и промахивалась бы
+   под большим пальцем. Поэтому это button, а не div: клавиатура и
+   скринридер получают его бесплатно.
+   pointer-events: auto обязателен — родительский #hud касания не ловит. */
+#hud-timer {
+  position: absolute;
+  top: calc(14px + var(--safe-top));
+  right: calc(16px + var(--safe-right));
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  /* font: inherit до остальных свойств шрифта: у кнопки свой системный
+     шрифт, и без сброса ни кегль, ни начертание ниже не помогли бы. */
+  font: inherit;
+  padding: 3px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.45);
+  color: inherit;
+  font-size: 17px;
+  font-weight: 800;
+  line-height: 1.3;
+  letter-spacing: 0.5px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+/* Мишень под палец больше самой плашки: сама она 83×28, а рекомендованный
+   минимум касания — 44. Расширяем невидимой областью, а не отступами:
+   отступы сделали бы плашку выше соседней EXP слева и разъехалась бы
+   верхняя строка. ЗАМЕРЕНО: мишень становится 95×46. */
+#hud-timer::after {
+  content: '';
+  position: absolute;
+  inset: -9px -6px -9px -6px;
+}
+
+/* Значок паузы: две полосы, нарисованные CSS. Эмодзи ⏸ не подошло —
+   системы рисуют его по-разному, а на iOS оно приходит цветным и не
+   совпадает по кеглю с цифрами часов. */
+#hud-timer-pause {
+  position: relative;
+  width: 13px;
+  height: 15px;
+  opacity: 0.85;
+}
+
+#hud-timer-pause::before,
+#hud-timer-pause::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  border-radius: 1px;
+  background: currentColor;
+}
+
+#hud-timer-pause::before {
+  left: 0;
+}
+
+#hud-timer-pause::after {
+  right: 0;
+}
+
+/* Строка счётчиков внизу: вверху место заняли EXP, полоса волны и
+   секундомер, а под отрядом остаётся свободная полоса дороги.
+   Числа HP здесь больше нет — запас героя показывает только полоска над
+   его головой (ui.hpBar). */
+#hud-bottom {
+  position: absolute;
+  left: calc(16px + var(--safe-left));
+  right: calc(16px + var(--safe-right));
+  /* Над домашней полоской: иначе строка счётчиков лезет ей под низ. */
+  bottom: calc(14px + var(--safe-bottom));
+}
+
+#hud-debug {
+  margin-top: 4px;
+  font-size: 12px;
+  opacity: 0.65;
+}
+
+/* Подписи в мировых координатах (labels.ts): число прочности бочки,
+   значения секций ворот, HP крупных зомби. Позиционируются transform'ом
+   от левого верхнего угла холста. */
+#hud-labels {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.world-label {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  white-space: nowrap;
+  will-change: transform;
+}
+
+.world-label__icon {
+  font-size: 17px;
+  line-height: 1;
+  color: #fff;
+}
+
+/* Нарисованные иконки стволов (barrels.ts). Высота задана здесь, ширину
+   каждая иконка берёт из своего viewBox — короткий мини-автомат и длинный
+   пулемёт отличаются ещё и габаритом. Тень вместо обводки: она ложится по
+   контуру всей группы, а обводка у каждой фигуры отдельно расчертила бы
+   силуэт швами. */
+.world-label__icon svg {
+  display: block;
+  height: 16px;
+  width: auto;
+  filter: drop-shadow(0 0 1.5px rgba(0, 0, 0, 0.85))
+    drop-shadow(0 1px 1px rgba(0, 0, 0, 0.6));
+}
+
+.world-label__value {
+  font-size: 19px;
+  font-weight: 800;
+  line-height: 1;
+  color: #fff;
+  /* Обводка вместо тени: число читается и на светлой бочке, и на дороге */
+  -webkit-text-stroke: 3px rgba(0, 0, 0, 0.55);
+  paint-order: stroke fill;
+}
+
+.world-label--cracked50 .world-label__value {
+  color: #ffd98a;
+}
+
+.world-label--cracked25 .world-label__value {
+  color: #ff9c7a;
+}
+
+/* Ворота: знак значения важнее цвета секции — плюс бонус, минус штраф */
+.world-label--gate-plus .world-label__value {
+  color: #8ed0ff;
+  font-size: 23px;
+}
+
+.world-label--gate-minus .world-label__value {
+  color: #ff8a7a;
+  font-size: 23px;
+}
+
+/* --- Экраны результата и прокачки (ТЗ раздел 11) --- */
+.screen {
+  position: absolute;
+  inset: 0;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: calc(20px + var(--safe-top)) calc(18px + var(--safe-right))
+    calc(20px + var(--safe-bottom)) calc(18px + var(--safe-left));
+  /* Обязательно: #stage задаёт line-height 0 (убирает зазор под холстом),
+     и без переопределения строки экрана получают нулевую высоту и налезают
+     друг на друга. */
+  line-height: 1.3;
+  background: rgba(8, 9, 12, 0.86);
+  /* Экраны перехватывают ввод: под ними игра не должна ловить драг */
+  pointer-events: auto;
+  overflow-y: auto;
+}
+
+.screen.visible {
+  display: flex;
+}
+
+/* Пауза затемняет слабее результата и прокачки: за ней стоп-кадр забега, и
+   игрок должен видеть, в каком положении оставил отряд. */
+.screen--pause {
+  background: rgba(8, 9, 12, 0.7);
+}
+
+.screen__title {
+  font-size: 30px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+}
+
+.screen__row {
+  font-size: 16px;
+  opacity: 0.85;
+}
+
+.screen__exp {
+  font-size: 26px;
+  font-weight: 800;
+  color: #6fe6f5;
+}
+
+/* Деньги золотые везде, где показаны: в HUD, на результате и в магазине.
+   Одним цветом с монетами на дороге — по нему валюта и опознаётся. */
+.screen__exp--money {
+  color: #ffcc33;
+}
+
+/* Пасхалка dev-режима: нажатие на банк на экране прокачки добавляет валюту
+   (CONFIG.ui.devCheatAmount). Класс ставит Screens, и только при
+   import.meta.env.DEV, поэтому в собранной игре правило не применяется ни к
+   чему. Пунктир по краю нужен, чтобы отладочная кликабельность была видна и
+   не принималась за обычный интерфейс. */
+.screen__exp.dev-cheat {
+  cursor: pointer;
+  outline: 1px dashed rgba(255, 255, 255, 0.3);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+/* Подпись и сумма — одна пара: свой gap вместо общего 14px у .screen, иначе
+   подпись стоит от своей суммы так же далеко, как от чужой. */
+.screen__gain {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+/* Два банка в одну строку. gap заметно больше обычного: числа набраны
+   одним кеглем и без разрыва читались бы как одно длинное. */
+.screen__banks {
+  display: flex;
+  align-items: baseline;
+  gap: 18px;
+}
+
+.screen__button {
+  min-width: 190px;
+  padding: 12px 18px;
+  border: 0;
+  border-radius: 8px;
+  background: #3f6fd8;
+  color: #fff;
+  font: inherit;
+  font-size: 17px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.screen__button--ghost {
+  background: rgba(255, 255, 255, 0.12);
+  font-size: 14px;
+  min-width: 0;
+  padding: 8px 14px;
+}
+
+.screen__button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* Версия сборки, она же вход в историю версий.
+
+   Прижата к низу автоматическим верхним отступом, а не абсолютом, как было
+   раньше. Абсолют держался за нижний край ВИДИМОЙ части экрана, а не за
+   конец содержимого: стоило списку улучшений перестать помещаться в кадр —
+   и кнопка сброса, уехав вниз по потоку, оказывалась ровно под версией.
+   Подпись это переживала (нажатий она не ловила), кнопка — нет: версия
+   перехватывала бы нажатие на сброс. ЗАМЕРЕНО при 1280×720: перекрытие
+   было 28 px из 34, наружу торчала полоска в 6 px.
+
+   Плата за это — содержимое экрана прижато к верху, а не центрировано:
+   свободную высоту забирает как раз тот самый отступ. На телефоне её
+   полсотни пикселей, на переполненном экране нет вовсе.
+
+   Отступы вокруг текста 10 px по вертикали: сама строка 11-м кеглем даёт
+   около 14 px, пальцем в неё иначе не попасть. */
+.screen__version {
+  margin-top: auto;
+  align-self: center;
+  padding: 10px 16px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  opacity: 0.35;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+/* Таббар прокачки: кого качаем — героя, доп. стрелков или общее.
+   Ширина та же, что у списка улучшений: вкладки стоят ровно над ним. */
+#upgrade-tabs {
+  display: flex;
+  gap: 6px;
+  width: 100%;
+  max-width: 340px;
+}
+
+.upgrade-tab {
+  /* Равные доли, а не по содержимому: иначе «Общее» было бы вдвое уже
+     «Скорострельности» и таббар выглядел бы съехавшим. */
+  flex: 1;
+  position: relative;
+  padding: 9px 6px;
+  border: 0;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.07);
+  color: rgba(255, 255, 255, 0.6);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.upgrade-tab.active {
+  background: #3f6fd8;
+  color: #fff;
+}
+
+/* Точка = в этой вкладке есть что купить прямо сейчас. Без неё доступная
+   покупка в закрытой вкладке ничем себя не выдаёт. */
+.upgrade-tab--ready::after {
+  content: '';
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #6fe6f5;
+}
+
+/* Список улучшений.
+   Сетка в ОДНУ ячейку: все вкладки лежат друг на друге, поэтому высота
+   списка равна самой длинной из них и не меняется при переключении. С
+   display: none у скрытых вкладок экран прыгал по вертикали — во «Общем»
+   одна строка против четырёх, и центрированное содержимое уезжало. */
+#upgrade-list {
+  display: grid;
+  width: 100%;
+  max-width: 340px;
+}
+
+.upgrade-group {
+  grid-area: 1 / 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  /* Не display: none — скрытая вкладка должна остаться в потоке, чтобы
+     держать высоту. visibility снимает и клики, и обход табом. */
+  visibility: hidden;
+}
+
+.upgrade-group.visible {
+  visibility: visible;
+}
+
+/* Три строки текста слева, кнопки справа во всю высоту строки: имя с
+   уровнем, описание эффекта и то, что даст следующая покупка. */
+.upgrade {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  grid-template-areas: 'name buy batch' 'effect buy batch' 'next buy batch';
+  align-items: center;
+  gap: 2px 6px;
+  padding: 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+/* 14px, а не 15: в имени теперь стоит и уровень, а колонка узкая — самое
+   длинное имя с двузначным уровнем («Восстановление HP (ур. 15)») при 15px
+   не влезало в строку и переносилось. ЗАМЕРЕНО canvas-обмером всех имён
+   при фактическом шрифте: 190 px против 200 px колонки. */
+.upgrade__name {
+  grid-area: name;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.upgrade__effect {
+  grid-area: effect;
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+
+/* Строка «Сл. ур.» тусклее описания намеренно: это справка о ещё не
+   купленном, и в глаза первым должно бросаться название, а не цифры. */
+.upgrade__next {
+  grid-area: next;
+  font-size: 12px;
+  opacity: 0.38;
+  font-variant-numeric: tabular-nums;
+}
+
+/* min-width, а не фиксированная ширина: «5000 EXP» кнопку расширит само.
+   68 и 40 вместо прежних 74 и 42 — уступка колонке имени, которой после
+   добавления уровня стало тесно. */
+.upgrade__buy {
+  grid-area: buy;
+  min-width: 68px;
+  padding: 9px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: #2f7d4f;
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+
+.upgrade__batch {
+  grid-area: batch;
+  min-width: 40px;
+  padding: 9px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: rgba(47, 125, 79, 0.45);
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  /* Число на кнопке меняется каждую покупку — моноширинные цифры держат ширину. */
+  font-variant-numeric: tabular-nums;
+}
+
+.upgrade__buy:disabled,
+.upgrade__batch:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+/* Достигнутый максимум: подпись на месте кнопки цены, у правого края строки
+   (кнопка пачки при этом скрыта, и её колонка сжимается в ноль). Устроено
+   как «Получено» у полученного оружия — .weapon__owned: два одинаковых по
+   смыслу состояния должны и выглядеть одинаково. */
+.upgrade__maxed {
+  grid-area: buy;
+  min-width: 82px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 700;
+  opacity: 0.4;
+}
+
+/* --- Магазин оружия (вкладка «Оружие») --- */
+
+/* Слева иконка ствола во всю высоту строки, справа кнопка цены, между
+   ними название и характеристики. Колонка иконки фиксированной ширины, а
+   не по содержимому: иконки разной длины (пистолет 16, пулемёт 34 единицы
+   viewBox), и от плавающей колонки названия съезжали бы лесенкой. */
+.weapon {
+  display: grid;
+  grid-template-columns: 40px 1fr auto;
+  grid-template-areas: 'icon name buy' 'icon stats buy' 'icon note buy';
+  align-items: center;
+  gap: 2px 8px;
+  padding: 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.weapon__icon {
+  grid-area: icon;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  line-height: 1;
+  color: #fff;
+}
+
+/* Иконки нарисованных стволов (weapons.ts) ужимаются в колонку целиком:
+   пулемёт вдвое длиннее пистолета, и без ограничения ширины он вылез бы
+   на название. */
+.weapon__icon svg {
+  display: block;
+  height: 16px;
+  width: auto;
+  max-width: 100%;
+}
+
+.weapon__name {
+  grid-area: name;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+/* «Особое» у названия: этот ствол не ступень общей лестницы, а замена
+   оружия одному бойцу, и покупать его стоит с другим расчётом. */
+.weapon__badge {
+  margin-left: 6px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(255, 204, 51, 0.18);
+  color: #ffcc33;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  vertical-align: 1px;
+}
+
+.weapon__stats {
+  grid-area: stats;
+  font-size: 11px;
+  opacity: 0.55;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Третья строка — только у особого оружия: чем он особый и что достаётся
+   одному бойцу. Переносу здесь ничто не мешает (в отличие от строки
+   характеристик, которая должна остаться одной строкой), поэтому текст
+   связный, а не сокращённый до значков. Тусклее характеристик: это
+   пояснение, а не числа, по которым выбирают. */
+.weapon__note {
+  grid-area: note;
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.3;
+  opacity: 0.45;
+}
+
+.weapon__buy {
+  grid-area: buy;
+  min-width: 82px;
+  padding: 9px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: #8a6a1e;
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+
+.weapon__buy:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+/* Уже полученное: вместо кнопки подпись «Получено» — нажимать нечего, как и
+   на максимальном уровне прокачки (.upgrade__maxed). Ширина держится той же
+   82 px, что у кнопки цены, иначе строки полученного оружия оказались бы
+   короче остальных. Строка при этом не гаснет целиком — она полноценная;
+   запертое, наоборот, приглушено всё, включая иконку: до него ещё не дошла
+   очередь. */
+.weapon__owned {
+  grid-area: buy;
+  min-width: 82px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 700;
+  opacity: 0.4;
+}
+
+.weapon--locked {
+  opacity: 0.45;
+}
+
+/* --- Бустеры (экран перед забегом) --- */
+
+/* Ширина та же, что у списка улучшений: экраны идут один за другим, и
+   разъехавшиеся колонки читались бы как переход в другое приложение. */
+#boosters-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  max-width: 340px;
+}
+
+/* Что уже взято, строкой над кнопкой «В бой». Жёлтая, как всё купленное за
+   деньги, и мельче обычной строки: это итог своих же нажатий, а не
+   показатель. Прижата к кнопке отрицательным отступом — общий gap экрана
+   в 14 px отрывал её от того, к чему она относится. */
+#boosters-kit {
+  margin-bottom: -8px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #ffcc33;
+}
+
+/* Взятое в кит обведено жёлтым — цветом денег: в отличие от магазина, где
+   состояние строки навсегда, здесь это выбор на один забег, и его нужно
+   пересчитывать глазами перед каждым запуском. Рамка внутренней тенью, а
+   не border: border сдвинул бы содержимое строки на пиксель. */
+.weapon--picked {
+  box-shadow: inset 0 0 0 1px rgba(255, 204, 51, 0.55);
+}
+
+/* Две кнопки в одной ячейке: «вернуть» и «взять». */
+.weapon__actions {
+  grid-area: buy;
+  display: flex;
+  gap: 6px;
+}
+
+/* Аренда дешевле открытия на порядок, поэтому и кнопка тусклее золотой
+   кнопки магазина: покупка одноразовая и решение не такое весомое. */
+.weapon__buy--booster {
+  background: #5c6f8a;
+}
+
+/* Минус — узкая приставка к цене, как ×N у пачки улучшений. Тот же цвет
+   полупрозрачным: кнопка та же по смыслу, но обратного действия. */
+.weapon__buy--slim {
+  min-width: 34px;
+  padding: 9px 6px;
+  background: rgba(92, 111, 138, 0.45);
+}
+
+/* --- История версий --- */
+
+/* Единственный экран, где содержимое заведомо длиннее кадра, поэтому
+   прокручивается не он сам, а список внутри: заголовок и «Назад» должны
+   остаться на месте. Прижат к верху — при justify-content: center верх
+   длинного списка уезжает за край и до него не домотать. */
+.screen--changelog {
+  justify-content: flex-start;
+  overflow: hidden;
+  /* Непрозрачный, в отличие от остальных экранов: под ним не стоп-кадр
+     забега, а прокачка, и её строки, просвечивая сквозь 14% общего фона,
+     читались вперемешку со списком версий. */
+  background: #0a0b0f;
+}
+
+.changelog {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+  max-width: 340px;
+  /* min-height обязателен: без него flex-элемент не сжимается меньше
+     содержимого, список вылезает за экран и прокрутки не возникает. */
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  text-align: left;
+}
+
+.changelog__entry {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+/* Версия и дата в одну строку по краям: номер слева читается столбиком
+   при прокрутке, дата не мешает ему и не перебивает по яркости. */
+.changelog__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.changelog__version {
+  font-size: 15px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.changelog__date {
+  font-size: 11px;
+  opacity: 0.45;
+}
+
+/* Метка у сборки, в которую играют сейчас: без неё в списке из двух
+   десятков номеров непонятно, где ты находишься. */
+.changelog__current {
+  margin-left: 6px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(111, 230, 245, 0.18);
+  color: #6fe6f5;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  vertical-align: 1px;
+}
+
+/* Маркеры свои: у списка по умолчанию отступ около 40 px, а колонка узкая
+   и каждый пиксель ширины уходит в текст. */
+.changelog__changes {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+  opacity: 0.8;
+}
+
+.changelog__changes li {
+  position: relative;
+  padding-left: 12px;
+}
+
+.changelog__changes li + li {
+  margin-top: 4px;
+}
+
+.changelog__changes li::before {
+  content: '·';
+  position: absolute;
+  left: 3px;
+  opacity: 0.6;
+}
+
+/* Полоски HP над стрелками и зомби: видны 3 секунды после урона.
+   Дорожка нужна, чтобы полный запас отличался от половины. */
+.world-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  border-radius: 2px;
+  background: rgba(0, 0, 0, 0.6);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+  will-change: transform;
+}
+
+.world-bar__fill {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  transform-origin: left center;
+  background: linear-gradient(180deg, #ff5a4a, #cc1f10);
+}
+
+/* Перелив полоски лечащегося стрелка (ui.hpBar.healPulse): белый слой
+   поверх красной заливки, прозрачность ему выставляет игровой цикл.
+   Лежит внутри заливки, поэтому масштабируется вместе с ней.
+
+   Ни transition, ни animation здесь нет намеренно: плавность даёт сам
+   игровой цикл, считающий фазу по игровому dt, — а CSS продолжал бы
+   переливаться на паузе и на экранах, где лечение стоит. */
+.world-bar__glow {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, #ffffff, #dcdcdc);
+  opacity: 0;
+}
