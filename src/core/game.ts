@@ -6,6 +6,7 @@ import { Boss } from '../entities/boss';
 import { BulletPool } from '../entities/bullets';
 import { CrystalPool } from '../entities/crystals';
 import { EnemyPool } from '../entities/enemies';
+import { ExplosionPool } from '../entities/explosions';
 import { GateField } from '../entities/gates';
 import { MineField } from '../entities/mines';
 import { MoneyPool } from '../entities/money';
@@ -50,6 +51,8 @@ export class Game {
   /** Монеты денег: та же механика подбора, что у кристаллов, другая валюта. */
   readonly money: MoneyPool;
   readonly enemies: EnemyPool;
+  /** Вспышки взрывов: одна картинка на мины и гранаты. */
+  readonly explosions: ExplosionPool;
   readonly mines: MineField;
   readonly squad: Squad;
   readonly barrels: BarrelField;
@@ -119,10 +122,13 @@ export class Game {
     // Монеты создаются до зомби и босса: оба роняют их в своей воронке смерти.
     this.money = new MoneyPool(this.scene);
     this.enemies = new EnemyPool(this.scene, this.run, this.crystals, this.money);
+    // Вспышки создаются до мин: поле показывает через них детонацию.
+    this.explosions = new ExplosionPool(this.scene, this.run);
     // Порядок создания разрывает цикл зависимостей: мины знают зомби, отряд —
     // мины, бочки — отряд, и только потом бочки попадают в цели взрыва.
-    this.mines = new MineField(this.scene, this.enemies, this.run);
-    this.squad = new Squad(this.scene, this.bullets, this.mines);
+    this.mines = new MineField(this.scene, this.enemies, this.run, this.explosions);
+    // meta отряду — как магазин доступа стрелков к оружию (AllyWeaponAccess).
+    this.squad = new Squad(this.scene, this.bullets, this.mines, this.meta);
     // meta бочкам нужна как магазин: непокупленное оружие в них не появляется.
     this.barrels = new BarrelField(
       this.scene,
@@ -331,6 +337,7 @@ export class Game {
     this.barrels.reset();
     this.gates.reset();
     this.mines.reset();
+    this.explosions.reset();
     this.bullets.reset();
     this.crystals.reset();
     this.money.reset();
@@ -342,12 +349,16 @@ export class Game {
      * возвращает отряд к одному герою с пистолетом, и порядок наоборот стёр бы
      * выданное.
      *
-     * Сначала ствол, потом бойцы: addShooters вооружает новичков ОБЩИМ оружием
-     * отряда, поэтому оплаченный автомат достаётся и им. При обратном порядке
-     * купленные бойцы вышли бы с пистолетами.
+     * Порядок выдачи смысловой. Сначала стрелковый ствол: он становится ОБЩИМ
+     * оружием отряда. Затем особое: оно ложится герою ПОВЕРХ общего (на старте
+     * он в отряде один). Последними бойцы: addShooters вооружает новичков общим
+     * оружием — так пара «особое + стрелковое» распадается как задумано:
+     * особое герою, стрелковое доп. стрелкам. При другом порядке либо бойцы
+     * вышли бы с пистолетами, либо особое могло бы достаться не герою.
      */
     const kit = this.meta.consumeStartKit();
     if (kit.weapon !== null) this.squad.equipStartWeapon(kit.weapon);
+    if (kit.special !== null) this.squad.equipStartWeapon(kit.special);
     if (kit.shooters > 0) this.squad.addShooters(kit.shooters);
     // Предел хода зависит от ширины строя: после выдачи кита он уже другой, и
     // ставить его надо сразу, а не подводить плавно на первых кадрах забега.
@@ -403,6 +414,9 @@ export class Game {
     // Мины после зомби: подход проверяется по их актуальным координатам.
     this.mines.update(dt);
     this.bullets.update(dt, this.tryHitAnything);
+    // Вспышки после мин и пуль: рождённая в этом же шаге сфера сразу получает
+    // первый прирост радиуса и видна с первого кадра.
+    this.explosions.update(dt);
     // Кристаллы после пуль: выпавший с только что убитого зомби стартует сразу.
     // Проекция синхронизируется перед ними обоими — камера и холст общие.
     this.space.sync(this.viewport.cssWidth, this.viewport.cssHeight);
@@ -586,6 +600,7 @@ export class Game {
     this.enemies.damageInRadius(x, z, radius, damage);
     this.boss.damageInRadius(x, z, radius, damage);
     this.barrels.damageInRadius(x, z, radius, damage);
+    this.explosions.spawnAt(x, z, radius);
   }
 
   /** Собранный кристалл идёт в счётчик забега. Ссылка одна на всю игру. */

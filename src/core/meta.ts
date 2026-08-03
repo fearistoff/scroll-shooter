@@ -1,5 +1,6 @@
 import { CONFIG } from '../config';
 import {
+  isSpecialWeapon,
   shopWeapons,
   weaponUnlockWave,
   type ShooterKind,
@@ -384,12 +385,23 @@ interface SavedProgress {
    */
   weapons: number;
   /**
+   * Открытый доп. стрелкам префикс той же цепочки. Поля нет в сохранениях до
+   * появления доступа стрелков; на чтении зажимается геройским префиксом.
+   */
+  allyWeapons: number;
+  /**
    * Стартовый кит: оплачен, но ещё не выдан. Лежит в сохранении, а не только в
    * памяти, потому что деньги за него сняты, — иначе перезагрузка страницы между
    * покупкой и забегом съедала бы покупку.
    */
   startShooters: number;
+  /**
+   * Стрелковый ствол кита. До появления второго слота ключ был единственным и
+   * мог держать особый ствол — loadStartKit такой раскладывает по-новому.
+   */
   startWeapon: WeaponId | null;
+  /** Особое оружие кита — второй слот. Поля нет в сохранениях до его появления. */
+  startSpecial: WeaponId | null;
   /**
    * Рекорд достигнутой волны. Поля нет в сохранениях, сделанных до появления
    * замка по волне: такой игрок начинает рекорд с нуля и открывает средние
@@ -430,10 +442,18 @@ export class MetaProgress {
   private moneyValue = 0;
   /** Длина открытого префикса CONFIG.shop.weapons — см. SavedProgress.weapons. */
   private weaponsBought = 0;
+  /**
+   * Сколько стволов той же цепочки открыто ДОП. СТРЕЛКАМ. Тоже префикс, и
+   * всегда не длиннее геройского: доступ стрелкам продаётся только к уже
+   * открытому герою (CONFIG.shop.allyWeaponPriceDivisor).
+   */
+  private allyWeaponsBought = 0;
   /** Оплаченные бойцы стартового кита — см. «Стартовый кит» ниже. */
   private startShootersValue = 0;
-  /** Оплаченный ствол стартового кита. null — забег начнётся с пистолета. */
+  /** Оплаченный стрелковый ствол кита. null — забег начнётся с пистолета. */
   private startWeaponValue: WeaponId | null = null;
+  /** Оплаченное особое оружие кита — второй слот, см. canBuyStartWeapon. */
+  private startSpecialValue: WeaponId | null = null;
   /** Рекорд достигнутой волны за всё время — см. «Магазин оружия» ниже. */
   private bestWaveValue = 0;
 
@@ -697,6 +717,64 @@ export class MetaProgress {
     return true;
   }
 
+  // --- Доступ доп. стрелков к оружию (вторая цепочка магазина) ---------------
+
+  /*
+   * Открытие герою разрешает стволу выпадать из бочек, но при подборе он
+   * достаётся только герою; доступ стрелков покупается отдельно, втрое дешевле
+   * и только после геройского (обоснование — CONFIG.shop.allyWeaponPriceDivisor).
+   * Эффект применяет Squad.allyWeaponFor: стрелок без доступа получает лучшую
+   * открытую ему ступень не выше подобранной.
+   */
+
+  /** Сколько стволов открыто доп. стрелкам. */
+  get allyWeaponsUnlockedCount(): number {
+    return this.allyWeaponsBought;
+  }
+
+  /**
+   * Открыт ли ствол доп. стрелкам. Вне магазина (пистолет) — открыт всем, по
+   * той же причине, что в isWeaponUnlocked.
+   */
+  isAllyWeaponUnlocked(id: WeaponId): boolean {
+    const index = shopWeapons().findIndex((entry) => entry.id === id);
+    return index < 0 || index < this.allyWeaponsBought;
+  }
+
+  /** Следующий ствол цепочки доступа стрелков. null — открыто всё. */
+  nextAllyWeapon(): ShopWeapon | null {
+    return shopWeapons()[this.allyWeaponsBought] ?? null;
+  }
+
+  /** Цена доступа стрелков: треть цены открытия герою. null — нет в магазине. */
+  allyWeaponPrice(id: WeaponId): number | null {
+    const price = this.weaponPrice(id);
+    if (price === null) return null;
+    return Math.round(price / CONFIG.shop.allyWeaponPriceDivisor);
+  }
+
+  /**
+   * Можно ли открыть стрелкам прямо сейчас: следующий в их цепочке, герою уже
+   * открыт и денег хватает. Замок по волне второй раз не спрашивается — его
+   * уже прошла геройская покупка.
+   */
+  canBuyAllyWeapon(id: WeaponId): boolean {
+    const next = this.nextAllyWeapon();
+    if (next === null || next.id !== id) return false;
+    if (!this.isWeaponUnlocked(id)) return false;
+    return this.moneyValue >= this.allyWeaponPrice(id)!;
+  }
+
+  /** Открывает ствол стрелкам. Порядок цепочки, как и в buyWeapon, — правило магазина. */
+  buyAllyWeapon(id: WeaponId): boolean {
+    if (!this.canBuyAllyWeapon(id)) return false;
+
+    this.moneyValue -= this.allyWeaponPrice(id)!;
+    this.allyWeaponsBought++;
+    this.save();
+    return true;
+  }
+
   // --- Стартовый кит, он же «Бустеры» (за деньги, на один забег) -------------
 
   /*
@@ -716,9 +794,14 @@ export class MetaProgress {
     return this.startShootersValue;
   }
 
-  /** Оплаченный на старт ствол. null — забег начнётся со стартового пистолета. */
+  /** Оплаченный на старт стрелковый ствол. null — забег начнётся с пистолета. */
   get startWeapon(): WeaponId | null {
     return this.startWeaponValue;
+  }
+
+  /** Оплаченное на старт особое оружие. null — особый слот пуст. */
+  get startSpecialWeapon(): WeaponId | null {
+    return this.startSpecialValue;
   }
 
   /** Цена одного бойца в кит. */
@@ -730,9 +813,16 @@ export class MetaProgress {
    * Сколько бойцов вообще можно взять: все места отряда, кроме места героя.
    * Предел тот же, которым обрежет выдачу Squad.addShooters, поэтому оплатить
    * бойца, которому не хватит места в строю, нельзя.
+   *
+   * Считается по УРОВНЮ ветки размера отряда, а не по
+   * CONFIG.formation.maxShooters: в конфиг уровень переносит applyTo(), а он
+   * вызывается только на старте забега. Купленный на экране прокачки уровень
+   * до этого момента в конфиге не виден, и экран бустеров показывал бы старый
+   * предел. Расхождения с выдачей нет: к моменту, когда Squad.addShooters
+   * читает конфиг, applyTo() уже вызван (Game.startRun).
    */
   get startShooterLimit(): number {
-    return Math.max(0, CONFIG.formation.maxShooters - 1);
+    return Math.max(0, this.countValue('squadSize') - 1);
   }
 
   canBuyStartShooter(): boolean {
@@ -757,6 +847,18 @@ export class MetaProgress {
 
     this.startShootersValue--;
     this.moneyValue += this.startShooterPrice;
+    // Пара стволов держится на доп. стрелках (см. canBuyStartWeapon): вернули
+    // последнего — стрелковый слот возвращается тоже, с полными деньгами.
+    // Именно стрелковый: особое остаётся герою, а общий ствол без бойцов
+    // не достался бы никому.
+    if (
+      this.startShootersValue === 0 &&
+      this.startSpecialValue !== null &&
+      this.startWeaponValue !== null
+    ) {
+      this.moneyValue += this.startWeaponPrice(this.startWeaponValue) ?? 0;
+      this.startWeaponValue = null;
+    }
     this.save();
     return true;
   }
@@ -771,10 +873,14 @@ export class MetaProgress {
     return Math.round(price / CONFIG.shop.startBonuses.weaponPriceDivisor);
   }
 
-  /** Сколько вернёт отмена текущего выбора. 0 — ствол в кит не взят. */
-  private startWeaponRefund(): number {
-    if (this.startWeaponValue === null) return 0;
-    return this.startWeaponPrice(this.startWeaponValue) ?? 0;
+  /** Слот кита, в который ложится этот ствол: особые и стрелковые не смешиваются. */
+  private startSlot(id: WeaponId): WeaponId | null {
+    return isSpecialWeapon(id) ? this.startSpecialValue : this.startWeaponValue;
+  }
+
+  /** Соседний слот — оружие ДРУГОГО типа, уже взятое в кит. */
+  private otherStartSlot(id: WeaponId): WeaponId | null {
+    return isSpecialWeapon(id) ? this.startWeaponValue : this.startSpecialValue;
   }
 
   /**
@@ -782,42 +888,57 @@ export class MetaProgress {
    *
    * ОТКРЫТОСТЬ В МАГАЗИНЕ НЕ ТРЕБУЕТСЯ: арендовать можно любой ствол таблицы,
    * даже тот, до которого цепочка покупок ещё не дошла (причина — в
-   * CONFIG.shop.startBonuses). Единственное условие — деньги.
+   * CONFIG.shop.startBonuses).
    *
-   * Ствол в ките ровно один, поэтому новый выбор заменяет прежний, а прежний
-   * возвращается в кошелёк — доплатить нужно только разницу.
+   * Слотов в ките ДВА — стрелковый и особый, по одному на тип. Занятый слот
+   * своего типа блокирует покупку целиком: замены выбором другой строки нет,
+   * сначала «Убрать» (Screens.refreshBoosters гасит такие строки — по серым
+   * кнопкам одного типа видно, что второй тип выбирается отдельно и
+   * одновременно).
+   *
+   * ПАРА «особое + стрелковое» осмысленна только с доп. стрелками: особое на
+   * старте уйдёт герою, стрелковое — общий ствол остальных, и без бойцов ему
+   * некому достаться. Поэтому второй тип открывается, когда в ките есть хотя бы
+   * один боец (см. также refundStartShooter — возврат последнего бойца пару
+   * расцепляет).
    */
   canBuyStartWeapon(id: WeaponId): boolean {
     const price = this.startWeaponPrice(id);
     if (price === null) return false;
-    if (this.startWeaponValue === id) return false;
-    return this.moneyValue + this.startWeaponRefund() >= price;
+    if (this.startSlot(id) !== null) return false;
+    if (this.otherStartSlot(id) !== null && this.startShootersValue === 0) return false;
+    return this.moneyValue >= price;
   }
 
-  /** Берёт ствол в кит, заменяя прежний выбор. */
+  /** Берёт ствол в свой слот кита. */
   buyStartWeapon(id: WeaponId): boolean {
     if (!this.canBuyStartWeapon(id)) return false;
 
-    this.moneyValue += this.startWeaponRefund();
     this.moneyValue -= this.startWeaponPrice(id)!;
-    this.startWeaponValue = id;
+    if (isSpecialWeapon(id)) this.startSpecialValue = id;
+    else this.startWeaponValue = id;
     this.save();
     return true;
   }
 
   /** Снимает ствол с кита с полным возвратом денег. */
-  clearStartWeapon(): boolean {
-    if (this.startWeaponValue === null) return false;
+  refundStartWeapon(id: WeaponId): boolean {
+    if (this.startSlot(id) !== id) return false;
 
-    this.moneyValue += this.startWeaponRefund();
-    this.startWeaponValue = null;
+    this.moneyValue += this.startWeaponPrice(id) ?? 0;
+    if (isSpecialWeapon(id)) this.startSpecialValue = null;
+    else this.startWeaponValue = null;
     this.save();
     return true;
   }
 
   /** Есть ли что выдать отряду на старте забега. */
   get hasStartKit(): boolean {
-    return this.startShootersValue > 0 || this.startWeaponValue !== null;
+    return (
+      this.startShootersValue > 0 ||
+      this.startWeaponValue !== null ||
+      this.startSpecialValue !== null
+    );
   }
 
   /**
@@ -840,12 +961,17 @@ export class MetaProgress {
    *
    * Зовётся из Game.startRun ровно один раз за забег.
    */
-  consumeStartKit(): { shooters: number; weapon: WeaponId | null } {
-    const kit = { shooters: this.startShootersValue, weapon: this.startWeaponValue };
+  consumeStartKit(): { shooters: number; weapon: WeaponId | null; special: WeaponId | null } {
+    const kit = {
+      shooters: this.startShootersValue,
+      weapon: this.startWeaponValue,
+      special: this.startSpecialValue,
+    };
     if (!this.hasStartKit) return kit;
 
     this.startShootersValue = 0;
     this.startWeaponValue = null;
+    this.startSpecialValue = null;
     this.save();
     return kit;
   }
@@ -939,8 +1065,10 @@ export class MetaProgress {
     this.bankValue = 0;
     this.moneyValue = 0;
     this.weaponsBought = 0;
+    this.allyWeaponsBought = 0;
     this.startShootersValue = 0;
     this.startWeaponValue = null;
+    this.startSpecialValue = null;
     this.bestWaveValue = 0;
     this.save();
     this.applyTo();
@@ -983,6 +1111,15 @@ export class MetaProgress {
         this.weaponsBought = Math.min(Math.max(Math.floor(saved.weapons), 0), shopWeapons().length);
       }
 
+      if (typeof saved.allyWeapons === 'number' && Number.isFinite(saved.allyWeapons)) {
+        // Зажимается геройским префиксом, а не длиной списка: доступ стрелков
+        // не может обгонять открытое герою (правка сохранения руками).
+        this.allyWeaponsBought = Math.min(
+          Math.max(Math.floor(saved.allyWeapons), 0),
+          this.weaponsBought,
+        );
+      }
+
       if (typeof saved.bestWave === 'number' && Number.isFinite(saved.bestWave)) {
         this.bestWaveValue = Math.max(Math.floor(saved.bestWave), 0);
       }
@@ -1006,8 +1143,10 @@ export class MetaProgress {
       this.bankValue = 0;
       this.moneyValue = 0;
       this.weaponsBought = 0;
+      this.allyWeaponsBought = 0;
       this.startShootersValue = 0;
       this.startWeaponValue = null;
+      this.startSpecialValue = null;
       this.bestWaveValue = 0;
     }
   }
@@ -1015,10 +1154,9 @@ export class MetaProgress {
   /**
    * Стартовый кит из сохранения.
    *
-   * Предел бойцов считается по УРОВНЮ ветки размера отряда, а не по
-   * CONFIG.formation.maxShooters: applyTo() к моменту чтения ещё не вызывался, и
-   * в конфиге стоит база (3) — по ней кит игрока с прокачанным отрядом обрезался
-   * бы до двух бойцов.
+   * Предел бойцов — startShooterLimit: он считается по уровню ветки размера
+   * отряда и потому верен и здесь, до первого applyTo() (см. комментарий у
+   * геттера).
    *
    * Ствол проверяется по списку магазина — по нему считается цена аренды, и
    * незнакомый ключ (правка сохранения руками, укоротившийся список) остался бы
@@ -1026,13 +1164,37 @@ export class MetaProgress {
    */
   private loadStartKit(saved: Partial<SavedProgress>): void {
     if (typeof saved.startShooters === 'number' && Number.isFinite(saved.startShooters)) {
-      const limit = Math.max(0, this.countValue('squadSize') - 1);
+      const limit = this.startShooterLimit;
       this.startShootersValue = Math.min(Math.max(Math.floor(saved.startShooters), 0), limit);
     }
 
+    const inShop = (id: WeaponId): boolean => shopWeapons().some((entry) => entry.id === id);
+
+    // Особый слот — новый формат; в него принимается только особый ствол.
+    if (typeof saved.startSpecial === 'string') {
+      const id = saved.startSpecial as WeaponId;
+      if (inShop(id) && isSpecialWeapon(id)) this.startSpecialValue = id;
+    }
+
+    // Ключ startWeapon остался от времени, когда слот был один и держал любой
+    // ствол: особый из старого сохранения переезжает в свой слот.
     if (typeof saved.startWeapon === 'string') {
       const id = saved.startWeapon as WeaponId;
-      if (shopWeapons().some((entry) => entry.id === id)) this.startWeaponValue = id;
+      if (inShop(id)) {
+        if (!isSpecialWeapon(id)) this.startWeaponValue = id;
+        else if (this.startSpecialValue === null) this.startSpecialValue = id;
+      }
+    }
+
+    // Пара стволов без доп. стрелков честным путём не собирается (см.
+    // canBuyStartWeapon) — это правка сохранения руками. Стрелковый слот
+    // очищается без возврата: неизвестно, были ли за него плачены деньги.
+    if (
+      this.startShootersValue === 0 &&
+      this.startSpecialValue !== null &&
+      this.startWeaponValue !== null
+    ) {
+      this.startWeaponValue = null;
     }
   }
 
@@ -1071,8 +1233,10 @@ export class MetaProgress {
       bank: this.bankValue,
       money: this.moneyValue,
       weapons: this.weaponsBought,
+      allyWeapons: this.allyWeaponsBought,
       startShooters: this.startShootersValue,
       startWeapon: this.startWeaponValue,
+      startSpecial: this.startSpecialValue,
       bestWave: this.bestWaveValue,
     };
     for (const id of UPGRADE_IDS) {
@@ -1093,8 +1257,14 @@ export class MetaProgress {
     money: number;
     bestWave: number;
     weapons: WeaponId[];
+    allyWeapons: WeaponId[];
     nextWeapon: ShopWeapon | null;
-    startKit: { shooters: number; limit: number; weapon: WeaponId | null };
+    startKit: {
+      shooters: number;
+      limit: number;
+      weapon: WeaponId | null;
+      special: WeaponId | null;
+    };
     levels: Record<string, number>;
     multipliers: Record<string, number>;
     nextCosts: Record<string, number | null>;
@@ -1116,11 +1286,15 @@ export class MetaProgress {
       weapons: shopWeapons()
         .slice(0, this.weaponsBought)
         .map((entry) => entry.id),
+      allyWeapons: shopWeapons()
+        .slice(0, this.allyWeaponsBought)
+        .map((entry) => entry.id),
       nextWeapon: this.nextWeapon(),
       startKit: {
         shooters: this.startShootersValue,
         limit: this.startShooterLimit,
         weapon: this.startWeaponValue,
+        special: this.startSpecialValue,
       },
       levels,
       multipliers,

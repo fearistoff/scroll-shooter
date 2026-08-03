@@ -396,7 +396,12 @@ body {
   display: none;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  /* НЕ center, хотя меню стоит посередине: у flex-центрирования переполненный
+     контент вылезает за ВЕРХ контейнера, и прокрутка туда не достаёт — верх
+     длинного списка улучшений было физически не открыть. Центрируют auto-поля
+     ниже: пока содержимое влезает, они делят свободное место поровну, а при
+     переполнении схлопываются в ноль и список прокручивается целиком. */
+  justify-content: flex-start;
   gap: 14px;
   padding: calc(20px + var(--safe-top)) calc(18px + var(--safe-right))
     calc(20px + var(--safe-bottom)) calc(18px + var(--safe-left));
@@ -412,6 +417,20 @@ body {
 
 .screen.visible {
   display: flex;
+}
+
+/* Центрирование меню auto-полями (см. justify-content у .screen): первый
+   элемент отталкивается от верха, последний — от низа, свободное место
+   делится поровну и меню стоит посередине. Кнопка версии — исключение: её
+   собственный margin-top: auto уже прижимает её к низу, и второе auto-поле
+   сдвинуло бы центр на треть; без него контент центрируется между верхом
+   экрана и строкой версии. */
+.screen > :first-child {
+  margin-top: auto;
+}
+
+.screen > :last-child:not(.screen__version) {
+  margin-bottom: auto;
 }
 
 /* Пауза затемняет слабее результата и прокачки: за ней стоп-кадр забега, и
@@ -814,6 +833,34 @@ body {
 
 .weapon--locked {
   opacity: 0.45;
+}
+
+/* Строка «Доп. стрелкам» — четвёртый ряд сетки, только у стволов магазина
+   (модификатор ставит appendAllyAccessLine; на бустерах его нет, и их сетка
+   остаётся трёхрядной — иначе пустой четвёртый ряд добавлял бы всем строкам
+   лишний row-gap). */
+.weapon--ally-access {
+  grid-template-areas: 'icon name buy' 'icon stats buy' 'icon note buy' 'icon ally allyBuy';
+}
+
+.weapon__ally {
+  grid-area: ally;
+  margin-top: 4px;
+  font-size: 11px;
+  opacity: 0.55;
+}
+
+.weapon__buy--ally {
+  grid-area: allyBuy;
+  margin-top: 4px;
+  /* Тоньше геройской кнопки: покупка второстепенная, ряд не должен спорить
+     по весу с открытием самого ствола. */
+  padding: 5px 8px;
+}
+
+.weapon__owned--ally {
+  grid-area: allyBuy;
+  margin-top: 4px;
 }
 
 /* --- Бустеры (экран перед забегом) --- */

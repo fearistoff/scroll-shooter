@@ -13,6 +13,11 @@ export interface EnemyProbe extends AreaDamageReceiver {
   hasEnemyInRadius(x: number, z: number, radius: number): boolean;
 }
 
+/** Вспышка взрыва — картинка, которую поле просит показать при детонации. */
+export interface ExplosionFx {
+  spawnAt(x: number, z: number, radius: number): void;
+}
+
 /**
  * Противопехотные мины (ТЗ раздел 7).
  *
@@ -48,6 +53,7 @@ export class MineField {
     scene: Scene,
     private readonly enemies: EnemyProbe,
     private readonly run: RunState,
+    private readonly fx: ExplosionFx,
   ) {
     const { size, poolSize, colors } = CONFIG.mine;
 
@@ -195,6 +201,8 @@ export class MineField {
       for (const target of this.extraTargets) {
         hits += target.damageInRadius(x, z, radius, damage);
       }
+      // Вспышка на каждую мину: перекрытие сфер честно показывает два заряда.
+      this.fx.spawnAt(x, z, radius);
     }
 
     this.detonationsTotal++;

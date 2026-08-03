@@ -28,6 +28,15 @@ import {
   type WeaponId,
 } from './weapons';
 
+/**
+ * Магазин со стороны отряда: какие стволы открыты доп. стрелкам
+ * (MetaProgress реализует). Узкий интерфейс у потребителя, как SquadTarget и
+ * прочие: entities не зависят от core.
+ */
+export interface AllyWeaponAccess {
+  isAllyWeaponUnlocked(id: WeaponId): boolean;
+}
+
 /** Доп. стрелок. Главный герой хранится отдельно — он не взаимозаменяем. */
 interface Ally {
   hp: number;
@@ -68,6 +77,13 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
 
   /** Оружие главного героя. */
   readonly heroWeapon: WeaponState;
+
+  /**
+   * Арендованные в кит стволы этого забега: аренда обходит замки магазина,
+   * включая доступ стрелков (allyMayHold). Наполняет equipStartWeapon,
+   * чистит reset. Стволов максимум два — стрелковый и особый.
+   */
+  private readonly rentedWeapons: WeaponId[] = [];
 
   /** Сколько секунд регенерация героя ещё запрещена (player.regen). */
   private heroRegenDelayLeft = 0;
@@ -142,6 +158,7 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
     scene: Scene,
     private readonly bullets: BulletPool,
     private readonly mines: MineField,
+    private readonly allyAccess: AllyWeaponAccess,
   ) {
     const { heroCapsule, allyCapsule, colors, startWeapon } = CONFIG.player;
 
@@ -317,6 +334,7 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
   reset(): void {
     this.allies.length = 0;
     this.heroHp = CONFIG.player.heroHp;
+    this.rentedWeapons.length = 0;
     this.commonWeapon = CONFIG.player.startWeapon as WeaponId;
     this.heroWeapon.setWeapon(this.commonWeapon);
     this.percent = 50;
@@ -890,11 +908,13 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
     const free = CONFIG.formation.maxShooters - this.shooterCount;
     const added = Math.max(0, Math.min(count, free));
 
+    // Новичкам — общий ствол в пределах их доступа (см. setCommonWeapon).
+    const allyId = this.allyWeaponFor(this.commonWeapon);
     for (let i = 0; i < added; i++) {
       this.allies.push({
         hp: CONFIG.player.allyHp,
         // Случайная фаза: одинаковые накопители у всех дали бы залпы вместо потока.
-        weapon: new WeaponState(this.commonWeapon, 'ally', Math.random()),
+        weapon: new WeaponState(allyId, 'ally', Math.random()),
         // Новый боец урона не получал — ни паузы регенерации, ни вспышки.
         regenDelayLeft: 0,
         flashLeft: 0,
@@ -940,10 +960,38 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
   private setCommonWeapon(id: WeaponId): void {
     this.commonWeapon = id;
 
+    // Стрелкам — не сам подобранный ствол, а лучшее ОТКРЫТОЕ ИМ не выше него:
+    // доступ стрелков покупается в магазине отдельно от геройского
+    // (CONFIG.shop.allyWeaponPriceDivisor).
+    const allyId = this.allyWeaponFor(id);
     if (!isSpecialWeapon(this.heroWeapon.weaponId)) this.heroWeapon.setWeapon(id);
     for (const ally of this.allies) {
-      if (!isSpecialWeapon(ally.weapon.weaponId)) ally.weapon.setWeapon(id);
+      if (!isSpecialWeapon(ally.weapon.weaponId)) ally.weapon.setWeapon(allyId);
     }
+  }
+
+  /**
+   * Вправе ли доп. стрелок держать этот ствол: открыт ему в магазине ЛИБО
+   * арендован в кит на этот забег — аренда обходит замки магазина целиком,
+   * включая доступ стрелков (см. CONFIG.shop.startBonuses).
+   */
+  private allyMayHold(id: WeaponId): boolean {
+    return this.allyAccess.isAllyWeaponUnlocked(id) || this.rentedWeapons.includes(id);
+  }
+
+  /**
+   * Лучший ствол, который достанется доп. стрелку вместо подобранного: сам
+   * ствол, если открыт, иначе ближайшая открытая ступень ниже по прогрессии.
+   * Дно — стартовый пистолет: он вне магазина и открыт всем.
+   */
+  private allyWeaponFor(id: WeaponId): WeaponId {
+    if (this.allyMayHold(id)) return id;
+
+    const chain = CONFIG.weapons.progression as WeaponId[];
+    for (let i = chain.indexOf(id) - 1; i >= 0; i--) {
+      if (this.allyMayHold(chain[i]!)) return chain[i]!;
+    }
+    return chain[0]!;
   }
 
   /**
@@ -957,6 +1005,10 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
    * и «взял в кит» означало бы не то же самое, что «выбил из бочки».
    */
   equipStartWeapon(id: WeaponId): void {
+    // Аренда обходит замки магазина, включая доступ стрелков: оплаченный на
+    // забег ствол держат все. Отмечается ДО выдачи, иначе setCommonWeapon
+    // урезал бы его стрелкам прямо на старте.
+    this.rentedWeapons.push(id);
     if (isSpecialWeapon(id)) this.giveSpecialWeapon(id);
     else this.setCommonWeapon(id);
   }
@@ -981,11 +1033,18 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
   giveSpecialWeapon(id: WeaponId): 'hero' | 'ally' | null {
     const newRank = specialWeaponRank(id);
 
+    // Стрелок без купленного доступа к этому особому кандидатом не считается —
+    // особое подчиняется тому же правилу магазина, что и стрелковое
+    // (см. allyMayHold); герой держит всё открытое ему.
+    const allyEligible = this.allyMayHold(id);
+
     const heroRank = specialWeaponRank(this.heroWeapon.weaponId);
     let weakest = heroRank < newRank ? heroRank : Infinity;
-    for (const ally of this.allies) {
-      const rank = specialWeaponRank(ally.weapon.weaponId);
-      if (rank < newRank && rank < weakest) weakest = rank;
+    if (allyEligible) {
+      for (const ally of this.allies) {
+        const rank = specialWeaponRank(ally.weapon.weaponId);
+        if (rank < newRank && rank < weakest) weakest = rank;
+      }
     }
     if (weakest === Infinity) return null;
 
@@ -1015,6 +1074,9 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
   specialWeaponBenefits(id: WeaponId): boolean {
     const newRank = specialWeaponRank(id);
     if (specialWeaponRank(this.heroWeapon.weaponId) < newRank) return true;
+    // Стрелки — только при купленном им доступе, тем же правилом, что и в
+    // giveSpecialWeapon: иначе бочка предлагала бы ствол, который никто не возьмёт.
+    if (!this.allyMayHold(id)) return false;
     for (const ally of this.allies) {
       if (specialWeaponRank(ally.weapon.weaponId) < newRank) return true;
     }

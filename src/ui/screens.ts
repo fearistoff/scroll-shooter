@@ -28,7 +28,7 @@ import { formatRunTime } from './time';
 
 /** Что экраны умеют сообщать наружу. */
 export interface ScreenHandlers {
-  /** Кнопка «Прокачка» на экране результата и «Назад» с бустеров. */
+  /** Кнопка «Улучшения» на экране результата и «Назад» с бустеров. */
   openUpgrade(): void;
   /**
    * Кнопка «Начать забег» — есть и на экране прокачки, и на экране результата.
@@ -216,6 +216,15 @@ export class Screens {
 
   private readonly rows = new Map<UpgradeId, UpgradeRow>();
   private readonly weaponRows = new Map<WeaponId, WeaponRow>();
+  /**
+   * Строки «Доп. стрелкам» под стволами магазина: вторая цепочка покупок —
+   * доступ стрелков к уже открытому герою оружию (MetaProgress.buyAllyWeapon).
+   * Только в магазине: на бустерах аренда и так вооружает всех.
+   */
+  private readonly allyAccessRows = new Map<
+    WeaponId,
+    { buy: HTMLButtonElement; done: HTMLElement }
+  >();
   /** Строки аренды: те же стволы, но на один забег. */
   private readonly boosterWeaponRows = new Map<WeaponId, WeaponRow>();
   /** Единственная строка бойцов на экране бустеров. null — разметки экрана нет вовсе. */
@@ -646,10 +655,41 @@ export class Screens {
           this.meta.buyWeapon(entry.id);
           this.refreshUpgrades();
         });
+        this.appendAllyAccessLine(row.root, entry.id);
       }
       this.weaponRows.set(entry.id, row);
       return row.root;
     });
+  }
+
+  /**
+   * Строка доступа доп. стрелков — четвёртый ряд сетки ствола, только в
+   * магазине. У пистолета её нет: он стартовый и открыт всем сразу.
+   * Состояния повторяют геройскую кнопку: цена / замок / подпись «Открыто»
+   * (см. refreshWeapons).
+   */
+  private appendAllyAccessLine(root: HTMLElement, id: WeaponId): void {
+    root.classList.add('weapon--ally-access');
+
+    const label = document.createElement('div');
+    label.className = 'weapon__ally';
+    label.textContent = 'Доп. стрелкам';
+
+    const buy = document.createElement('button');
+    buy.className = 'weapon__buy weapon__buy--ally';
+    buy.type = 'button';
+    buy.addEventListener('click', () => {
+      this.meta.buyAllyWeapon(id);
+      this.refreshUpgrades();
+    });
+
+    const done = document.createElement('div');
+    done.className = 'weapon__owned weapon__owned--ally';
+    done.textContent = 'Открыто';
+    done.hidden = true;
+
+    root.append(label, buy, done);
+    this.allyAccessRows.set(id, { buy, done });
   }
 
   /**
@@ -753,7 +793,9 @@ export class Screens {
       row.buy.addEventListener('click', () => {
         // Повторное нажатие по выбранному снимает выбор: пока забег не начат,
         // набор — это намерение, и отменяется оно там же, где ставится.
-        if (this.meta.startWeapon === entry.id) this.meta.clearStartWeapon();
+        const picked =
+          this.meta.startWeapon === entry.id || this.meta.startSpecialWeapon === entry.id;
+        if (picked) this.meta.refundStartWeapon(entry.id);
         else this.meta.buyStartWeapon(entry.id);
         this.refreshBoosters();
       });
@@ -995,6 +1037,26 @@ export class Screens {
         row.buy.textContent = onSale && waveLock === 0 ? `${price} $` : `🔒 ${price} $`;
       }
       row.buy.disabled = !canBuy;
+
+      // Вторая цепочка — доступ доп. стрелков: та же логика состояний, что у
+      // геройской кнопки строкой выше, но замок означает «сначала открой герою
+      // или предыдущий доступ», а не волну — её уже прошла геройская покупка.
+      const allyRow = this.allyAccessRows.get(id);
+      if (allyRow !== undefined) {
+        const allyOwned = this.meta.isAllyWeaponUnlocked(id);
+        const allyNext = this.meta.nextAllyWeapon();
+        const allyOnSale = owned && allyNext !== null && allyNext.id === id;
+        const canBuyAlly = this.meta.canBuyAllyWeapon(id);
+        ready ||= canBuyAlly;
+
+        allyRow.buy.hidden = allyOwned;
+        allyRow.done.hidden = !allyOwned;
+        if (!allyOwned) {
+          const allyPrice = this.meta.allyWeaponPrice(id);
+          allyRow.buy.textContent = allyOnSale ? `${allyPrice} $` : `🔒 ${allyPrice} $`;
+          allyRow.buy.disabled = !canBuyAlly;
+        }
+      }
     }
 
     this.tracks.get('weapons')?.tab.classList.toggle('upgrade-tab--ready', ready);
@@ -1013,20 +1075,25 @@ export class Screens {
 
     this.refreshBoosterShooters();
 
-    const chosen = this.meta.startWeapon;
+    // Слота два — стрелковый и особый (см. MetaProgress.canBuyStartWeapon).
+    const chosenFirearm = this.meta.startWeapon;
+    const chosenSpecial = this.meta.startSpecialWeapon;
     for (const [id, row] of this.boosterWeaponRows) {
-      const picked = chosen === id;
+      const picked = chosenFirearm === id || chosenSpecial === id;
 
       // Без урона и темпа: на этом экране выбирают, ЧТО взять на забег, а не
       // сравнивают стволы по числам — для этого есть магазин.
       Screens.refreshWeaponStats(id, row, false);
 
       // Замка здесь нет, в отличие от магазина: арендовать можно любой ствол,
-      // открытый он или нет, — единственное условие остаётся денежным.
+      // открытый он или нет.
       row.root.classList.toggle('weapon--picked', picked);
 
       row.buy.textContent = picked ? 'Убрать' : `${this.meta.startWeaponPrice(id)} $`;
       // Выбранный ствол остаётся нажимаемым: та же кнопка снимает выбор.
+      // Остальные строки его типа canBuyStartWeapon гасит — замены выбором
+      // другой строки нет, и по серым кнопкам одного типа видно, что оружие
+      // ДРУГОГО типа выбирается отдельно и одновременно (при взятых бойцах).
       row.buy.disabled = !picked && !this.meta.canBuyStartWeapon(id);
     }
 
@@ -1079,6 +1146,9 @@ export class Screens {
 
     const weapon = this.meta.startWeapon;
     if (weapon !== null) parts.push(WEAPON_NAMES[weapon]);
+
+    const special = this.meta.startSpecialWeapon;
+    if (special !== null) parts.push(WEAPON_NAMES[special]);
 
     this.boostersSummary.hidden = parts.length === 0;
     this.boostersSummary.textContent = `В вылазку: ${parts.join(' · ')}`;
