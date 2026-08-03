@@ -277,9 +277,35 @@ export class Screens {
       this.hideChangelog();
     });
 
+    // Пасхалка: нажатие на банк добавляет CONFIG.ui.devCheatAmount. Условие то
+    // же, что у отладочной строки счётчиков в HUD (import.meta.env.DEV), то есть
+    // работает только на локальном сервере — в собранной игре ни обработчика, ни
+    // класса на плашках нет, и банк остаётся обычной подписью.
+    if (import.meta.env.DEV) {
+      this.bindDevCheat(this.upgradeBank, () => this.meta.deposit(CONFIG.ui.devCheatAmount));
+      this.bindDevCheat(this.upgradeMoney, () => this.meta.depositMoney(CONFIG.ui.devCheatAmount));
+    }
+
     this.buildRows();
     this.buildBoosters();
     this.buildChangelog();
+  }
+
+  /**
+   * Подписывает плашку банка на dev-пасхалку и помечает её классом (в разметке
+   * его нет — см. `.dev-cheat` в index.html).
+   *
+   * После начисления перерисовывается ВЕСЬ экран, а не только сама плашка: от
+   * банка зависят и цены строк, и то, какие покупки стали доступны.
+   */
+  private bindDevCheat(element: HTMLElement | null, add: () => void): void {
+    if (element === null) return;
+
+    element.classList.add('dev-cheat');
+    element.addEventListener('click', () => {
+      add();
+      this.refreshUpgrades();
+    });
   }
 
   /**

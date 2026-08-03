@@ -1,5 +1,10 @@
 import { CONFIG } from '../config';
-import { shopWeapons, type ShopWeapon, type WeaponId } from '../entities/weapons';
+import {
+  shopWeapons,
+  type ShooterKind,
+  type ShopWeapon,
+  type WeaponId,
+} from '../entities/weapons';
 
 /** Ключи улучшений. Совпадают с ключами CONFIG.meta.upgrades. */
 export type UpgradeId =
@@ -105,10 +110,10 @@ interface UpgradeLabel {
  * веткам ссылкой на один объект, так что разойтись они уже не могут.
  */
 const COMBAT_LABELS = {
-  damage: { title: 'Урон', effect: 'количество наносимого урона' },
-  fireRate: { title: 'Скорострельность', effect: 'выстрелов в секунду' },
+  damage: { title: 'Урон', effect: 'урон одного выстрела из пистолета' },
+  fireRate: { title: 'Скорострельность', effect: 'выстрелов в минуту' },
   range: { title: 'Дальность', effect: 'расстояние, которое может пройти пуля' },
-  damageTaken: { title: 'Защита', effect: 'уменьшение получаемого урона' },
+  damageTaken: { title: 'Защита', effect: 'сколько урона поглощается' },
   regenRate: { title: 'Восстановление HP', effect: 'скорость лечения' },
   regenDelay: { title: 'Задержка лечения', effect: 'пауза перед началом лечения' },
 } as const satisfies Record<string, UpgradeLabel>;
@@ -134,6 +139,110 @@ export const UPGRADE_LABELS: Record<UpgradeId, UpgradeLabel> = {
   exp: { title: 'Получаемый опыт', effect: 'опыт за забег' },
   money: { title: 'Объём дропа денег', effect: 'размер находки с убитых зомби' },
 };
+
+/**
+ * ФАКТИЧЕСКОЕ ЗНАЧЕНИЕ характеристики на экране прокачки: число и его единица.
+ *
+ * Экран показывает не множитель, а то, во что он превращается — «132.0 выстр./мин»
+ * вместо «×1.00». Множитель сам по себе не говорит ничего: 4% к чему именно и
+ * сколько это в бою — видно только из настоящего числа.
+ *
+ * unit клеится к числу как есть, поэтому у процентов он без ведущего пробела:
+ * «1.0%», но «16.1 м».
+ */
+export interface UpgradeValue {
+  value: number;
+  unit: string;
+}
+
+/**
+ * Как получить фактическое значение из множителя ветки.
+ *
+ * БАЗА БЕРЁТСЯ ИЗ КОНФИГА КАЖДЫЙ РАЗ, а не запоминается: числа оружия и
+ * регенерации крутятся на живой игре, и снимок разошёлся бы с боем.
+ *
+ * Пистолет — мерка урона, темпа и дальности: он стартовый и единственный ствол,
+ * который есть у бойца всегда. Прочие стволы показывают свои числа сами, в
+ * строках магазина (Screens.weaponStats).
+ *
+ * kind нужен ОДНОМУ урону: союзник бьёт долей от героя
+ * (CONFIG.formation.allyDamageFactor), и без этой доли строка на вкладке
+ * стрелков обещала бы втрое больше, чем боец наносит. Темп, дальность, защита и
+ * лечение у союзника считаются от той же базы, что у героя, — разница только в
+ * множителе его собственной ветки.
+ */
+function combatValue(
+  kind: ShooterKind,
+  stat: keyof typeof COMBAT_LABELS,
+  multiplier: number,
+): UpgradeValue {
+  const { weapons, player, formation } = CONFIG;
+
+  switch (stat) {
+    case 'damage': {
+      const factor = kind === 'ally' ? formation.allyDamageFactor : 1;
+      return { value: weapons.pistol.damage * multiplier * factor, unit: ' hp' };
+    }
+    // Выстрелов в МИНУТУ: в секунду у пистолета выходит 2.2, и на таком числе
+    // прибавка уровня (4%) не читается вовсе.
+    case 'fireRate':
+      return { value: weapons.pistol.fireRate * multiplier * 60, unit: '/мин' };
+    // 1 unit = 1 метр (см. CLAUDE.md, «Единицы и оси»), поэтому дальность
+    // показывается как есть.
+    case 'range':
+      return { value: weapons.pistol.range * multiplier, unit: ' м' };
+    // Множитель здесь — доля ДОХОДЯЩЕГО урона (0.99 на первом уровне), а игрока
+    // интересует поглощённая часть: её и показываем.
+    case 'damageTaken':
+      return { value: (1 - multiplier) * 100, unit: '%' };
+    // Регенерация задана как «hpPerInterval за intervalSeconds», а в бою работает
+    // ровно как их отношение (Squad.regenerate), — значит и показывать надо его.
+    case 'regenRate': {
+      const { hpPerInterval, intervalSeconds } = player.regen;
+      const perSecond = intervalSeconds > 0 ? hpPerInterval / intervalSeconds : 0;
+      return { value: perSecond * multiplier, unit: ' hp/с' };
+    }
+    case 'regenDelay':
+      return { value: player.regen.delayAfterDamageSeconds * multiplier, unit: ' с' };
+  }
+}
+
+/**
+ * Что за характеристику качает улучшение и чью. null — улучшение не боевое
+ * (размер отряда, опыт, деньги): у них фактического значения в этом смысле нет,
+ * и экран показывает их по-прежнему — счётчиком или множителем.
+ */
+const COMBAT_STATS: Partial<
+  Record<UpgradeId, { kind: ShooterKind; stat: keyof typeof COMBAT_LABELS }>
+> = {
+  heroDamage: { kind: 'hero', stat: 'damage' },
+  heroFireRate: { kind: 'hero', stat: 'fireRate' },
+  heroRange: { kind: 'hero', stat: 'range' },
+  heroDamageTaken: { kind: 'hero', stat: 'damageTaken' },
+  heroRegenRate: { kind: 'hero', stat: 'regenRate' },
+  heroRegenDelay: { kind: 'hero', stat: 'regenDelay' },
+
+  allyDamage: { kind: 'ally', stat: 'damage' },
+  allyFireRate: { kind: 'ally', stat: 'fireRate' },
+  allyRange: { kind: 'ally', stat: 'range' },
+  allyDamageTaken: { kind: 'ally', stat: 'damageTaken' },
+  allyRegenRate: { kind: 'ally', stat: 'regenRate' },
+  allyRegenDelay: { kind: 'ally', stat: 'regenDelay' },
+};
+
+/**
+ * Фактическое значение боевой характеристики при заданном множителе ветки.
+ * null — улучшение не боевое (см. COMBAT_STATS).
+ *
+ * Множитель передаётся, а не берётся из прогресса: экран показывает и текущий
+ * уровень, и следующий, то есть значение нужно считать для любого уровня, а не
+ * только для купленного.
+ */
+export function upgradeValue(id: UpgradeId, multiplier: number): UpgradeValue | null {
+  const entry = COMBAT_STATS[id];
+  if (entry === undefined) return null;
+  return combatValue(entry.kind, entry.stat, multiplier);
+}
 
 /**
  * Улучшения, которые множитель УМЕНЬШАЮТ, а не увеличивают. Список, а не

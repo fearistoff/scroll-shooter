@@ -55,9 +55,10 @@ export interface BossTarget {
  * и периодически выдавали два разных удара почти одновременно. Обоснование чисел —
  * в CONFIG.boss.attacks.interval.
  *
- * HP многослойное: полоса из layerCount слоёв, урон снимает текущий слой сверху.
- * Слои — представление одного числа, а не отдельные пулы HP: так «xN осталось»
- * и «суммарное HP» всегда согласованы.
+ * HP многослойное: полоса из слоёв по CONFIG.boss.layerHp (100), урон снимает
+ * текущий слой сверху. Слои — представление одного числа, а не отдельные пулы HP:
+ * так «xN осталось» и «суммарное HP» всегда согласованы. Каждый снятый слой платит
+ * деньгами (CONFIG.money.perBossLayer) — этим полоса ещё и размечает награду.
  */
 export class Boss {
   private readonly mesh: Mesh;
@@ -77,8 +78,8 @@ export class Boss {
   private hp = 0;
   /**
    * Запас, с которым вышел ЭТОТ босс: CONFIG.boss.totalHp × множитель волны
-   * (CONFIG.run.waveHpGrowth). Слои полосы считаются от него, а не от конфига,
-   * иначе у босса поздней волны слоёв стало бы больше layerCount.
+   * (CONFIG.run.waveHpGrowth). Число слоёв полосы считается от него делением на
+   * постоянную толщину (layerHp), поэтому у босса поздней волны слоёв больше.
    */
   private maxHp = 0;
   /**
@@ -91,6 +92,14 @@ export class Boss {
    */
   private damageMul = 1;
   private posZ = 0;
+  /**
+   * За сколько полос HP этого босса деньги уже выданы
+   * (CONFIG.money.perBossLayer). Считаются ПОЛОСЫ, а не накопленный урон:
+   * накопителем последняя полоса то оплачивалась, то нет — 16 равных долей maxHp
+   * складываются с погрешностью, и на десятой волне доход выходил 1500 вместо
+   * 1600 (ЗАМЕРЕНО). По числу полос граница целая и промаха не бывает.
+   */
+  private moneyLayersPaid = 0;
 
   /**
    * Обратный отсчёт до следующего УДАРА — общий для обеих атак. Именно до удара,
@@ -200,12 +209,23 @@ export class Boss {
   }
 
   /**
-   * HP одного слоя полосы. Считается от запаса ЭТОГО босса, поэтому слоёв всегда
-   * ровно layerCount, какой бы крепкий он ни был.
+   * HP одного слоя полосы — величина ПОСТОЯННАЯ (CONFIG.boss.layerHp), поэтому
+   * слоёв у крепкого босса больше, а не толще: 10 на первой волне, 52 на десятой.
+   * За слой платится фиксированная сумма (CONFIG.money.perBossLayer), и она
+   * осталась бы честной только при постоянной толщине.
    */
   get layerHp(): number {
-    const { layerCount } = CONFIG.boss;
-    return layerCount > 0 ? this.maxHp / layerCount : this.maxHp;
+    const { layerHp } = CONFIG.boss;
+    return layerHp > 0 ? layerHp : this.maxHp;
+  }
+
+  /**
+   * Сколько слоёв было у ЭТОГО босса на выходе. Вверх (ceil): верхний слой бывает
+   * неполным (5160 hp — 51 слой и 60 hp сверху), и он всё равно слой — иначе
+   * первые 60 hp снимались бы «вне полосы» и за них никто не заплатил бы.
+   */
+  get layerTotal(): number {
+    return Math.max(1, Math.ceil(this.maxHp / this.layerHp));
   }
 
   /** Сколько слоёв ещё не снято, включая текущий (это и есть «×N» на полосе). */
@@ -271,6 +291,7 @@ export class Boss {
     this.maxHp = 0;
     this.damageMul = 1;
     this.posZ = CONFIG.world.spawnZ;
+    this.moneyLayersPaid = 0;
     this.nextIn = 0;
     this.nextKind = 'aoe';
     this.sameKindInRow = 0;
@@ -300,6 +321,9 @@ export class Boss {
     // Урон обеих атак — своим множителем волны, как у зомби.
     this.damageMul = this.run.damageMultiplier;
     this.posZ = CONFIG.world.spawnZ;
+    // Полосы этого босса ещё не оплачены: иначе новый вышел бы с зачётом
+    // прошлого и первые полосы прошли бы бесплатно.
+    this.moneyLayersPaid = 0;
     // Первая атака не сразу по прибытии: игрок должен успеть понять, что вышло.
     // Вид её выбирается тем же броском, что и всех остальных, — предсказуемого
     // начала боссфайта нет.
@@ -534,6 +558,9 @@ export class Boss {
   private applyDamage(damage: number): void {
     // Сопротивление урону — в воронке, поэтому одинаково гасит и пули, и мины.
     this.hp -= damage * CONFIG.boss.damageResistance;
+    // Деньги за пройденные полосы — сразу после изменения HP, как полоска и
+    // вспышка: воронка урона одна, и все следствия удара считаются в ней.
+    this.payClearedLayers();
     this.flashLeft = CONFIG.ui.damageFlash.seconds;
     if (this.hp > 0) return;
 
@@ -556,10 +583,11 @@ export class Boss {
 
     // Босс осыпается кристаллами: он один стоит целой волны. Награда задана
     // ЦЕЛИКОМ (CONFIG.exp.perBoss) и делится на число кристаллов, а не задана на
-    // штуку: сколько их сыплется — вопрос картинки (по одному на слой полосы), и
-    // правка layerCount не должна менять цену босса. Множитель волны добавит
+    // штуку: сколько их сыплется — вопрос картинки, и правка crystalDrops не
+    // должна менять цену босса. Число своё, а не по слоям полосы: слоёв у босса
+    // десятой волны 52, и он рассыпался бы крошкой. Множитель волны добавит
     // CrystalPool.spawn — на выпадении, то есть ещё в СВОЕЙ волне.
-    const drops = Math.max(1, CONFIG.boss.layerCount);
+    const drops = Math.max(1, CONFIG.boss.crystalDrops);
     const perDrop = CONFIG.exp.perBoss / drops;
     for (let n = 0; n < drops; n++) {
       const spread = (Math.random() * 2 - 1) * CONFIG.boss.capsule.radius * 2;
@@ -574,6 +602,34 @@ export class Boss {
     this.money.dropFrom(0, this.posZ, 'boss', moneyScale);
 
     this.run.registerBossKill();
+  }
+
+  /**
+   * Деньги за пройденные полосы HP: CONFIG.money.perBossLayer за каждую, монетой
+   * ровно этой суммы (MoneyPool.dropExact — без шанса и без разброса).
+   *
+   * Цикл, а не одна монета за вызов: тяжёлое попадание (взрыв мины) может снять
+   * несколько полос сразу. На добивании оплачиваются ВСЕ полосы, сколько бы HP
+   * ни осталось: перебой не пропадает, но и лишней полосы не создаёт — за босса
+   * платится ровно layerTotal × perBossLayer.
+   *
+   * Монета падает с разбросом по x, как кристаллы на смерти: две монеты из одной
+   * точки дороги читаются как одна.
+   */
+  private payClearedLayers(): void {
+    const perLayer = CONFIG.money.perBossLayer;
+    if (perLayer <= 0) return;
+
+    // Сколько слоёв УЖЕ ушло с полосы: разность двух целых чисел, поэтому граница
+    // ровно та, что видит игрок в «×N», и погрешности деления здесь нет.
+    const total = this.layerTotal;
+    const cleared = this.hp <= 0 ? total : Math.min(total, total - this.layersRemaining);
+
+    while (this.moneyLayersPaid < cleared) {
+      const spread = (Math.random() * 2 - 1) * CONFIG.boss.capsule.radius;
+      this.money.dropExact(spread, this.posZ, perLayer);
+      this.moneyLayersPaid++;
+    }
   }
 
   /** Состояние босса — для отладки и проверок. */
@@ -592,6 +648,8 @@ export class Boss {
     sameKindInRow: number;
     recoverLeft: number;
     scale: number;
+    moneyLayersPaid: number;
+    layerTotal: number;
     corpse: {
       active: boolean;
       z: number;
@@ -621,6 +679,9 @@ export class Boss {
       recoverLeft: +this.recoverLeft.toFixed(3),
       // Фактический масштаб меша — по нему проверяется анимация атаки.
       scale: +this.mesh.scale.x.toFixed(3),
+      // За сколько полос деньги уже выданы — из layerTotal, полос всего.
+      moneyLayersPaid: this.moneyLayersPaid,
+      layerTotal: this.layerTotal,
       // Тело: наклон 0 — стоит, 90 — лежит; yawDegrees — сторона падения (0 — на
       // +X, 90 — на +Z). bodyX/bodyY/bodyZ — фактический центр капсулы, уехавший
       // по дуге вокруг подошвы; z — сама подошва.

@@ -86,6 +86,23 @@ export class MoneyPool extends PickupPool {
     return amount;
   }
 
+  /**
+   * Находка ТОЧНОЙ суммы, без броска вероятности и без диапазонов.
+   *
+   * Зовёт её только снятая полоса HP босса (CONFIG.money.perBossLayer): это не
+   * находка с трупа, а награда за пройденный этап боя, поэтому и разброса у неё
+   * нет — сумма обещана игроку полосой на экране. Через dropFrom это выразить
+   * нельзя: там и шанс 30%, и случайный диапазон.
+   *
+   * Счётчик выпавшего за забег общий с dropFrom — доходность меряется по нему.
+   */
+  dropExact(x: number, z: number, amount: number): number {
+    const value = Math.max(1, Math.round(amount));
+    this.spawn(x, z, value);
+    this.valueDropped += value;
+    return value;
+  }
+
   override reset(): void {
     super.reset();
     this.valueDropped = 0;
