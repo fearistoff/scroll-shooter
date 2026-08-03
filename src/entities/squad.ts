@@ -73,7 +73,7 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
   readonly heroMesh: Mesh;
 
   /** HP главного героя. Его смерть заканчивает забег (ТЗ раздел 15). */
-  heroHp = CONFIG.player.heroHp;
+  heroHp = CONFIG.player.heroHp * CONFIG.player.heroMultipliers.hpMultiplier;
 
   /** Оружие главного героя. */
   readonly heroWeapon: WeaponState;
@@ -295,6 +295,22 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
   }
 
   /**
+   * Полный запас HP с учётом прокачки (ветки heroHp/allyHp пишут hpMultiplier).
+   * Считается от конфига каждый раз, а не снимком: множитель применяется на
+   * старте забега (applyTo → reset), и запомненное значение пережило бы покупку.
+   * ЕДИНСТВЕННЫЕ точки, где база из конфига умножается, — все потолки лечения,
+   * полоски и стартовые HP спрашивают их, иначе полоска и лечение разошлись бы.
+   */
+  private get heroMaxHp(): number {
+    return CONFIG.player.heroHp * CONFIG.player.heroMultipliers.hpMultiplier;
+  }
+
+  /** Полный запас HP доп. стрелка — см. heroMaxHp. */
+  private get allyMaxHp(): number {
+    return CONFIG.player.allyHp * CONFIG.player.allyMultipliers.hpMultiplier;
+  }
+
+  /**
    * Глубина строя по z: до какого места тянутся видимые бойцы. Нужна воротам
    * типа B — турникет «проходят», пока он идёт от линии героя до последнего ряда.
    */
@@ -334,7 +350,7 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
    */
   reset(): void {
     this.allies.length = 0;
-    this.heroHp = CONFIG.player.heroHp;
+    this.heroHp = this.heroMaxHp;
     this.rentedWeapons.length = 0;
     this.commonWeapon = CONFIG.player.startWeapon as WeaponId;
     this.heroWeapon.setWeapon(this.commonWeapon);
@@ -511,20 +527,24 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
    * см. isRegenerating.
    */
   private regenerate(dt: number): void {
-    const { regen, heroHp, allyHp, heroMultipliers, allyMultipliers } = CONFIG.player;
+    const { regen, heroMultipliers, allyMultipliers } = CONFIG.player;
     if (regen.intervalSeconds <= 0 || regen.hpPerInterval <= 0) return;
 
     const gain = (regen.hpPerInterval / regen.intervalSeconds) * dt;
 
     // Мёртвый герой не отыгрывается: забег закончится в этот же шаг.
     if (this.heroHp > 0 && this.heroRegenDelayLeft <= 0) {
-      this.heroHp = Math.min(heroHp, this.heroHp + gain * heroMultipliers.regenRateMultiplier);
+      this.heroHp = Math.min(
+        this.heroMaxHp,
+        this.heroHp + gain * heroMultipliers.regenRateMultiplier,
+      );
     }
 
     const allyGain = gain * allyMultipliers.regenRateMultiplier;
+    const allyMaxHp = this.allyMaxHp;
     for (const ally of this.allies) {
       if (ally.regenDelayLeft > 0) continue;
-      ally.hp = Math.min(allyHp, ally.hp + allyGain);
+      ally.hp = Math.min(allyMaxHp, ally.hp + allyGain);
     }
   }
 
@@ -921,9 +941,10 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
     const fromCommon = this.allyWeaponFor(this.commonWeapon);
     const best = this.bestAllyFirearm();
     const allyId = chain.indexOf(best) > chain.indexOf(fromCommon) ? best : fromCommon;
+    const allyMaxHp = this.allyMaxHp;
     for (let i = 0; i < added; i++) {
       this.allies.push({
-        hp: CONFIG.player.allyHp,
+        hp: allyMaxHp,
         // Случайная фаза: одинаковые накопители у всех дали бы залпы вместо потока.
         weapon: new WeaponState(allyId, 'ally', Math.random()),
         // Новый боец урона не получал — ни паузы регенерации, ни вспышки.
@@ -1141,37 +1162,46 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
       brightness: number,
     ) => void,
   ): void {
-    const { heroCapsule, allyCapsule, heroHp, allyHp } = CONFIG.player;
+    const { heroCapsule, allyCapsule } = CONFIG.player;
+    const heroMaxHp = this.heroMaxHp;
+    const allyMaxHp = this.allyMaxHp;
     const offsetY = CONFIG.ui.hpBar.offsetY;
     const squadX = this.x;
     // Фаза общая на весь отряд, поэтому считается один раз на кадр.
     const brightness = this.healPulseBrightness;
 
-    if (this.heroHp < heroHp) {
+    if (this.heroHp < heroMaxHp) {
       const top = heroCapsule.length + heroCapsule.radius * 2;
       const healing = Squad.isRegenerating(this.heroRegenDelayLeft) ? brightness : 0;
-      visit(squadX, top + offsetY, 0, this.heroHp / heroHp, 1, healing);
+      visit(squadX, top + offsetY, 0, this.heroHp / heroMaxHp, 1, healing);
     }
 
     const allyTop = allyCapsule.length + allyCapsule.radius * 2;
     const visible = this.visibleAllyCount;
     for (let i = 0; i < visible; i++) {
       const ally = this.allies[i]!;
-      if (ally.hp >= allyHp) continue;
+      if (ally.hp >= allyMaxHp) continue;
 
       this.allyOffset(i);
       const healing = Squad.isRegenerating(ally.regenDelayLeft) ? brightness : 0;
-      visit(squadX + this.offsetX, allyTop + offsetY, this.offsetZ, ally.hp / allyHp, 1, healing);
+      visit(
+        squadX + this.offsetX,
+        allyTop + offsetY,
+        this.offsetZ,
+        ally.hp / allyMaxHp,
+        1,
+        healing,
+      );
     }
   }
 
   /** Сколько полосок HP сейчас показано — для отладки и проверок. */
   get hpBarsVisible(): number {
-    const { heroHp, allyHp } = CONFIG.player;
-    let total = this.heroHp < heroHp ? 1 : 0;
+    const allyMaxHp = this.allyMaxHp;
+    let total = this.heroHp < this.heroMaxHp ? 1 : 0;
     const visible = this.visibleAllyCount;
     for (let i = 0; i < visible; i++) {
-      if (this.allies[i]!.hp < allyHp) total++;
+      if (this.allies[i]!.hp < allyMaxHp) total++;
     }
     return total;
   }

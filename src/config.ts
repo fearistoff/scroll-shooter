@@ -639,6 +639,8 @@ export const CONFIG = {
       fireRateMultiplier: 1,
       rangeMultiplier: 1,
       damageTakenMultiplier: 1,
+      /** Множитель ПОЛНОГО запаса HP (heroHp/allyHp). Текущий HP не трогает. */
+      hpMultiplier: 1,
       regenRateMultiplier: 1,
       regenDelayMultiplier: 1,
     },
@@ -653,6 +655,7 @@ export const CONFIG = {
       fireRateMultiplier: 1,
       rangeMultiplier: 1,
       damageTakenMultiplier: 1,
+      hpMultiplier: 1,
       regenRateMultiplier: 1,
       regenDelayMultiplier: 1,
     },
@@ -2300,6 +2303,8 @@ export const CONFIG = {
      *   урон           ×3.00 — 50 уровней по 4%
      *   скорострельность ×1.30 — 30 уровней по 1%
      *   дальность      ×1.80 — 40 уровней по 2%
+     *   здоровье героя ×3.00 — 50 уровней по 4%
+     *   здоровье стрелка ×3.00 — 30 уровней по 20/3%
      *   опыт           ×2.00 — 50 уровней по 2%
      *
      * СКОРОСТРЕЛЬНОСТЬ И ДАЛЬНОСТЬ ЗАЖАТЫ ПО ПРОСЬБЕ (было ×3.00 и ×2.00), и зажаты
@@ -2375,6 +2380,18 @@ export const CONFIG = {
       heroFireRate: { maxLevel: 30, baseCost: 12, stepPercent: 1 },
       heroRange: { maxLevel: 40, baseCost: 8, stepPercent: 2 },
       heroDamageTaken: { maxLevel: 50, baseCost: 14, stepPercent: 1 },
+      /**
+       * ЗДОРОВЬЕ — множитель полного запаса HP (player.heroHp/allyHp; сам
+       * запас в конфиге не меняется, множитель живёт в hpMultiplier). Потолок
+       * задан пользователем: +200%, то есть 100 → 300 HP у героя и 30 → 90 у
+       * стрелка, ЧИСЛО УРОВНЕЙ ТОЖЕ ЕГО — 50 у героя и 30 у стрелков. Отсюда
+       * разный шаг при одном потолке: 200%/50 = 4% и 200%/30 = 20/3% — шаг
+       * стрелков записан дробью, чтобы потолок сходился ровно в ×3.00, а не в
+       * накопленную ошибку округления. Базовая цена 14 — как у защиты: обе
+       * ветки про живучесть, и разная цена читалась бы как «одна из них
+       * правильнее». Влияние на выживаемость замерами не проверялось.
+       */
+      heroHp: { maxLevel: 50, baseCost: 14, stepPercent: 4 },
       heroRegenRate: { maxLevel: 15, baseCost: 500, stepPercent: 20, costGrowth: 1.219014 },
       heroRegenDelay: { maxLevel: 15, baseCost: 500, stepPercent: 5, costGrowth: 1.219014 },
 
@@ -2382,6 +2399,8 @@ export const CONFIG = {
       allyFireRate: { maxLevel: 30, baseCost: 12, stepPercent: 1 },
       allyRange: { maxLevel: 40, baseCost: 8, stepPercent: 2 },
       allyDamageTaken: { maxLevel: 50, baseCost: 14, stepPercent: 1 },
+      /** Здоровье стрелков: 30 уровней до того же потолка ×3.00 — см. heroHp. */
+      allyHp: { maxLevel: 30, baseCost: 14, stepPercent: 20 / 3 },
       allyRegenRate: { maxLevel: 15, baseCost: 500, stepPercent: 20, costGrowth: 1.219014 },
       allyRegenDelay: { maxLevel: 15, baseCost: 500, stepPercent: 5, costGrowth: 1.219014 },
 

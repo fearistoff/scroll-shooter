@@ -14,6 +14,7 @@ export type UpgradeId =
   | 'heroFireRate'
   | 'heroRange'
   | 'heroDamageTaken'
+  | 'heroHp'
   | 'heroRegenRate'
   | 'heroRegenDelay'
   | 'squadSize'
@@ -21,6 +22,7 @@ export type UpgradeId =
   | 'allyFireRate'
   | 'allyRange'
   | 'allyDamageTaken'
+  | 'allyHp'
   | 'allyRegenRate'
   | 'allyRegenDelay'
   | 'exp'
@@ -74,12 +76,14 @@ export const UPGRADE_TRACKS: readonly UpgradeTrack[] = [
   {
     id: 'hero',
     title: 'Герой',
-    ids: ['heroDamage', 'heroFireRate', 'heroRange', 'heroDamageTaken', 'heroRegenRate', 'heroRegenDelay'],
+    // Здоровье стоит после защиты: обе ветки про живучесть, и рядом они читаются
+    // как пара «меньше получать — больше выдерживать».
+    ids: ['heroDamage', 'heroFireRate', 'heroRange', 'heroDamageTaken', 'heroHp', 'heroRegenRate', 'heroRegenDelay'],
   },
   {
     id: 'ally',
     title: 'Стрелки',
-    ids: ['allyDamage', 'allyFireRate', 'allyRange', 'allyDamageTaken', 'allyRegenRate', 'allyRegenDelay'],
+    ids: ['allyDamage', 'allyFireRate', 'allyRange', 'allyDamageTaken', 'allyHp', 'allyRegenRate', 'allyRegenDelay'],
   },
   {
     id: 'common',
@@ -119,6 +123,7 @@ const COMBAT_LABELS = {
   fireRate: { title: 'Скорострельность', effect: 'Выстрелов в минуту' },
   range: { title: 'Дальность', effect: 'Расстояние, которое проходит пуля' },
   damageTaken: { title: 'Защита', effect: 'Сколько урона поглощается' },
+  hp: { title: 'Здоровье', effect: 'Полный запас HP бойца' },
   regenRate: { title: 'Восст. HP', effect: 'Скорость лечения' },
   regenDelay: { title: 'Пауза лечения', effect: 'Пауза перед началом лечения' },
 } as const satisfies Record<string, UpgradeLabel>;
@@ -129,6 +134,7 @@ export const UPGRADE_LABELS: Record<UpgradeId, UpgradeLabel> = {
   heroFireRate: COMBAT_LABELS.fireRate,
   heroRange: COMBAT_LABELS.range,
   heroDamageTaken: COMBAT_LABELS.damageTaken,
+  heroHp: COMBAT_LABELS.hp,
   heroRegenRate: COMBAT_LABELS.regenRate,
   heroRegenDelay: COMBAT_LABELS.regenDelay,
 
@@ -136,6 +142,7 @@ export const UPGRADE_LABELS: Record<UpgradeId, UpgradeLabel> = {
   allyFireRate: COMBAT_LABELS.fireRate,
   allyRange: COMBAT_LABELS.range,
   allyDamageTaken: COMBAT_LABELS.damageTaken,
+  allyHp: COMBAT_LABELS.hp,
   allyRegenRate: COMBAT_LABELS.regenRate,
   allyRegenDelay: COMBAT_LABELS.regenDelay,
 
@@ -212,6 +219,13 @@ function combatValue(
     // интересует поглощённая часть: её и показываем.
     case 'damageTaken':
       return { value: (1 - multiplier) * 100, unit: '%', digits: 1 };
+    // Здоровье — единственная боевая характеристика с РАЗНОЙ базой у героя и
+    // союзника (100 против 30 HP): множитель у веток одинаковый по потолку
+    // (×3.00), а числа на экране обязаны совпадать с полосками в бою.
+    case 'hp': {
+      const base = kind === 'ally' ? player.allyHp : player.heroHp;
+      return { value: base * multiplier, unit: ' HP', digits: 1 };
+    }
     // Регенерация задана как «hpPerInterval за intervalSeconds», а в бою работает
     // ровно как их отношение (Squad.regenerate), — значит и показывать надо его.
     case 'regenRate': {
@@ -236,6 +250,7 @@ const COMBAT_STATS: Partial<
   heroFireRate: { kind: 'hero', stat: 'fireRate' },
   heroRange: { kind: 'hero', stat: 'range' },
   heroDamageTaken: { kind: 'hero', stat: 'damageTaken' },
+  heroHp: { kind: 'hero', stat: 'hp' },
   heroRegenRate: { kind: 'hero', stat: 'regenRate' },
   heroRegenDelay: { kind: 'hero', stat: 'regenDelay' },
 
@@ -243,6 +258,7 @@ const COMBAT_STATS: Partial<
   allyFireRate: { kind: 'ally', stat: 'fireRate' },
   allyRange: { kind: 'ally', stat: 'range' },
   allyDamageTaken: { kind: 'ally', stat: 'damageTaken' },
+  allyHp: { kind: 'ally', stat: 'hp' },
   allyRegenRate: { kind: 'ally', stat: 'regenRate' },
   allyRegenDelay: { kind: 'ally', stat: 'regenDelay' },
 };
@@ -329,6 +345,8 @@ export function upgradeEffect(id: UpgradeId, multiplier: number): string | null 
       return `Пуля пролетает ${shown} м`;
     case 'damageTaken':
       return `Поглощается ${shown}% урона`;
+    case 'hp':
+      return `Запас здоровья — ${shown} HP`;
     case 'regenRate':
       return `Восстанавливается ${shown} HP/с`;
     case 'regenDelay':
@@ -1103,6 +1121,7 @@ export class MetaProgress {
     config.player.heroMultipliers.fireRateMultiplier = this.multiplier('heroFireRate');
     config.player.heroMultipliers.rangeMultiplier = this.multiplier('heroRange');
     config.player.heroMultipliers.damageTakenMultiplier = this.multiplier('heroDamageTaken');
+    config.player.heroMultipliers.hpMultiplier = this.multiplier('heroHp');
     config.player.heroMultipliers.regenRateMultiplier = this.multiplier('heroRegenRate');
     config.player.heroMultipliers.regenDelayMultiplier = this.multiplier('heroRegenDelay');
 
@@ -1110,6 +1129,7 @@ export class MetaProgress {
     config.player.allyMultipliers.fireRateMultiplier = this.multiplier('allyFireRate');
     config.player.allyMultipliers.rangeMultiplier = this.multiplier('allyRange');
     config.player.allyMultipliers.damageTakenMultiplier = this.multiplier('allyDamageTaken');
+    config.player.allyMultipliers.hpMultiplier = this.multiplier('allyHp');
     config.player.allyMultipliers.regenRateMultiplier = this.multiplier('allyRegenRate');
     config.player.allyMultipliers.regenDelayMultiplier = this.multiplier('allyRegenDelay');
 
