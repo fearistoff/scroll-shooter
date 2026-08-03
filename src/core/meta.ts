@@ -140,9 +140,12 @@ export const UPGRADE_LABELS: Record<UpgradeId, UpgradeLabel> = {
   allyRegenDelay: COMBAT_LABELS.regenDelay,
 
   // Единственное улучшение-счётчик: в строке стоит не множитель, а «3 → 4».
-  squadSize: { title: 'Размер отряда', effect: 'Стрелков в отряде' },
-  exp: { title: 'Опыт', effect: 'Множитель за вылазку' },
-  money: { title: 'Деньги', effect: 'Множитель за вылазку' },
+  // effect здесь, как и у боевых, запасной: обычно на его месте фактическое
+  // состояние — «Макс. стрелков — 3» и «+20% за вылазку» (см. upgradeEffect и
+  // Screens.refreshUpgrades).
+  squadSize: { title: 'Размер отряда', effect: 'Макс. стрелков в отряде' },
+  exp: { title: 'Опыт', effect: 'Надбавка за вылазку' },
+  money: { title: 'Деньги', effect: 'Надбавка за вылазку' },
 };
 
 /**
@@ -299,10 +302,17 @@ function pluralize(value: number, one: string, few: string, many: string): strin
  * прочитал один раз, а число смотрит каждый заход на экран. Считается по
  * КУПЛЕННОМУ уровню; что даст следующий, стоит третьей строкой.
  *
- * null — улучшение не боевое (размер отряда, опыт, деньги): у них на этом месте
- * остаётся обычное описание из UPGRADE_LABELS.
+ * null — улучшение-счётчик (размер отряда): его показание считается не из
+ * множителя, а из countValue, и собирает его экран (Screens.refreshUpgrades).
  */
 export function upgradeEffect(id: UpgradeId, multiplier: number): string | null {
+  // Опыт и деньги — не боевые, но показание у них тоже есть: текущая надбавка
+  // к добыче. «+20% за вылазку», а не «×1.20»: прибавка в процентах читается
+  // сразу, множитель требует пересчёта в уме.
+  if (id === 'exp' || id === 'money') {
+    return `+${trimNumber((multiplier - 1) * 100, 1)}% за вылазку`;
+  }
+
   const entry = COMBAT_STATS[id];
   if (entry === undefined) return null;
 

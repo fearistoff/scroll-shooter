@@ -976,8 +976,12 @@ export class Screens {
         row.name.textContent = `${UPGRADE_LABELS[id].title} (ур. ${level})`;
         // Вторая строка — фактическое состояние на купленном уровне, поэтому
         // обновляется здесь, а не проставляется один раз при сборке ряда.
-        row.effect.textContent =
-          upgradeEffect(id, this.meta.multiplier(id, level)) ?? UPGRADE_LABELS[id].effect;
+        // У счётчика (размер отряда) показание считается из countValue, а не из
+        // множителя, поэтому upgradeEffect его дать не может. Число — ВКЛЮЧАЯ
+        // героя: это тот самый предел, что уходит в formation.maxShooters.
+        row.effect.textContent = isCountUpgrade(id)
+          ? `Макс. стрелков — ${this.meta.countValue(id, level)}`
+          : (upgradeEffect(id, this.meta.multiplier(id, level)) ?? UPGRADE_LABELS[id].effect);
         // Третья строка — только следующий уровень; на максимуме вместо него
         // одно слово «Максимум»: достигнутое значение уже стоит строкой выше, и
         // повторять его здесь незачем.
@@ -1162,7 +1166,10 @@ export class Screens {
     // «в отряд на забег · не больше 2» — 167, и строка переносилась на вторую,
     // отчего ряд стрелков был выше оружейных. «В отряд на вылазку» длиннее
     // прежнего на одно слово — замер перепроверен ниже, в браузере.
-    row.stats.textContent = `В отряд на вылазку · до ${limit}`;
+    // Предел показывается ВКЛЮЧАЯ героя — как «Макс. стрелков» на вкладке
+    // прокачки: числа отряда везде считаются с основным. Купить можно на
+    // одного меньше (limit): место героя не продаётся.
+    row.stats.textContent = `В отряд на вылазку · до ${limit + 1}`;
     row.root.classList.toggle('weapon--picked', count > 0);
 
     row.buy.textContent = `${price} $`;
@@ -1185,7 +1192,10 @@ export class Screens {
 
     const shooters = this.meta.startShooters;
     if (shooters > 0) {
-      parts.push(`${shooters} ${plural(shooters, 'стрелок', 'стрелка', 'стрелков')}`);
+      // Считая героя: «4 стрелка» — отряд на старте забега, а не число покупок.
+      // Числа стрелков в отряде везде показываются с основным.
+      const total = shooters + 1;
+      parts.push(`${total} ${plural(total, 'стрелок', 'стрелка', 'стрелков')}`);
     }
 
     const weapon = this.meta.startWeapon;
@@ -1240,8 +1250,9 @@ export class Screens {
    *
    * Улучшения-счётчики (размер отряда) считаются в бойцах, поэтому у них «3»
    * без знака умножения: «×1.33» о размере отряда не сказало бы ничего. Опыт и
-   * деньги остаются множителями — фактическое «сколько за забег» зависит от
-   * забега, а не от уровня.
+   * деньги показываются надбавкой в процентах («+22%»), в одном языке со второй
+   * строкой («+20% за вылазку»): фактическое «сколько за забег» зависит от
+   * забега, а не от уровня, поэтому вместо числа — прибавка.
    */
   private valueText(id: UpgradeId, level: number): string {
     if (isCountUpgrade(id)) return `${this.meta.countValue(id, level)}`;
@@ -1249,7 +1260,7 @@ export class Screens {
     const actual = upgradeValue(id, this.meta.multiplier(id, level));
     if (actual !== null) return trimNumber(actual.value, actual.digits);
 
-    return `×${this.meta.multiplier(id, level).toFixed(2)}`;
+    return `+${trimNumber((this.meta.multiplier(id, level) - 1) * 100, 1)}%`;
   }
 
   /** Единица фактического значения; пустая строка — значение без единицы. */
