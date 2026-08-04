@@ -210,11 +210,13 @@ export function weaponUnlockWave(id: WeaponId): number {
  * ствол, тем шире иконка, и разница в длине видна ещё до того, как разглядишь
  * силуэт. Цвета фигур задают классы `wpn-*` из styles.css — все цвета
  * интерфейса живут там; `currentColor` на обёртке остался запасным на случай
- * фигуры без класса.
+ * фигуры без класса. className вешается на корень svg — по нему CSS отличает
+ * фигурки стрелков от стволов (у них другая высота).
  */
-function svgIcon(width: number, body: string): string {
+function svgIcon(width: number, body: string, className = ''): string {
+  const classAttr = className === '' ? '' : ` class="${className}"`;
   return (
-    `<svg viewBox="0 0 ${width} 16" fill="currentColor"` +
+    `<svg${classAttr} viewBox="0 0 ${width} 16" fill="currentColor"` +
     ` xmlns="http://www.w3.org/2000/svg">${body}</svg>`
   );
 }
@@ -318,6 +320,59 @@ const WEAPON_ICONS: Partial<Record<WeaponId, string>> = {
 /** Готовая разметка иконки ствола. null — для этого ключа рисунка нет. */
 export function weaponIcon(id: WeaponId): string | null {
   return WEAPON_ICONS[id] ?? null;
+}
+
+/*
+ * ФИГУРКА СТРЕЛКА (задано пользователем, 2026-08-04) — вид сбоку, поза
+ * стрельбы из автомата, лицом вправо, как смотрят стволы в WEAPON_ICONS.
+ * Одета по требованию: куртка защитного цвета, серые штаны, чёрные ботинки
+ * и волосы; автомат нарисован в руках. Порядок фигур смысловой: кисти
+ * ложатся ПОВЕРХ автомата (иначе он лежал бы на руках), лицо поверх волос —
+ * так затылок и макушка остаются тёмным полумесяцем.
+ *
+ * Габарит одной фигурки — 14 × 16 (x 3.5…13.7), той же высоты, что иконки
+ * стволов: в подписи над бочкой они стоят рядом и обязаны совпадать ростом.
+ */
+const SHOOTER_FIGURE =
+  '<circle class="fig-black" cx="7.1" cy="2.9" r="1.75"/>' +
+  '<circle class="fig-skin" cx="7.7" cy="3.4" r="1.3"/>' +
+  '<path class="wpn-olive" d="M5.4 4.8h3.1l.4 5H5.2z"/>' +
+  '<rect class="wpn-olive" x="7.2" y="5" width="3.6" height="1.4" rx=".6"/>' +
+  '<rect class="wpn-dark" x="6.8" y="5.4" width="6.9" height="1.1" rx=".3"/>' +
+  '<path class="wpn-dark" d="M10.2 6.5h1.7l-.5 1.9h-1.6z"/>' +
+  '<rect class="fig-skin" x="10.5" y="5.3" width="1.2" height="1.2" rx=".4"/>' +
+  '<rect class="fig-skin" x="12" y="5.3" width="1.1" height="1.2" rx=".4"/>' +
+  '<path class="fig-pants" d="M5.5 9.6 4 13.9h1.6l1.9-4z"/>' +
+  '<path class="fig-pants" d="M7.3 9.7l1.2 2 .3 2.2h1.6l-.6-3-.9-1.4z"/>' +
+  '<rect class="fig-black" x="3.5" y="13.7" width="2.4" height="1.7" rx=".4"/>' +
+  '<rect class="fig-black" x="8.6" y="13.7" width="2.5" height="1.7" rx=".4"/>';
+
+/** Шаг между фигурками в строю: чуть меньше ширины фигуры — ряды перекрываются. */
+const SHOOTER_STEP = 6.6;
+
+/**
+ * Иконка стрелков: count фигурок шахматным строем, как встаёт отряд.
+ * Нечётные позиции приподняты и рисуются ПЕРВЫМИ — они дальний ряд, и
+ * ближний перекрывает их, как в настоящей колонне. Ширина растёт с числом
+ * бойцов, поэтому у иконки свой viewBox, как у длинных стволов.
+ *
+ * Класс icon-shooters делает фигурки в 1.5 раза выше стволов (задано
+ * пользователем, 2026-08-04) — высоты лежат в styles.css рядом с палитрой.
+ */
+export function shootersIcon(count: number): string {
+  const n = Math.max(1, Math.round(count));
+  const width = 14 + (n - 1) * SHOOTER_STEP;
+
+  const order = [...Array(n).keys()].sort((a, b) => (b % 2) - (a % 2));
+  const body = order
+    .map((i) => {
+      const dx = +(i * SHOOTER_STEP).toFixed(1);
+      const dy = i % 2 === 1 ? -1.3 : 0;
+      return `<g transform="translate(${dx} ${dy})">${SHOOTER_FIGURE}</g>`;
+    })
+    .join('');
+
+  return svgIcon(width, body, 'icon-shooters');
 }
 
 export interface BulletStyle {

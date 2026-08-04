@@ -18,6 +18,7 @@ import type { SquadTarget } from './enemies';
 import { makeFlashColor } from './flash';
 import {
   randomSpecialWeapon,
+  shootersIcon,
   weaponIcon,
   weaponUnlockKills,
   weaponUnlockWave,
@@ -86,8 +87,11 @@ export interface BonusReceiver {
  * за текущей на момент вскрытия, и посчитанная иконка совпадает с ней по
  * построению. Запомненная — разошлась бы, подними отряд оружие иначе.
  *
- * Для стрелков ТЗ задаёт особое правило: до 4 — просто N фигурок, свыше —
- * 4 фигурки и множитель «×N» поверх, иначе десяток фигурок не читается.
+ * Для стрелков ТЗ задаёт особое правило: до 4 — просто N фигурок (нарисованных,
+ * шахматным строем — см. shootersIcon), свыше — 4 фигурки и множитель «×N»
+ * поверх, иначе десяток фигурок не читается. Строка «svg + ×N» работает,
+ * потому что labels.ts вставляет иконки через innerHTML: хвост после svg
+ * становится обычным текстом рядом с рисунком.
  */
 function contentIcon(
   content: BarrelContent,
@@ -102,9 +106,9 @@ function contentIcon(
   if (content === 'special') return (special !== null ? weaponIcon(special) : null) ?? '✨';
 
   const { iconFigureLimit } = CONFIG.barrels.content;
-  if (amount <= iconFigureLimit) return '🧍'.repeat(Math.max(1, amount));
+  if (amount <= iconFigureLimit) return shootersIcon(amount);
 
-  return `${'🧍'.repeat(iconFigureLimit)}×${amount}`;
+  return `${shootersIcon(iconFigureLimit)}×${amount}`;
 }
 
 /** Состояние прочности бочки — от него зависит цвет тела. */

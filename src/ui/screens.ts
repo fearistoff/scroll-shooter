@@ -14,6 +14,7 @@ import {
 } from '../core/meta';
 import {
   isSpecialWeapon,
+  shootersIcon,
   shopWeapons,
   weaponBlastDamage,
   weaponBlastRadius,
@@ -934,7 +935,9 @@ export class Screens {
 
     const icon = document.createElement('div');
     icon.className = 'weapon__icon';
-    icon.textContent = '🧍';
+    // Та же нарисованная фигурка, что над бочками со стрелками: боец должен
+    // выглядеть одинаково везде, где его продают или роняют.
+    icon.innerHTML = shootersIcon(1);
 
     const name = document.createElement('div');
     name.className = 'weapon__name';
