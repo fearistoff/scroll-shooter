@@ -385,6 +385,26 @@ export class GateField {
     this.materials[i]!.color.setHex(color);
   }
 
+  /**
+   * Перечисляет части ворот как препятствия для обхода зомби (ObstacleField из
+   * enemies.ts). Каждая секция стены и каждый турникет — отдельный
+   * прямоугольник: у стены зомби так стекает к проезду секция за секцией.
+   */
+  forEachObstacle(
+    visit: (x: number, z: number, halfX: number, halfZ: number) => void,
+  ): void {
+    const halfThicknessA = CONFIG.gates.typeA.thickness / 2;
+    const halfThicknessB = CONFIG.gates.typeB.thickness / 2;
+    for (let i = 0; i < this.count; i++) {
+      visit(
+        this.centerX[i]!,
+        this.posZ[i]!,
+        this.halfWidth[i]!,
+        this.kindIsB[i] === 1 ? halfThicknessB : halfThicknessA,
+      );
+    }
+  }
+
   /** Перечисляет части для подписей: значение со знаком над воротами. */
   forEachLabel(
     visit: (x: number, y: number, z: number, value: string, icon: string, variant: string) => void,

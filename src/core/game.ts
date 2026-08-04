@@ -149,6 +149,10 @@ export class Game {
     this.boss = new Boss(this.scene, this.squad, this.run, this.crystals, this.money);
     this.mines.addAreaTarget(this.barrels);
     this.mines.addAreaTarget(this.boss);
+    // Зомби обходят бочки и части ворот, не проходя сквозь них. Босс сюда не
+    // входит: он выходит на зачищенное поле, живых зомби рядом с ним не бывает.
+    this.enemies.addObstacleField(this.barrels);
+    this.enemies.addObstacleField(this.gates);
     // Слот заполняется после создания полей: бочки и ворота делят его на двоих, и
     // каждое поле должно видеть занятость соседа.
     this.bonusSlot.add(this.barrels);

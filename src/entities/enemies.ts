@@ -38,6 +38,34 @@ export interface SquadTarget {
 }
 
 /**
+ * Поле неподвижных препятствий, которые зомби обходит вбок: бочки и части
+ * ворот. «Неподвижных» — относительно дороги: их везёт мир, своих ног у них
+ * нет, поэтому зомби нагоняет их (или они его — крупного зомби дорога везёт
+ * быстрее, чем он идёт) и без обхода проходил бы насквозь.
+ *
+ * Интерфейс объявлен на стороне потребителя, как SquadTarget: реализуют его
+ * BarrelField и GateField, но пул зомби о них не знает — Game подключает поля
+ * через addObstacleField, тем же способом, что mines.addAreaTarget.
+ *
+ * След препятствия — прямоугольник в плоскости XZ (полуширины по осям):
+ * бочка, секция стены и турникет им описываются точно, а круга здесь не
+ * хватило бы — секция стены втрое шире своей толщины.
+ */
+export interface ObstacleField {
+  forEachObstacle(
+    visit: (x: number, z: number, halfX: number, halfZ: number) => void,
+  ): void;
+}
+
+/**
+ * Вместимость снимка препятствий на кадр. Бонус на экране один (bonusSlot),
+ * но прямые spawn из замерочных скриптов слот не спрашивают, поэтому запас —
+ * на полные пулы обоих полей: бочек 12 + частей ворот 16, с округлением вверх.
+ * Лишние препятствия сверх вместимости молча не учитываются.
+ */
+const OBSTACLE_CAPACITY = 32;
+
+/**
  * Код вида зомби в данных пула. Это ИНДЕКС: по нему выбираются меш, цвета и
  * скорость из массивов «по виду», поэтому значения обязаны быть 0..2 подряд.
  */
@@ -162,6 +190,20 @@ export class EnemyPool {
    */
   private readonly speedScaleOf: Float32Array;
   private readonly drawn = new Int32Array(KIND_NAMES.length);
+
+  /** Поля препятствий, которые зомби обходит. Заполняет Game после создания. */
+  private readonly obstacleFields: ObstacleField[] = [];
+  /**
+   * Снимок препятствий на текущий кадр: собирается один раз в начале update и
+   * дальше читается в цикле живых. Прямой опрос полей на каждого зомби стоил бы
+   * вызова колбэка на каждую пару «зомби × препятствие», а зомби на дороге сотни.
+   * Массивы заведены один раз — в update мусорить нельзя.
+   */
+  private readonly obstacleX = new Float32Array(OBSTACLE_CAPACITY);
+  private readonly obstacleZ = new Float32Array(OBSTACLE_CAPACITY);
+  private readonly obstacleHalfX = new Float32Array(OBSTACLE_CAPACITY);
+  private readonly obstacleHalfZ = new Float32Array(OBSTACLE_CAPACITY);
+  private obstacleCount = 0;
 
   /** Занятых слотов всего: живые плюс тела. */
   private count = 0;
@@ -403,9 +445,85 @@ export class EnemyPool {
     if (kind === 'fast') this.fastSpawnedTotal++;
   }
 
+  /**
+   * Подключает поле препятствий для обхода. Зовётся из Game после создания
+   * бочек и ворот — сами они создаются позже пула зомби, поэтому в конструктор
+   * не попадают (см. порядок создания в CLAUDE.md).
+   */
+  addObstacleField(field: ObstacleField): void {
+    this.obstacleFields.push(field);
+  }
+
+  /** Приёмник forEachObstacle. Одна ссылка на пул — колбэк зовётся каждый кадр. */
+  private readonly collectObstacle = (
+    x: number,
+    z: number,
+    halfX: number,
+    halfZ: number,
+  ): void => {
+    if (this.obstacleCount >= OBSTACLE_CAPACITY) return;
+    const i = this.obstacleCount++;
+    this.obstacleX[i] = x;
+    this.obstacleZ[i] = z;
+    this.obstacleHalfX[i] = halfX;
+    this.obstacleHalfZ[i] = halfZ;
+  };
+
+  /**
+   * Снимок препятствий на кадр. Координаты — с ПРОШЛОГО шага полей: в Game
+   * зомби обновляются раньше бочек и ворот. Расхождение — не больше шага мира
+   * (0.1 units при 1/60), против зоны обхода в единицы units оно не значит ничего.
+   */
+  private collectObstacles(): void {
+    this.obstacleCount = 0;
+    for (const field of this.obstacleFields) {
+      field.forEachObstacle(this.collectObstacle);
+    }
+  }
+
+  /**
+   * Обход препятствия зомби i: пока его путь перекрыт бочкой или частью ворот,
+   * его отталкивает вбок со скоростью avoid.speed — он обтекает препятствие, а
+   * не проходит насквозь.
+   *
+   * Зона по z СИММЕТРИЧНА (± lookAheadZ от габарита) намеренно: обычный и
+   * быстрый зомби нагоняют препятствие сзади, а крупного дорога везёт
+   * медленнее, чем препятствие, — оно наезжает на него само. Одно условие
+   * покрывает оба направления сближения, и заодно стоящую у линии остановки
+   * толпу расталкивает проезжающая сквозь неё бочка.
+   *
+   * Сторона — куда ближе (знак dx), но если с той стороны выйти некуда (край
+   * дороги ближе зазора), толкает в другую: зомби у прижатой к обочине секции
+   * стены уходит к проезду, а не утыкается в край. Одного препятствия за шаг
+   * достаточно — бонус на экране один, перекрытые зоны почти не встречаются.
+   */
+  private avoidObstacles(i: number, radius: number, dt: number): void {
+    const { lookAheadZ, margin, speed } = CONFIG.enemies.avoid;
+    const roadLimit = CONFIG.world.roadWidth / 2 - radius;
+    const x = this.posX[i]!;
+    const z = this.posZ[i]!;
+
+    for (let o = 0; o < this.obstacleCount; o++) {
+      const reachZ = this.obstacleHalfZ[o]! + radius + lookAheadZ;
+      const dz = z - this.obstacleZ[o]!;
+      if (dz > reachZ || dz < -reachZ) continue;
+
+      const clear = this.obstacleHalfX[o]! + radius + margin;
+      const dx = x - this.obstacleX[o]!;
+      if (dx >= clear || dx <= -clear) continue;
+
+      let dir = dx >= 0 ? 1 : -1;
+      if (Math.abs(this.obstacleX[o]! + dir * clear) > roadLimit) dir = -dir;
+
+      this.posX[i] = Math.min(roadLimit, Math.max(-roadLimit, x + dir * speed * dt));
+      return;
+    }
+  }
+
   /** Поток сверху, движение к отряду, остановка на линии и удары. */
   update(dt: number, squad: SquadTarget): void {
     this.spawnStream(dt, squad);
+    this.collectObstacles();
 
     const { extraSpeed, attackInterval, attackAnim } = CONFIG.enemies;
     const { despawnZ } = CONFIG.world;
@@ -446,6 +564,10 @@ export class EnemyPool {
           squad.damageNearestShooter(this.posX[i]!, this.posZ[i]!, this.damage[i]!);
         }
       }
+
+      // После шага по z: обход считается по позиции, в которой зомби окажется
+      // на этом кадре. Толкает и дошедших — стоящую толпу раздвигает бочка.
+      if (this.obstacleCount > 0) this.avoidObstacles(i, stats.capsule.radius, dt);
 
       const scale = this.instanceScale(i);
 

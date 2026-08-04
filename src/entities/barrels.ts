@@ -800,6 +800,21 @@ export class BarrelField {
   }
 
   /**
+   * Перечисляет бочки как препятствия для обхода зомби (ObstacleField из
+   * enemies.ts). След — настоящий габарит, без hitboxScale: обход должен
+   * начинаться у борта бочки, а не у расширенного круга попаданий пуль.
+   */
+  forEachObstacle(
+    visit: (x: number, z: number, halfX: number, halfZ: number) => void,
+  ): void {
+    const halfX = barrelSpanX() / 2;
+    const halfZ = barrelSpanZ() / 2;
+    for (let i = 0; i < this.count; i++) {
+      visit(this.posX[i]!, this.posZ[i]!, halfX, halfZ);
+    }
+  }
+
+  /**
    * Перечисляет бочки для подписей: число прочности и иконка содержимого.
    * Отдельный обход, чтобы UI не лазил во внутренние массивы.
    */

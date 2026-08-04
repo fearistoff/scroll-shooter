@@ -1,5 +1,4 @@
 import {
-  CapsuleGeometry,
   Color,
   DynamicDrawUsage,
   InstancedMesh,
@@ -15,9 +14,10 @@ import type { BossTarget } from './boss';
 import type { BulletPool } from './bullets';
 import type { SquadTarget } from './enemies';
 import { FallPose } from './fall';
-import { makeCorpseColor, makeFlashColor } from './flash';
+import { makeCorpseColor, makeModelFlashColor } from './flash';
 import type { GateTarget } from './gates';
 import type { MineField } from './mines';
+import { buildSoldierGeometry } from './soldier';
 import {
   isSpecialWeapon,
   specialWeaponRank,
@@ -69,7 +69,7 @@ interface Ally {
  * 100 — правый), мировой x из них выводится.
  */
 export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget {
-  /** Капсула главного героя — заметно крупнее союзников. */
+  /** Модель главного героя — заметно крупнее союзников, куртка фиолетовая. */
   readonly heroMesh: Mesh;
 
   /** HP главного героя. Его смерть заканчивает забег (ТЗ раздел 15). */
@@ -122,14 +122,21 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
 
   /** Материал героя — по нему переключается его вспышка (он один, не инстанс). */
   private readonly heroMaterial: MeshStandardMaterial;
-  /** Цвета для вспышек. Заведены один раз: раскладка строя идёт каждый кадр. */
-  private readonly heroColor = new Color(CONFIG.player.colors.hero);
-  private readonly allyColor = new Color(CONFIG.player.colors.ally);
-  // Вспышка — светлый оттенок СВОЕГО цвета, поэтому у героя и союзника разная.
-  private readonly heroFlash = makeFlashColor(CONFIG.player.colors.hero);
-  /** Цвет мёртвого героя — тёмный оттенок своего, как у тел зомби. */
-  private readonly heroCorpseColor = makeCorpseColor(CONFIG.player.colors.hero);
-  private readonly allyFlash = makeFlashColor(CONFIG.player.colors.ally);
+  /**
+   * Цвета для вспышек. Заведены один раз: раскладка строя идёт каждый кадр.
+   *
+   * С моделью бойца (entities/soldier.ts) опознавательные цвета запечены в
+   * геометрию вертексными, поэтому «обычное» состояние — БЕЛЫЙ множитель
+   * (тождество), вспышка — множитель больше единицы (makeModelFlashColor),
+   * а труп героя — тёмно-серый множитель: makeCorpseColor от белого гасит
+   * все детали фигурки разом, как раньше гасил цвет капсулы.
+   */
+  private readonly heroColor = new Color(0xffffff);
+  private readonly allyColor = new Color(0xffffff);
+  private readonly heroFlash = makeModelFlashColor();
+  private readonly allyFlash = makeModelFlashColor();
+  /** Цвет мёртвого героя — тёмный множитель поверх раскраски, как у тел зомби. */
+  private readonly heroCorpseColor = makeCorpseColor(0xffffff);
 
   /** Общее стрелковое оружие отряда (ТЗ раздел 6: подобрал — у всех). */
   private commonWeapon: WeaponId;
@@ -166,27 +173,35 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
     this.commonWeapon = startWeapon as WeaponId;
     this.heroWeapon = new WeaponState(this.commonWeapon, 'hero');
 
-    // Материал героя держим ссылкой: его цвет переключается на вспышку при уроне.
+    // Материал героя держим ссылкой: его цвет переключается на вспышку при
+    // уроне. Белый с вертексными цветами: раскраска фигурки запечена в
+    // геометрии, материал — только множитель для вспышки и трупа.
     this.heroMaterial = new MeshStandardMaterial({
-      color: colors.hero,
+      color: 0xffffff,
+      vertexColors: true,
       roughness: 0.7,
       metalness: 0,
     });
-    this.heroMesh = new Mesh(
-      new CapsuleGeometry(heroCapsule.radius, heroCapsule.length, 4, 12),
-      this.heroMaterial,
-    );
-    // Капсула центрируется по середине: поднимаем на пол-высоты, чтобы ноги
+    // Модель бойца вместо капсулы (entities/soldier.ts): центр, как у капсулы,
+    // в середине роста, поэтому посадка (standY, падение героя вокруг подошвы)
+    // осталась прежней. Куртка героя фиолетовая — по ней его находят в строю.
+    this.heroMesh = new Mesh(buildSoldierGeometry(heroCapsule, colors.hero), this.heroMaterial);
+    // Модель центрируется по середине: поднимаем на пол-высоты, чтобы ноги
     // стояли на дороге (y = 0).
     this.heroMesh.position.set(0, Squad.heroStandY, 0);
     scene.add(this.heroMesh);
 
     this.allyMesh = new InstancedMesh(
-      new CapsuleGeometry(allyCapsule.radius, allyCapsule.length, 4, 10),
-      // Белый материал: цвет союзника задаётся через instanceColor, который three
-      // умножает на цвет материала. С бежевым материалом вспышка не смогла бы
-      // стать краснее его — умножение только гасит.
-      new MeshStandardMaterial({ color: 0xffffff, roughness: 0.8, metalness: 0 }),
+      buildSoldierGeometry(allyCapsule, colors.ally),
+      // Белый материал: у модели цвета вертексные, а instanceColor — множитель
+      // поверх них (обычное состояние — белый, вспышка — ярче единицы, см.
+      // makeModelFlashColor).
+      new MeshStandardMaterial({
+        color: 0xffffff,
+        vertexColors: true,
+        roughness: 0.8,
+        metalness: 0,
+      }),
       Squad.visibleAllyCapacity,
     );
     this.allyMesh.instanceMatrix.setUsage(DynamicDrawUsage);
