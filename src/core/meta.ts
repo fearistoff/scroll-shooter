@@ -103,7 +103,8 @@ export const UPGRADE_IDS: readonly UpgradeId[] = UPGRADE_TRACKS.flatMap((track) 
 /**
  * Бусты характеристик — разовые усиления на одну вылазку, часть стартового
  * кита (CONFIG.shop.startBonuses.statBoosts — там же величины и цены). Пять
- * множителей ×1.5 и складывающийся буст предела отряда.
+ * множителей ×1.5 и буст предела отряда (+5 мест); каждый берётся один раз,
+ * боевые и доходные — ещё и по одному из группы (STAT_BOOST_GROUPS).
  */
 export type StatBoostId = 'shooters' | 'damage' | 'fireRate' | 'range' | 'exp' | 'money';
 
@@ -117,6 +118,19 @@ export const STAT_BOOST_IDS: readonly StatBoostId[] = [
   'range',
   'exp',
   'money',
+];
+
+/**
+ * Взаимоисключающие группы бустов (задано пользователем, 2026-08-04): из
+ * боевых — урон, темп, дальность — в кит берётся только один, из доходных —
+ * опыт, деньги — тоже только один. Взятый буст БЛОКИРУЕТ остальные строки
+ * своей группы, а не переключает выбор — как занятый слот ствола
+ * (canBuyStartWeapon); освобождает группу та же кнопка «Убрать». Предел
+ * отряда ни в какой группе не состоит.
+ */
+const STAT_BOOST_GROUPS: readonly (readonly StatBoostId[])[] = [
+  ['damage', 'fireRate', 'range'],
+  ['exp', 'money'],
 ];
 
 /**
@@ -492,8 +506,9 @@ interface SavedProgress {
    */
   specialsPicked: WeaponId[];
   /**
-   * Взятые в кит бусты характеристик: id → сколько раз (больше единицы бывает
-   * только у предела отряда). Как и весь кит, перезагрузку не переживают —
+   * Взятые в кит бусты характеристик: id → сколько раз. Каждый берётся один
+   * раз; больше единицы — только в сохранениях времён складывающегося предела
+   * отряда (до 2.18.1). Как и весь кит, перезагрузку не переживают —
    * конвертируются обратно в деньги на чтении.
    */
   startBoosts: Partial<Record<StatBoostId, number>>;
@@ -1088,16 +1103,20 @@ export class MetaProgress {
 
   // --- Бусты характеристик (часть кита) --------------------------------------
 
-  /** Сколько раз буст взят в кит. Больше единицы — только у предела отряда. */
+  /**
+   * Сколько раз буст взят в кит: 0 или 1 — каждый берётся один раз
+   * (canBuyStatBoost). Больше единицы бывает только в сохранениях времён
+   * складывающегося предела отряда — см. loadStartKit.
+   */
   startBoostCount(id: StatBoostId): number {
     return this.startBoostsValue.get(id) ?? 0;
   }
 
   /**
-   * Предел отряда С УЧЁТОМ взятых бустов: ветка размера отряда плюс
-   * shooterStep за каждый буст, но не выше shooterCap. От ветки считается по
-   * той же причине, что startShooterLimit: applyTo() до старта забега конфиг
-   * не трогал, а экран бустеров должен показывать уже новый предел.
+   * Предел отряда С УЧЁТОМ взятого буста: ветка размера отряда плюс
+   * shooterStep, если буст в ките, но не выше shooterCap. От ветки считается
+   * по той же причине, что startShooterLimit: applyTo() до старта забега
+   * конфиг не трогал, а экран бустеров должен показывать уже новый предел.
    */
   get boostedMaxShooters(): number {
     const { shooterStep, shooterCap } = CONFIG.shop.startBonuses.statBoosts;
@@ -1126,13 +1145,15 @@ export class MetaProgress {
   }
 
   /**
-   * Можно ли взять буст: множители — по одному (второй раз давать «+50%»
-   * нечему), предел отряда — пока не упёрся в потолок shooterCap.
+   * Можно ли взять буст: любой — один раз (задано пользователем, 2026-08-04;
+   * раньше предел отряда складывался до потолка shooterCap), а внутри группы
+   * STAT_BOOST_GROUPS буст может быть только один — взятый блокирует соседей
+   * по группе, пока его не снимут.
    */
   canBuyStatBoost(id: StatBoostId): boolean {
-    if (id === 'shooters') {
-      if (this.boostedMaxShooters >= CONFIG.shop.startBonuses.statBoosts.shooterCap) return false;
-    } else if (this.startBoostCount(id) > 0) {
+    if (this.startBoostCount(id) > 0) return false;
+    const group = STAT_BOOST_GROUPS.find((ids) => ids.includes(id));
+    if (group !== undefined && group.some((other) => this.startBoostCount(other) > 0)) {
       return false;
     }
     return this.moneyValue >= this.statBoostPrice(id);
@@ -1148,7 +1169,7 @@ export class MetaProgress {
     return true;
   }
 
-  /** Возвращает один буст в кошелёк — поштучно, как бойцов. */
+  /** Возвращает буст в кошелёк. */
   refundStatBoost(id: StatBoostId): boolean {
     const count = this.startBoostCount(id);
     if (count <= 0) return false;
@@ -1588,13 +1609,19 @@ export class MetaProgress {
 
         let count = Math.max(0, Math.floor(value));
         if (id === 'shooters') {
-          // Не больше, чем набирается честными покупками: каждая следующая
-          // требует, чтобы предел ещё не упёрся в потолок (canBuyStatBoost).
+          // Предел отряда теперь берётся один раз, но пока буст складывался
+          // (до 2.18.1), честно покупалось и больше — такой кит дочитывается
+          // целиком, чтобы конвертация в деньги ниже вернула всё оплаченное.
+          // Потолок прежнего правила: каждая покупка требовала, чтобы предел
+          // ещё не упёрся в shooterCap.
           const base = this.countValue('squadSize');
           count = Math.min(count, Math.max(0, Math.ceil((shooterCap - base) / shooterStep)));
         } else {
           count = Math.min(count, 1);
         }
+        // Группы (STAT_BOOST_GROUPS) здесь не проверяются по той же причине:
+        // кит из сохранения до групп мог держать несколько бустов одной
+        // группы, и все они должны конвертироваться в деньги ниже.
         if (count > 0) this.startBoostsValue.set(id, count);
       }
     }

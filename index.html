@@ -72,13 +72,13 @@
       <div id="screen-result" class="screen">
         <div id="result-title" class="screen__title"></div>
         <div id="result-time" class="screen__row"></div>
-        <!-- Итоги вылазки одним блоком строк, без крупных цветных сумм: подписи
-             и числа стоят в одной строке, а не парами. Весь текст ставит
-             screens.ts — при множителе прокачки ≠ 1 там всё умножение целиком,
-             «280 × 1.04 = 291 EXP». -->
+        <!-- Итоги вылазки одним блоком строк. Подписей у сумм нет: валюту
+             называют цвет (синий опыт, жёлтые деньги — как счётчики HUD) и
+             единица в конце. Текст ставит screens.ts — при множителях ≠ 1 там
+             всё умножение целиком, «280 × 1.04 × 1.50 = 436 EXP». -->
         <div class="screen__lines">
-          <div id="result-run-exp" class="screen__row"></div>
-          <div id="result-run-money" class="screen__row"></div>
+          <div id="result-run-exp" class="screen__row screen__earned screen__earned--exp"></div>
+          <div id="result-run-money" class="screen__row screen__earned screen__earned--money"></div>
           <!-- Что открылось за вылазку. Текст и показ ставит screens.ts: строки
                нет, когда рекорд волны ничего не открыл. -->
           <div id="result-unlocked" hidden></div>

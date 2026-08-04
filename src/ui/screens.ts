@@ -53,12 +53,20 @@ export interface PauseInfo {
 export interface RunResult {
   /** Собрано кристаллов, без множителя прокачки — то же число, что было в HUD. */
   collectedExp: number;
-  /** Сколько EXP ушло в банк: собранное × множитель. */
+  /** Сколько EXP ушло в банк: собранное × множители ниже. */
   earnedExp: number;
+  /** Множитель опыта от прокачки (ветка «Опыт»). В умножении стоит первым. */
+  expUpgradeMultiplier: number;
+  /** Множитель опыта от бустера: ×1.5, если буст взят в кит, иначе 1. Вторым. */
+  expBoostMultiplier: number;
   /** Собрано монет, без множителя прокачки — то же число, что было в HUD. */
   collectedMoney: number;
-  /** Сколько денег ушло в банк: собранное × множитель. */
+  /** Сколько денег ушло в банк: собранное × множители ниже. */
   earnedMoney: number;
+  /** Множитель денег от прокачки — как expUpgradeMultiplier. */
+  moneyUpgradeMultiplier: number;
+  /** Множитель денег от бустера — как expBoostMultiplier. */
+  moneyBoostMultiplier: number;
   elapsedSeconds: number;
   wave: number;
   /**
@@ -114,9 +122,9 @@ interface WeaponRow {
  * (weapon__note), а здесь — нет, и наследование заставляло бы держать в строке
  * пустой элемент только ради типа.
  *
- * refund — вторая кнопка «вернуть» у складывающихся покупок (бойцы, буст
- * предела отряда). null — покупка одиночная, и её снимает та же кнопка buy
- * («Убрать»), как у строк аренды стволов.
+ * refund — вторая кнопка «вернуть» у складывающихся покупок (бойцы, стартовая
+ * волна). null — покупка одиночная, и её снимает та же кнопка buy («Убрать»),
+ * как у строк аренды стволов.
  */
 interface BoosterRow {
   root: HTMLElement;
@@ -190,12 +198,17 @@ const RESET_LABELS: readonly string[] = ['Сбросить прогресс', '�
  */
 function formatEarned(
   collected: number,
-  multiplier: number,
+  multipliers: readonly number[],
   earned: number,
   unit: string,
 ): string {
-  if (multiplier === 1) return `${earned} ${unit}`;
-  return `${collected} × ${multiplier.toFixed(2)} = ${earned} ${unit}`;
+  // Единичные сомножители не показываются: «× 1.00» — шум, который к тому же
+  // прятал бы за собой настоящий множитель. Порядок — как передан: прокачка,
+  // затем бустер.
+  const factors = multipliers.filter((value) => value !== 1);
+  if (factors.length === 0) return `${earned} ${unit}`;
+  const chain = factors.map((value) => `× ${value.toFixed(2)}`).join(' ');
+  return `${collected} ${chain} = ${earned} ${unit}`;
 }
 
 /**
@@ -406,31 +419,32 @@ export class Screens {
     }
 
     // Множители прокачки применяются только на выходе из забега, поэтому числа
-    // на экране больше тех, что стояли в HUD. Показываем умножение целиком —
-    // «собрано × множитель = зачислено», иначе разница читается как ошибка
-    // счётчика. Обе валюты показываются всегда, даже нулевые: пустая строка
-    // выглядела бы поломкой, а ноль честно говорит, что за забег не выпало.
+    // на экране больше тех, что стояли в HUD. Показываем умножение целиком и
+    // по сомножителям — «собрано × прокачка × бустер = зачислено», иначе
+    // разница читается как ошибка счётчика, а слитый множитель не давал бы
+    // понять, что бустер сработал. Считается ровно так же (run.expEarned —
+    // собранное × тот же итоговый множитель), расходиться числам не с чего.
+    // Обе валюты показываются всегда, даже нулевые: пустая строка выглядела бы
+    // поломкой, а ноль честно говорит, что за забег не выпало.
     //
-    // Подпись стоит в той же строке, что и сумма: крупных цветных сумм на этом
-    // экране больше нет, а подпись без своего числа рядом читалась бы как
-    // заголовок следующей строки.
+    // Подписей у сумм нет (решение пользователя, 2026-08-04): валюту называют
+    // цвет строки — синий опыт и жёлтые деньги, как счётчики HUD, — и единица
+    // в конце. Классы стоят прямо на строках в index.html.
     if (this.resultRunExp !== null) {
-      const exp = formatEarned(
+      this.resultRunExp.textContent = formatEarned(
         Math.floor(result.collectedExp),
-        CONFIG.player.expMultiplier,
+        [result.expUpgradeMultiplier, result.expBoostMultiplier],
         Math.floor(result.earnedExp),
         'EXP',
       );
-      this.resultRunExp.textContent = `Опыт за вылазку: ${exp}`;
     }
     if (this.resultRunMoney !== null) {
-      const money = formatEarned(
+      this.resultRunMoney.textContent = formatEarned(
         result.collectedMoney,
-        CONFIG.player.moneyMultiplier,
+        [result.moneyUpgradeMultiplier, result.moneyBoostMultiplier],
         result.earnedMoney,
         '$',
       );
-      this.resultRunMoney.textContent = `Деньги за вылазку: ${money}`;
     }
 
     this.refreshResultUnlocked(result.unlockedWeapons);
@@ -958,14 +972,12 @@ export class Screens {
   /**
    * Строка буста характеристик.
    *
-   * У предела отряда две кнопки, как у бойцов: буст складывается (+5 мест за
-   * покупку до потолка), и снимать его нужно так же поштучно. Остальные бусты
-   * берутся по одному, и их кнопка — переключатель: повторное нажатие
-   * («Убрать») снимает выбор, как у строк аренды стволов.
+   * Каждый буст берётся один раз (задано пользователем, 2026-08-04; раньше
+   * предел отряда складывался и носил вторую кнопку возврата, как бойцы).
+   * Кнопка — переключатель: повторное нажатие («Убрать») снимает выбор, как у
+   * строк аренды стволов.
    */
   private buildStatBoostRow(id: StatBoostId): HTMLElement {
-    const stackable = id === 'shooters';
-
     const row = document.createElement('div');
     row.className = 'weapon';
 
@@ -982,41 +994,14 @@ export class Screens {
     const buy = document.createElement('button');
     buy.className = 'weapon__buy weapon__buy--booster';
     buy.type = 'button';
+    buy.addEventListener('click', () => {
+      if (this.meta.startBoostCount(id) > 0) this.meta.refundStatBoost(id);
+      else this.meta.buyStatBoost(id);
+      this.refreshBoosters();
+    });
 
-    let refund: HTMLButtonElement | null = null;
-    if (stackable) {
-      const actions = document.createElement('div');
-      actions.className = 'weapon__actions';
-
-      refund = document.createElement('button');
-      refund.className = 'weapon__buy weapon__buy--slim';
-      refund.type = 'button';
-      refund.textContent = '−';
-      refund.setAttribute('aria-label', 'Вернуть буст предела отряда');
-      refund.addEventListener('click', () => {
-        this.meta.refundStatBoost(id);
-        this.refreshBoosters();
-      });
-
-      buy.addEventListener('click', () => {
-        this.meta.buyStatBoost(id);
-        this.refreshBoosters();
-      });
-
-      actions.append(refund, buy);
-      row.append(icon, name, stats, actions);
-    } else {
-      buy.addEventListener('click', () => {
-        // Повторное нажатие по взятому снимает выбор — то же правило, что у
-        // строк аренды стволов.
-        if (this.meta.startBoostCount(id) > 0) this.meta.refundStatBoost(id);
-        else this.meta.buyStatBoost(id);
-        this.refreshBoosters();
-      });
-      row.append(icon, name, stats, buy);
-    }
-
-    this.statBoostRows.set(id, { root: row, name, stats, buy, refund });
+    row.append(icon, name, stats, buy);
+    this.statBoostRows.set(id, { root: row, name, stats, buy, refund: null });
     return row;
   }
 
@@ -1196,12 +1181,16 @@ export class Screens {
        * ЗАМОК — ОВЕРЛЕЕМ поверх всей строки (решение пользователя,
        * 2026-08-03): иконка и условие разблокировки на размытом фоне, а не
        * замок на кнопке и причина в примечании. Условие цепочки называет
-       * предыдущий ствол по имени; условие волны — её номер.
+       * предыдущий ствол по имени; условие волны — волну, которую нужно
+       * ПРОЙТИ, а не достичь (решение пользователя): «дойти до волны N» —
+       * это пережить босса N − 1, и текст называет само действие. waveLock
+       * здесь всегда ≥ 2 (без замка isWeaponWaveReached пропускает), так что
+       * ниже волны 1 вычитание не уходит.
        */
       const chainLocked = !owned && !onSale;
       let lockText = '';
       if (waveLock > 0) {
-        lockText = `Дойди до волны ${waveLock}`;
+        lockText = `Пройди волну ${waveLock - 1}`;
       } else if (chainLocked) {
         const list = shopWeapons();
         const prev = list[list.findIndex((entry) => entry.id === id) - 1];
@@ -1318,8 +1307,10 @@ export class Screens {
    * Строка стартовой волны: выбранная волна, открытый предел и цена шага.
    *
    * Пока старт не открыт вовсе (рекорд ниже 2 + unlockAhead), вместо предела
-   * стоит условие словами — «Дойди до волны 4»: замок здесь без оверлея, как
-   * у бустов, — скрывать размытием в строке нечего.
+   * стоит условие словами — «Пройди волну 3»: замок здесь без оверлея, как
+   * у бустов, — скрывать размытием в строке нечего. Формулировка «пройди»,
+   * а не «дойди до» (решение пользователя): дойти до волны 2 + unlockAhead —
+   * это пережить босса волны 1 + unlockAhead, текст называет само действие.
    */
   private refreshStartWave(): void {
     const row = this.startWaveRow;
@@ -1335,7 +1326,7 @@ export class Screens {
     // «до N» — самый поздний открытый старт: волна W открывается рекордом
     // W + unlockAhead (MetaProgress.startWaveLimit).
     row.stats.textContent =
-      limit > 1 ? `Начать с волны · до ${limit}` : `Дойди до волны ${2 + unlockAhead}`;
+      limit > 1 ? `Начать с волны · до ${limit}` : `Пройди волну ${1 + unlockAhead}`;
     row.root.classList.toggle('weapon--picked', wave > 1);
 
     row.buy.textContent = `${this.meta.startWavePrice} $`;
@@ -1375,9 +1366,9 @@ export class Screens {
   /**
    * Строки бустов характеристик: подписи, цены и доступность.
    *
-   * Прибавка предела отряда в названии — ФАКТИЧЕСКАЯ, а не номинал × число
-   * покупок: у потолка (32) последний буст даёт меньше пяти мест, и «+10»
-   * там врал бы. Вторая строка называет номинал и потолок — они из конфига.
+   * Вторая строка предела отряда называет итоговый предел ПОСЛЕ буста, а не
+   * потолок конфига: буст один, и «до 28» на недокупленной ветке обещал бы
+   * места, которых одна покупка не даёт.
    */
   private refreshStatBoosts(): void {
     const { multiplier, shooterStep, shooterCap } = CONFIG.shop.startBonuses.statBoosts;
@@ -1389,23 +1380,15 @@ export class Screens {
       const { title, note } = STAT_BOOST_VIEW[id];
 
       row.root.classList.toggle('weapon--picked', count > 0);
-
+      row.name.textContent = id === 'shooters' ? title : `${title} +${percent}%`;
       if (id === 'shooters') {
-        const bonus = this.meta.boostedMaxShooters - this.meta.countValue('squadSize');
-        row.name.textContent = count > 0 ? `${title} +${bonus}` : title;
-        // Коротко: колонка с двумя кнопками отдаёт 146 px (ЗАМЕРЕНО canvas-обмером
-        // при фактическом шрифте), «+5 к макс. стрелков · до 28» занимала 149 и
-        // переносилась на вторую строку, «+5 к стрелкам · до 28» — 118.
-        row.stats.textContent = `+${shooterStep} к стрелкам · до ${shooterCap}`;
-        row.buy.textContent = `${price} $`;
-        row.buy.disabled = !this.meta.canBuyStatBoost(id);
-        if (row.refund !== null) row.refund.disabled = count === 0;
+        const target = Math.min(this.meta.countValue('squadSize') + shooterStep, shooterCap);
+        row.stats.textContent = `+${shooterStep} к стрелкам · до ${target}`;
       } else {
-        row.name.textContent = `${title} +${percent}%`;
         row.stats.textContent = note;
-        row.buy.textContent = count > 0 ? 'Убрать' : `${price} $`;
-        row.buy.disabled = count === 0 && !this.meta.canBuyStatBoost(id);
       }
+      row.buy.textContent = count > 0 ? 'Убрать' : `${price} $`;
+      row.buy.disabled = count === 0 && !this.meta.canBuyStatBoost(id);
     }
   }
 

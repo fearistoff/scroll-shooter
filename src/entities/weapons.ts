@@ -172,9 +172,9 @@ export function shopWeapons(): readonly ShopWeapon[] {
   return CONFIG.shop.weapons as readonly ShopWeapon[];
 }
 
-/** Замок ступени оружия — секунда забега ИЛИ номер волны, см. CONFIG.run.unlocks.weapons. */
+/** Замок ступени оружия — номер волны и/или счёт убийств в волне, см. CONFIG.run.unlocks.weapons. */
 interface WeaponUnlockGate {
-  atSeconds?: number;
+  kills?: number;
   fromWave?: number;
 }
 
@@ -188,11 +188,12 @@ function unlockGate(id: WeaponId): WeaponUnlockGate {
 }
 
 /**
- * Секунда забега, с которой ствол может выпасть. 0 — замка по времени нет
- * (RunState.isUnlocked(0) верно с первого кадра).
+ * Какое по счёту убийство ТЕКУЩЕЙ волны открывает ствол. 0 — замка по
+ * убийствам нет: ствол доступен с первого кадра волны. Счётчик волновый
+ * (RunState.killedZombies), поэтому на каждой волне порог отрабатывает заново.
  */
-export function weaponUnlockSeconds(id: WeaponId): number {
-  return unlockGate(id).atSeconds ?? 0;
+export function weaponUnlockKills(id: WeaponId): number {
+  return unlockGate(id).kills ?? 0;
 }
 
 /**
@@ -207,8 +208,9 @@ export function weaponUnlockWave(id: WeaponId): number {
 /**
  * Обёртка нарисованной иконки. Высоту задаёт CSS, ширину — viewBox: чем длиннее
  * ствол, тем шире иконка, и разница в длине видна ещё до того, как разглядишь
- * силуэт. Цвет наследуется от подписи (`currentColor`), поэтому иконка тускнеет
- * вместе с ней, если у варианта задан свой цвет.
+ * силуэт. Цвета фигур задают классы `wpn-*` из styles.css — все цвета
+ * интерфейса живут там; `currentColor` на обёртке остался запасным на случай
+ * фигуры без класса.
  */
 function svgIcon(width: number, body: string): string {
   return (
@@ -220,60 +222,97 @@ function svgIcon(width: number, body: string): string {
 /**
  * Иконки оружия — по ним видно, что лежит в бочке и что продаётся в магазине.
  *
- * Стрелковые ступени нарисованы, а не набраны эмодзи: пистолетный эмодзи в
- * Unicode ровно один (и на Apple он вообще водяной), так что пистолет-пулемёт,
- * автомат и пулемёт им не различить. Силуэты разведены по трём признакам,
- * читаемым на 16 пикселях: длина ствола, форма магазина и сошки.
- *   пистолет     — короткий ствол, скошенная рукоять, без приклада;
- *   пистолет-пулемёт — короткий, магазин в рукояти, приклад сложен;
- *   автомат      — длиннее, изогнутый магазин и приклад;
- *   пулемёт      — самый длинный, рёбра на стволе, короб снизу и сошки.
- * Особое оружие остаётся эмодзи: огонь и взрыв они передают лучше рисунка.
+ * Все шесть нарисованы, а не набраны эмодзи: пистолетный эмодзи в Unicode
+ * ровно один (и на Apple он вообще водяной), а огню и взрыву эмодзи-заменой
+ * не передать, КАКОЙ именно ствол внутри. Прототипы заданы пользователем
+ * (2026-08-04), силуэты сведены к признакам, читаемым на 16 пикселях:
+ *   пистолет     — Colt M1911: прямой затвор, курок сзади, скошенная рукоять;
+ *   пистолет-пулемёт — MAC-10: короткая коробка, магазин сквозь рукоять
+ *                  посередине, огрызок ствола с резьбой;
+ *   автомат      — АК-74: деревянные приклад и цевьё, рожок вперёд, длинный
+ *                  дульный тормоз;
+ *   пулемёт      — минипулемёт M134: блок из трёх видимых стволов с обоймами,
+ *                  толстый корпус мотора, ручка сверху;
+ *   огнемёт      — огнемёт Пиро из TF2: красная труба, баллон снизу, две
+ *                  рукояти, пилотный огонёк у сопла;
+ *   гранатомёт   — РПГ-7: раструб сзади, деревянная накладка, две рукояти,
+ *                  конус гранаты шире трубы.
+ * Раскраска — классами по ролям (сталь/металл/тёмное/дерево/олива/красный/
+ * пламя), сама палитра в styles.css рядом с размерами иконок.
  */
 const WEAPON_ICONS: Partial<Record<WeaponId, string>> = {
   // Пистолет в бочках не выпадает (он стартовый), иконка нужна магазину: там он
   // стоит первой строкой цепочки, и пустое место вместо ствола читалось бы как
   // сбой, а не как «уже есть».
   pistol: svgIcon(
-    16,
-    '<rect x="1.6" y="5.4" width="10.4" height="3.4" rx=".7"/>' +
-      '<rect x="11.6" y="6" width="3.2" height="1.6" rx=".5"/>' +
-      '<rect x="4.2" y="4.1" width="3" height="1.4" rx=".5"/>' +
-      '<path d="M3.1 8.7h4l-1.5 5.6H2.2z"/>',
+    17,
+    '<rect class="wpn-dark" x="0.6" y="3.9" width="1.4" height="1.8" rx=".3"/>' +
+      '<rect class="wpn-steel" x="1.4" y="4.4" width="12.8" height="3.2" rx=".6"/>' +
+      '<rect class="wpn-dark" x="12.9" y="3.5" width="1" height="1.1"/>' +
+      '<rect class="wpn-metal" x="14" y="5" width="1.6" height="1.7" rx=".3"/>' +
+      '<rect class="wpn-metal" x="2.4" y="7.4" width="10.6" height="1.3"/>' +
+      '<path class="wpn-wood" d="M3.4 8.5h3.8l-1.3 5.5q-.15.7-.85.7H3.5q-.7 0-.6-.7z"/>' +
+      '<path class="wpn-metal" d="M7.4 8.7h2.2q-.1 1.7-1.9 2z"/>',
   ),
   miniSmg: svgIcon(
-    22,
-    '<rect x="1.4" y="6.6" width="3.2" height="1.4" rx=".5"/>' +
-      '<rect x="4.2" y="4.9" width="10.6" height="4.2" rx=".8"/>' +
-      '<rect x="6" y="3.4" width="3.6" height="1.5" rx=".5"/>' +
-      '<rect x="14.4" y="6.3" width="6.6" height="1.9" rx=".6"/>' +
-      '<rect x="17.4" y="4.5" width="1.3" height="1.8"/>' +
-      '<path d="M6.9 9.1h4.2l-.8 5.9H6.2z"/>',
+    20,
+    '<rect class="wpn-metal" x="0.4" y="4.8" width="1.4" height="3.4" rx=".3"/>' +
+      '<rect class="wpn-metal" x="8.2" y="9" width="2" height="6.6" rx=".3"/>' +
+      '<rect class="wpn-dark" x="1.8" y="4.1" width="13.4" height="4.9" rx=".5"/>' +
+      '<rect class="wpn-metal" x="7" y="3" width="2.4" height="1.2" rx=".3"/>' +
+      '<rect class="wpn-metal" x="15.2" y="5.7" width="2.2" height="1.7"/>' +
+      '<rect class="wpn-steel" x="17.4" y="5.4" width="1.6" height="2.3" rx=".4"/>' +
+      '<path class="wpn-dark" d="M7.2 9h4l-.5 3.6H7.7z"/>',
   ),
   rifle: svgIcon(
     30,
-    '<path d="M1.6 6.3 8 5.5v4.1l-5.6.5z"/>' +
-      '<rect x="7.6" y="4.9" width="11" height="4.3" rx=".8"/>' +
-      '<rect x="17" y="7.7" width="6.2" height="2" rx=".7"/>' +
-      '<rect x="18.6" y="5.9" width="10.4" height="1.8" rx=".6"/>' +
-      '<rect x="25.8" y="3.8" width="1.5" height="2.2"/>' +
-      '<path d="M9.8 9.2h3.2l-1 4.4H8.9z"/>' +
-      '<path d="M14.4 9.2h4.4l-.4 3.3q-.3 2.2-2 2.2t-2.1-2.2z"/>',
+    '<path class="wpn-wood" d="M.6 5.6 6.6 5v4.8L1.5 9.3q-.9 0-.9-.9z"/>' +
+      '<rect class="wpn-metal" x="6.2" y="4.6" width="9.2" height="4.3" rx=".4"/>' +
+      '<rect class="wpn-dark" x="7.6" y="3.5" width="2.6" height="1.3" rx=".3"/>' +
+      '<rect class="wpn-metal" x="15.4" y="4.3" width="6.8" height="1.4"/>' +
+      '<rect class="wpn-wood" x="15.4" y="6.1" width="5.4" height="2.3" rx=".4"/>' +
+      '<rect class="wpn-steel" x="20.8" y="5.8" width="5.4" height="1.3"/>' +
+      '<rect class="wpn-dark" x="24.6" y="3.8" width="1.2" height="2"/>' +
+      '<rect class="wpn-steel" x="26.4" y="5.1" width="3.2" height="2.6" rx=".6"/>' +
+      '<rect class="wpn-dark" x="27.7" y="5.5" width=".8" height="1.8"/>' +
+      '<path class="wpn-wood" d="M10.4 8.9h2.9l-1 3.4q-.15.5-.7.5h-1.6q-.6 0-.5-.6z"/>' +
+      '<path class="wpn-dark" d="M13.7 8.9h4.1q.2 3.4 2.4 5.3l-2.4 1.1q-2.4-2.5-2.1-6.4z"/>',
   ),
   machineGun: svgIcon(
     34,
-    '<path d="M1.4 5.3 7 4.8v4.9l-5.6.4z"/>' +
-      '<rect x="6.6" y="4.3" width="13.4" height="5.3" rx=".9"/>' +
-      '<rect x="7.9" y="9.5" width="6.6" height="4.5" rx=".7"/>' +
-      '<path d="M16 9.7h3.3l-.9 3.5h-2.9z"/>' +
-      '<rect x="19.4" y="5.5" width="13.2" height="2.6" rx=".7"/>' +
-      '<rect x="22.6" y="3.5" width="1.4" height="2.1"/>' +
-      '<rect x="25.6" y="3.5" width="1.4" height="2.1"/>' +
-      '<rect x="28.6" y="3.5" width="1.4" height="2.1"/>' +
-      '<path d="M25.2 8.1h1.6l3.2 6.7h-1.6L26 9.7l-2.4 5.1h-1.6z"/>',
+    '<rect class="wpn-dark" x="0.4" y="4.7" width="1.8" height="1.3" rx=".3"/>' +
+      '<rect class="wpn-dark" x="0.4" y="9.1" width="1.8" height="1.3" rx=".3"/>' +
+      '<rect class="wpn-dark" x="2.2" y="3.9" width="9" height="7.4" rx="1.3"/>' +
+      '<rect class="wpn-metal" x="4" y="2.4" width="5.4" height="1.2" rx=".5"/>' +
+      '<rect class="wpn-metal" x="11.2" y="4.3" width="1.6" height="6.6" rx=".3"/>' +
+      '<rect class="wpn-metal" x="12.8" y="4.6" width="17" height="1.15"/>' +
+      '<rect class="wpn-steel" x="12.8" y="7.1" width="17.6" height="1.15"/>' +
+      '<rect class="wpn-metal" x="12.8" y="9.6" width="17" height="1.15"/>' +
+      '<rect class="wpn-dark" x="20" y="4" width="1.7" height="7.2" rx=".4"/>' +
+      '<rect class="wpn-dark" x="27.6" y="4" width="1.7" height="7.2" rx=".4"/>',
   ),
-  flamethrower: '🔥',
-  grenadeLauncher: '💥',
+  flamethrower: svgIcon(
+    31,
+    '<path class="wpn-dark" d="M1.9 8.1h3l-.7 3.4H2.4z"/>' +
+      '<rect class="wpn-metal" x="0.6" y="4.5" width="3" height="3.4" rx=".6"/>' +
+      '<rect class="wpn-red" x="3.6" y="4.8" width="19.6" height="2.8" rx="1"/>' +
+      '<rect class="wpn-metal" x="8.8" y="8.4" width="9" height="3.4" rx="1.7"/>' +
+      '<rect class="wpn-dark" x="19.6" y="7.6" width="1.7" height="3.4" rx=".5"/>' +
+      '<rect class="wpn-metal" x="23.2" y="4.3" width="1.8" height="3.8" rx=".4"/>' +
+      '<rect class="wpn-steel" x="25" y="5.4" width="2.6" height="1.6"/>' +
+      '<path class="wpn-flame" d="M27.6 7.8q-1-.7-1-1.7 0-1.4 1.6-2.4-.3 1 .4 1.7.7.6.7 1.3 0 1.1-1.7 1.1z"/>',
+  ),
+  grenadeLauncher: svgIcon(
+    34,
+    '<path class="wpn-dark" d="M.4 4.3l3.4 1.5v2.8L.4 10.1Q0 10 0 9.6V4.8q0-.4.4-.5z"/>' +
+      '<rect class="wpn-olive" x="3.4" y="5.6" width="17.4" height="2.7"/>' +
+      '<rect class="wpn-wood" x="5.4" y="5" width="6.2" height="3.9" rx=".9"/>' +
+      '<rect class="wpn-dark" x="12.6" y="3.7" width="1.5" height="1.5" rx=".3"/>' +
+      '<path class="wpn-dark" d="M12.8 8.7h2.7l-.8 3.5h-2.3z"/>' +
+      '<path class="wpn-dark" d="M16.6 8.7h2.7l-.8 3.5h-2.3z"/>' +
+      '<rect class="wpn-metal" x="20.4" y="4.8" width="1.4" height="4.3" rx=".3"/>' +
+      '<path class="wpn-olive" d="M21.8 4.6q2.4-.9 3.6-.5l7.3 2.3q.6.2.6.7t-.6.7l-7.3 2.3q-1.2.4-3.6-.5z"/>',
+  ),
 };
 
 /** Готовая разметка иконки ствола. null — для этого ключа рисунка нет. */

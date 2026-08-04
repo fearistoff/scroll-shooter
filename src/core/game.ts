@@ -18,7 +18,7 @@ import { CameraSpace, createGameCamera } from '../world/camera';
 import { World } from '../world/world';
 import { PointerInput } from './input';
 import { GameLoop } from './loop';
-import { MetaProgress } from './meta';
+import { MetaProgress, type StatBoostId } from './meta';
 import { RunState } from './run';
 import { Viewport } from './viewport';
 
@@ -81,6 +81,13 @@ export class Game {
 
   /** Сколько ещё длится сцена прощания. Тикает только в фазе 'dying'. */
   private deathLeft = 0;
+
+  /**
+   * Бусты кита текущего забега. Запоминаются на старте, потому что к концу
+   * забега кит уже потреблён (consumeStartKit) и по MetaProgress не восстановим,
+   * а экран результата должен показать множитель бустера отдельным сомножителем.
+   */
+  private runBoosts: Partial<Record<StatBoostId, number>> = {};
 
   /**
    * Проекция экран ↔ мир для полёта выпавшего в счётчики HUD. Живёт здесь,
@@ -290,12 +297,23 @@ export class Game {
     const opened = this.meta.weaponsOpenedByWave(this.run.waveNumber);
     this.meta.registerWave(this.run.waveNumber);
 
+    // Множитель на экране раскладывается на сомножители: прокачка — из уровня
+    // ветки (то же число, что applyTo() записал в конфиг на старте забега:
+    // уровни во время забега не меняются), бустер — по киту этого забега.
+    // Произведение сомножителей и есть CONFIG.player.expMultiplier, которым
+    // считался run.expEarned, — деления с его плавающим мусором не нужно.
+    const boostMultiplier = CONFIG.shop.startBonuses.statBoosts.multiplier;
+
     this.phase = 'result';
     this.screens.showResult({
       collectedExp: collected,
       earnedExp: earned,
+      expUpgradeMultiplier: this.meta.multiplier('exp'),
+      expBoostMultiplier: this.runBoosts.exp ? boostMultiplier : 1,
       collectedMoney: this.run.money,
       earnedMoney: this.run.moneyEarned,
+      moneyUpgradeMultiplier: this.meta.multiplier('money'),
+      moneyBoostMultiplier: this.runBoosts.money ? boostMultiplier : 1,
       elapsedSeconds: this.run.elapsedSeconds,
       wave: this.run.waveNumber,
       unlockedWeapons: opened,
@@ -339,6 +357,7 @@ export class Game {
     // run.reset() — по её номеру считаются бюджет, состав и множители. Выдача
     // отряду при этом остаётся ниже, после reset() подсистем.
     const kit = this.meta.consumeStartKit();
+    this.runBoosts = kit.boosts;
 
     this.run.reset(kit.startWave);
     this.squad.reset();
