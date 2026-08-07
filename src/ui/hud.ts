@@ -5,10 +5,10 @@ import { formatRunTime } from './time';
  * Интерфейс забега.
  *
  * По ТЗ (раздел 9) сюда входят счётчик EXP слева вверху и полоса волны по центру
- * с числом оставшихся зомби и черепом, если в конце будет босс. Под полосой —
- * номер волны: босс не заканчивает забег, а открывает следующую. Справа вверху —
- * секундомер забега. HP героя и строка счётчиков вынесены ВНИЗ экрана: наверху
- * места уже нет, а под отрядом остаётся свободная полоса дороги.
+ * с числом оставшихся зомби. Под полосой — номер волны: босс не заканчивает забег,
+ * а открывает следующую. Справа вверху — секундомер забега. HP героя и строка
+ * счётчиков вынесены ВНИЗ экрана: наверху места уже нет, а под отрядом остаётся
+ * свободная полоса дороги.
  *
  * Реализовано DOM-оверлеем, а не игровой графикой: текст остаётся резким на
  * любом devicePixelRatio, а по кадру ничего не стоит.
@@ -47,7 +47,6 @@ export interface HudState {
   wave: number;
   zombiesRemaining: number;
   zombiesTotal: number;
-  hasBoss: boolean;
   /** Боссфайт: полоса волны заменяется многослойной полосой HP босса (ТЗ раздел 10). */
   boss: {
     active: boolean;
@@ -69,8 +68,8 @@ export class Hud {
   private readonly moneyElement: HTMLElement | null;
   private readonly waveElement: HTMLElement | null;
   private readonly waveCountElement: HTMLElement | null;
+  private readonly waveBarElement: HTMLElement | null;
   private readonly waveFillElement: HTMLElement | null;
-  private readonly waveSkullElement: HTMLElement | null;
   private readonly waveLayersElement: HTMLElement | null;
   private readonly waveNumberElement: HTMLElement | null;
   private readonly debugElement: HTMLElement | null;
@@ -92,13 +91,13 @@ export class Hud {
   private lastMoney = '';
   private lastWaveCount = '';
   private lastWaveFill = -1;
-  private lastSkull = '';
   private lastLayers = '';
   private lastDebug = '';
   private lastTimer = '';
   private lastWaveNumber = '';
   private lastBossMode: boolean | null = null;
   private lastFillColor = '';
+  private lastTrackColor = '';
 
   /**
    * Центры плашек EXP и денег в пикселях холста — цель полёта кристаллов и монет
@@ -125,8 +124,8 @@ export class Hud {
     this.moneyElement = document.querySelector<HTMLElement>('#hud-money');
     this.waveElement = document.querySelector<HTMLElement>('#hud-wave');
     this.waveCountElement = document.querySelector<HTMLElement>('#hud-wave-count');
+    this.waveBarElement = document.querySelector<HTMLElement>('#hud-wave-bar');
     this.waveFillElement = document.querySelector<HTMLElement>('#hud-wave-fill');
-    this.waveSkullElement = document.querySelector<HTMLElement>('#hud-wave-skull');
     this.waveLayersElement = document.querySelector<HTMLElement>('#hud-wave-layers');
     this.waveNumberElement = document.querySelector<HTMLElement>('#hud-wave-number');
     this.debugElement = document.querySelector<HTMLElement>('#hud-debug');
@@ -198,15 +197,17 @@ export class Hud {
       // Полоса волны заменяется полосой HP босса (ТЗ раздел 10):
       // красное число — суммарное оставшееся HP, «×N» — сколько слоёв осталось.
       this.setText(this.waveCountElement, String(Math.ceil(boss.hp)), 'lastWaveCount');
-      this.setText(this.waveSkullElement, '💀', 'lastSkull');
       this.setText(this.waveLayersElement, `×${boss.layersRemaining}`, 'lastLayers');
       this.setFill(boss.layerFill, Hud.layerColor(boss.layersRemaining));
+      // За текущим слоем видно цвет следующего: сколько ещё снимать — понятно
+      // сразу, не дожидаясь, пока полоса обнулится и перекрасится.
+      this.setTrack(Hud.trackBackground(boss.layersRemaining - 1));
     } else {
       this.setText(this.waveCountElement, String(state.zombiesRemaining), 'lastWaveCount');
-      this.setText(this.waveSkullElement, state.hasBoss ? '💀' : '', 'lastSkull');
       this.setText(this.waveLayersElement, '', 'lastLayers');
       const fill = state.zombiesTotal > 0 ? state.zombiesRemaining / state.zombiesTotal : 0;
       this.setFill(fill, '');
+      this.setTrack('');
     }
 
     if (!this.showDebug) return;
@@ -232,7 +233,6 @@ export class Hud {
       | 'lastExp'
       | 'lastMoney'
       | 'lastWaveCount'
-      | 'lastSkull'
       | 'lastLayers'
       | 'lastDebug'
       | 'lastTimer'
@@ -262,6 +262,17 @@ export class Hud {
       this.waveFillElement.style.background = color;
       this.lastFillColor = color;
     }
+  }
+
+  /**
+   * Фон дорожки — того, что видно за заливкой. Пустая строка возвращает тёмную
+   * дорожку из CSS (режим волны и последний слой босса).
+   */
+  private setTrack(background: string): void {
+    if (this.waveBarElement === null || background === this.lastTrackColor) return;
+
+    this.waveBarElement.style.background = background;
+    this.lastTrackColor = background;
   }
 
   /**
@@ -301,5 +312,27 @@ export class Hud {
     if (palette.length === 0 || layersRemaining <= 0) return '';
     const index = (layersRemaining - 1) % palette.length;
     return palette[index] ?? '';
+  }
+
+  /**
+   * Фон дорожки под слоем — цвет слоя в полную яркость сверху и потемневший до
+   * CONFIG.boss.layerTrackGradient снизу, как у полосок HP стрелков и зомби.
+   *
+   * Градиент строится множителем по каналам, а не прозрачностью: дорожка обязана
+   * быть непрозрачной, иначе сквозь неё проступает едущий мир (см. #hud-wave-bar
+   * в styles.css).
+   */
+  private static trackBackground(layersRemaining: number): string {
+    const color = Hud.layerColor(layersRemaining);
+    if (color === '') return '';
+
+    const value = Number.parseInt(color.slice(1), 16);
+    const factor = CONFIG.boss.layerTrackGradient;
+    const r = (value >> 16) & 0xff;
+    const g = (value >> 8) & 0xff;
+    const b = value & 0xff;
+    const bottom =
+      `rgb(${Math.round(r * factor)}, ${Math.round(g * factor)}, ${Math.round(b * factor)})`;
+    return `linear-gradient(180deg, rgb(${r}, ${g}, ${b}), ${bottom})`;
   }
 }

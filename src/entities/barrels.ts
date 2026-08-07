@@ -63,6 +63,19 @@ export interface BonusReceiver {
   /** Текущее общее стрелковое оружие отряда — по нему считается следующая ступень. */
   readonly weaponId: WeaponId;
 
+  /**
+   * Сколько урона отряд вложит в цель полушириной targetHalfWidth, которая едет на
+   * него со скоростью approachSpeed и останавливается в stopDistance — из этого
+   * считается прочность бочки (см. approachDamage). Спрашивается у отряда, а не
+   * пересчитывается здесь: и числа огня, и раскладку строя знает только он, а своя
+   * копия разошлась бы с фактическим уроном.
+   */
+  fireOnApproach(
+    targetHalfWidth: number,
+    stopDistance: number,
+    approachSpeed: number,
+  ): { dps: number; damage: number };
+
   /** Выдаёт особое оружие одному бойцу: сначала герою, потом случайному (ТЗ раздел 6). */
   giveSpecialWeapon(id: WeaponId): 'hero' | 'ally' | null;
 
@@ -124,6 +137,22 @@ const maxRadius = (): number => CONFIG.barrels.diameter / 2;
 
 /** Лежит ли бочка на боку — тогда она ещё и катится. */
 const isRolling = (): boolean => CONFIG.barrels.style === 'rolling';
+
+/**
+ * Округление ВНИЗ до заданного числа значащих цифр: 18.4 → 18, 184 → 180,
+ * 1843 → 1800. Так подписанное на бочке число остаётся круглым при любом порядке
+ * величины, а потеря от округления не превышает 10^-digits от него — постоянный
+ * шаг такой гарантии не даёт: шаг 10 у расчётных 18.4 срезал бы почти половину и
+ * увёл бы исход подъезда за нижнюю границу (см. hpFromFirepower).
+ *
+ * Шаг не мельче единицы: дробная прочность на бочке нечитаема.
+ */
+const roundDownSignificant = (value: number, digits: number): number => {
+  if (value <= 0) return 0;
+
+  const step = Math.max(1, 10 ** (Math.ceil(Math.log10(value)) - digits));
+  return Math.floor(value / step) * step;
+};
 
 /**
  * Габарит бочки по мировым осям. Стоящая обращена к дороге диаметром, лежащая —
@@ -413,12 +442,12 @@ export class BarrelField {
     const chosenContent = content ?? this.randomContent();
     if (chosenContent === null) return;
 
-    // Порядок важен: прочность зависит и от количества бойцов, и от того, какое
-    // именно особое оружие внутри, поэтому и то и другое решается раньше неё.
     const chosenSpecial =
       chosenContent === 'special' ? (special ?? this.randomSpecial()) : null;
     const chosenAmount = amount ?? this.randomAmount(chosenContent);
-    const chosenHp = hp ?? this.hpFor(chosenContent, chosenAmount, chosenSpecial);
+    // Прочность от содержимого не зависит вовсе — только от огневой мощи отряда
+    // на момент выезда, см. hpFor.
+    const chosenHp = hp ?? this.hpFor();
 
     const i = this.count++;
     this.posX[i] = x;
@@ -434,35 +463,64 @@ export class BarrelField {
   }
 
   /**
-   * Прочность по содержимому: чем ценнее находка, тем дороже её вскрыть.
-   * Для стрелков диапазон берётся ЗА КАЖДОГО бойца, поэтому бочка на 5 человек
-   * втрое дороже бочки на одного.
+   * Прочность бочки — доля урона, который отряд успевает вложить в неё за подъезд
+   * (CONFIG.barrels.hpFromFirepower), округлённая шагом вниз, но не ниже минимума.
+   * Одинаково для любого содержимого: цена вскрытия задаётся огневой мощью отряда,
+   * а не находкой.
+   *
+   * Считается НА МОМЕНТ ВЫЕЗДА и дальше не меняется: подобранное по пути оружие
+   * или новый боец облегчают уже выехавшую бочку — это и есть награда за
+   * предыдущую находку.
    */
-  private hpFor(content: BarrelContent, amount: number, special: WeaponId | null): number {
-    const ranges = CONFIG.barrels.hpRanges;
-    const weapons = ranges.weapons as Record<string, number[] | undefined>;
+  private hpFor(): number {
+    const { breakChance, breakFraction, surviveFraction, significantDigits, min } =
+      CONFIG.barrels.hpFromFirepower;
 
-    switch (content) {
-      case 'weapon': {
-        const tier = this.nextWeaponTier();
-        return BarrelField.randomInRange(weapons[tier ?? ''] ?? ranges.weapons.miniSmg);
-      }
-      case 'special':
-        return BarrelField.randomInRange(weapons[special ?? ''] ?? ranges.weapons.flamethrower);
-      case 'shooters':
-        return (
-          BarrelField.randomInRange(ranges.shootersPerShooter) * Math.max(1, Math.round(amount))
-        );
-      case 'mine':
-        return BarrelField.randomInRange(ranges.mine);
-    }
+    // ИСХОД РЕШАЕТСЯ БРОСКОМ, а не разбросом прочности: доля ниже единицы означает
+    // «сломается, не дойдя до отряда», выше — «доедет и ударит». Между вилками
+    // оставлен зазор вокруг единицы, чтобы разброс подъезда (в какой момент попадёт
+    // очередь, где бочка встала поперёк дороги) не переворачивал задуманный исход.
+    const breaks = Math.random() < breakChance;
+    const [from, to] = breaks ? breakFraction : surviveFraction;
+    const low = from ?? (breaks ? 0.5 : 1.15);
+    const high = to ?? low;
+    const fraction = low + Math.random() * (high - low);
+    const raw = this.approachDamage() * fraction;
+
+    return Math.max(min, roundDownSignificant(raw, significantDigits));
   }
 
-  /** Целое из диапазона [min, max] включительно. */
-  private static randomInRange(range: number[]): number {
-    const min = range[0] ?? 1;
-    const max = range[1] ?? min;
-    return min + Math.floor(Math.random() * (max - min + 1));
+  /**
+   * Сколько ПРОЧНОСТИ отряд снимет с бочки за весь её подъезд, если игрок держит
+   * отряд на ней: попадающий огонь × время под обстрелом × сопротивление бочки.
+   *
+   * Огонь спрашивается по ШИРИНЕ ХИТБОКСА бочки — той же, по которой считаются
+   * попадания в tryHit. Стволы, стоящие в строю дальше, в расчёт не входят: они
+   * мимо стреляют и на пустой дороге. Путь под огнём у каждого ствола свой, поэтому
+   * складывает их отряд, а не эта функция (см. Squad.fireOnApproach).
+   *
+   * Скорость подъезда — фактическая скорость мира: своей скорости у бочки нет, её
+   * везёт дорога, и с разгоном дороги к концу забега подъезд укорачивается.
+   *
+   * Сопротивление входит здесь, а не в конфиге, чтобы доли в hpFromFirepower
+   * читались как ИСХОД подъезда («сломалась на 80% пути»), а не как выпущенный
+   * урон: до прочности доходит только damageResistance от него.
+   *
+   * На боссфайте дорога стоит, и время подъезда обратилось бы в бесконечность —
+   * поэтому при остановке берётся номинальная скорость из конфига. Спавн бонусов
+   * на боссфайте выключен, так что это защита от края, а не рабочая ветка.
+   */
+  private approachDamage(): number {
+    const { damageResistance, hpFromFirepower, hitboxScale } = CONFIG.barrels;
+    const contactZ = barrelSpanZ() / 2 + CONFIG.player.heroCapsule.radius;
+    const speed = this.run.worldSpeed > 0 ? this.run.worldSpeed : CONFIG.world.worldSpeed;
+    const fire = this.squad.fireOnApproach(
+      (barrelSpanX() / 2) * hitboxScale,
+      contactZ,
+      speed,
+    );
+
+    return fire.damage * hpFromFirepower.windowScale * damageResistance;
   }
 
   /**

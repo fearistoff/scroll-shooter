@@ -488,7 +488,6 @@ export class Game {
       wave: this.run.waveNumber,
       zombiesRemaining: this.run.remainingZombies,
       zombiesTotal: this.run.totalZombies,
-      hasBoss: this.run.hasBoss,
       boss: {
         active: this.boss.isActive,
         hp: this.boss.hpRemaining,

@@ -19,10 +19,13 @@ import type { GateTarget } from './gates';
 import type { MineField } from './mines';
 import { buildSoldierGeometry } from './soldier';
 import {
+  bulletStyleFor,
   isSpecialWeapon,
   specialWeaponRank,
   weaponBlastDamage,
+  weaponBlastRadius,
   weaponDamage,
+  weaponFireRate,
   weaponRange,
   WeaponState,
   type WeaponId,
@@ -696,6 +699,83 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
   }
 
   // --- Стрельба ------------------------------------------------------------
+
+  /**
+   * Сколько урона отряд вложит в УЗКУЮ ЦЕЛЬ, которая едет на него по своей полосе:
+   * от края дальности каждого ствола до stopDistance, со скоростью approachSpeed.
+   * По этому числу считается прочность бочки (entities/barrels.ts). Возвращается
+   * ещё и dps попадающих стволов — он нужен замерам и отладке.
+   *
+   * СЧИТАЮТСЯ НЕ ВСЕ СТВОЛЫ, А ТОЛЬКО ПОПАДАЮЩИЕ. Пуля летит строго по −Z из точки
+   * бойца, поэтому боец, стоящий в строю дальше своего радиуса попадания от центра
+   * цели, мимо неё стреляет ВСЕГДА — и на пустой дороге тоже. Прежний potentialDps
+   * складывал весь отряд и потому завышал тем сильнее, чем шире строй: ЗАМЕРЕНО,
+   * что одиночный герой снимал с бочки 1.3 расчётной прочности, а отряд из восьми —
+   * 0.58. С отбором попадающих отношение держится 0.96…1.0 на составах от одного
+   * бойца до потолка в 23.
+   *
+   * Радиус попадания у каждого ствола свой: полуширина цели плюс радиус его снаряда,
+   * плюс радиус взрыва у гранатомёта — граната задевает цель и разрывом рядом. Конус
+   * огнемёта к концу дальности вчетверо шире дула (spread), но здесь взят радиус у
+   * дула: запас идёт в пользу игрока — бочка выйдет чуть слабее.
+   *
+   * ПУТЬ У КАЖДОГО СТВОЛА СВОЙ, и поэтому суммируется не dps, а урон: короткий
+   * огнемёт бьёт по цели только последние 8 units из 16, а пулемёты рядом с ним —
+   * все 16. Сводить дальность к одной минимальной нельзя: ЗАМЕРЕНО, что с огнемётом
+   * в отряде такая формула недосчитывала треть урона (отношение факта к расчёту
+   * 1.47).
+   *
+   * Урон и темп берутся теми же аксессорами, что и сама стрельба, поэтому
+   * мета-прокачка, доля союзника (allyDamageFactor) и множитель невидимых бойцов
+   * учтены — расходиться с фактическим огнём числу нечем.
+   */
+  fireOnApproach(
+    targetHalfWidth: number,
+    stopDistance: number,
+    approachSpeed: number,
+  ): { dps: number; damage: number } {
+    const bulletRadius = CONFIG.weapons.bullet.radius;
+    const hits = (id: WeaponId, offsetX: number): boolean => {
+      const reach =
+        targetHalfWidth + bulletRadius * bulletStyleFor(id).radiusScale + weaponBlastRadius(id);
+      return Math.abs(offsetX) <= reach;
+    };
+    // Путь цели под огнём этого ствола, в секундах.
+    const seconds = (range: number): number =>
+      approachSpeed > 0 ? Math.max(0, range - stopDistance) / approachSpeed : 0;
+
+    // Герой стоит в центре строя, то есть попадает в цель перед отрядом всегда.
+    const heroWeapon = this.heroWeapon.weaponId;
+    const heroDps =
+      (weaponDamage(heroWeapon, 'hero') + weaponBlastDamage(heroWeapon, 'hero')) *
+      weaponFireRate(heroWeapon, 'hero');
+    let dps = heroDps;
+    let damage = heroDps * seconds(weaponRange(heroWeapon, 'hero'));
+
+    const visibleCapacity = Squad.visibleAllyCapacity;
+    const hiddenMultiplier = CONFIG.formation.bulletsPerHiddenShooter;
+
+    for (let i = 0; i < this.allies.length; i++) {
+      const id = this.allies[i]!.weapon.weaponId;
+      // Раскладка строя спрашивается у allyOffset, а не повторяется здесь: своя
+      // копия шахматки разъехалась бы с той, из которой боец стреляет. offsetX и
+      // offsetZ — черновик, его переписывает каждый вызов.
+      this.allyOffset(i);
+      if (!hits(id, this.offsetX)) continue;
+
+      const perShot = i < visibleCapacity ? 1 : hiddenMultiplier;
+      const allyDps =
+        (weaponDamage(id, 'ally') + weaponBlastDamage(id, 'ally')) *
+        CONFIG.formation.allyDamageFactor *
+        weaponFireRate(id, 'ally') *
+        perShot;
+
+      dps += allyDps;
+      damage += allyDps * seconds(weaponRange(id, 'ally'));
+    }
+
+    return { dps, damage };
+  }
 
   /**
    * Перенаправляет огонь отряда на точку (боссфайт). Без цели стрелки бьют вперёд.
