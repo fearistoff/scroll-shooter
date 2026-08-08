@@ -133,6 +133,17 @@ interface BoosterRow {
   name: HTMLElement;
   stats: HTMLElement;
   refund: HTMLButtonElement | null;
+  /**
+   * Оверлей замка, как у стволов, — только у строк, которые бывают закрыты
+   * (стартовая волна). У остальных бустов замка нет, и поле остаётся null.
+   */
+  lock: LockOverlay | null;
+}
+
+/** Оверлей замка поверх строки: сам слой и текст условия внутри него. */
+interface LockOverlay {
+  root: HTMLElement;
+  text: HTMLElement;
 }
 
 /**
@@ -799,20 +810,34 @@ export class Screens {
     owned.textContent = 'Получено';
     owned.hidden = true;
 
-    // Оверлей замка — последним ребёнком: он absolute поверх всей строки и
-    // должен рисоваться над остальным содержимым (см. .weapon__lock).
-    const lock = document.createElement('div');
-    lock.className = 'weapon__lock';
-    lock.hidden = true;
-    const lockIcon = document.createElement('div');
-    lockIcon.className = 'weapon__lock-icon';
-    lockIcon.textContent = '🔒';
-    const lockText = document.createElement('div');
-    lockText.className = 'weapon__lock-text';
-    lock.append(lockIcon, lockText);
+    const lock = Screens.buildLockOverlay();
 
-    row.append(icon, name, statsElement, note, buy, owned, lock);
-    return { root: row, buy, stats: statsElement, note, owned, lock, lockText };
+    row.append(icon, name, statsElement, note, buy, owned, lock.root);
+    return { root: row, buy, stats: statsElement, note, owned, lock: lock.root, lockText: lock.text };
+  }
+
+  /**
+   * Оверлей замка: иконка и условие разблокировки на размытом фоне. Один на
+   * магазин и на бустеры — строка стартовой волны закрывается тем же баннером,
+   * что и стволы, и вторая копия разметки разъехалась бы с этой при первой правке.
+   *
+   * Добавлять его в строку нужно ПОСЛЕДНИМ ребёнком: он absolute поверх всей
+   * строки и должен рисоваться над остальным содержимым (см. .weapon__lock).
+   */
+  private static buildLockOverlay(): LockOverlay {
+    const root = document.createElement('div');
+    root.className = 'weapon__lock';
+    root.hidden = true;
+
+    const icon = document.createElement('div');
+    icon.className = 'weapon__lock-icon';
+    icon.textContent = '🔒';
+
+    const text = document.createElement('div');
+    text.className = 'weapon__lock-text';
+
+    root.append(icon, text);
+    return { root, text };
   }
 
   /**
@@ -919,9 +944,13 @@ export class Screens {
       this.refreshBoosters();
     });
 
+    // Замок — как у стволов: пока старт с поздней волны не открыт рекордом,
+    // строка закрыта баннером целиком.
+    const lock = Screens.buildLockOverlay();
+
     actions.append(refund, buy);
-    row.append(icon, name, stats, actions);
-    this.startWaveRow = { root: row, name, stats, buy, refund };
+    row.append(icon, name, stats, actions, lock.root);
+    this.startWaveRow = { root: row, name, stats, buy, refund, lock };
     return row;
   }
 
@@ -968,7 +997,7 @@ export class Screens {
 
     actions.append(refund, buy);
     row.append(icon, name, stats, actions);
-    this.boosterShooterRow = { root: row, name, stats, buy, refund };
+    this.boosterShooterRow = { root: row, name, stats, buy, refund, lock: null };
     return row;
   }
 
@@ -1004,7 +1033,7 @@ export class Screens {
     });
 
     row.append(icon, name, stats, buy);
-    this.statBoostRows.set(id, { root: row, name, stats, buy, refund: null });
+    this.statBoostRows.set(id, { root: row, name, stats, buy, refund: null, lock: null });
     return row;
   }
 
@@ -1309,11 +1338,12 @@ export class Screens {
   /**
    * Строка стартовой волны: выбранная волна, открытый предел и цена шага.
    *
-   * Пока старт не открыт вовсе (рекорд ниже 2 + unlockAhead), вместо предела
-   * стоит условие словами — «Пройди волну 3»: замок здесь без оверлея, как
-   * у бустов, — скрывать размытием в строке нечего. Формулировка «пройди»,
-   * а не «дойди до» (решение пользователя): дойти до волны 2 + unlockAhead —
-   * это пережить босса волны 1 + unlockAhead, текст называет само действие.
+   * Пока старт не открыт вовсе (рекорд ниже 2 + unlockAhead), строка закрыта
+   * ОВЕРЛЕЕМ ЗАМКА — тем же, что у стволов магазина: условие читается баннером,
+   * а не строкой характеристик, и по накрытой кнопке нельзя промахнуться.
+   * Формулировка «пройди», а не «дойди до» (решение пользователя): дойти до
+   * волны 2 + unlockAhead — это пережить босса волны 1 + unlockAhead, и текст
+   * называет само действие.
    */
   private refreshStartWave(): void {
     const row = this.startWaveRow;
@@ -1322,15 +1352,22 @@ export class Screens {
     const wave = this.meta.startWave;
     const limit = this.meta.startWaveLimit;
     const { unlockAhead } = CONFIG.shop.startBonuses.startWave;
+    const locked = limit <= 1;
 
     // Выбранная волна — в названии, как число бойцов у стрелков: это то же
     // «сколько уже куплено», и искать его игрок будет там же.
     row.name.textContent = wave > 1 ? `Стартовая волна · ${wave}` : 'Стартовая волна';
     // «до N» — самый поздний открытый старт: волна W открывается рекордом
-    // W + unlockAhead (MetaProgress.startWaveLimit).
-    row.stats.textContent =
-      limit > 1 ? `Начать с волны · до ${limit}` : `Пройди волну ${1 + unlockAhead}`;
+    // W + unlockAhead (MetaProgress.startWaveLimit). Под замком предела ещё нет,
+    // и вторая строка говорит, ЧТО это за бустер: условие называет баннер.
+    row.stats.textContent = locked ? 'Начать вылазку с поздней волны' : `Начать с волны · до ${limit}`;
     row.root.classList.toggle('weapon--picked', wave > 1);
+    row.root.classList.toggle('weapon--locked', locked);
+
+    if (row.lock !== null) {
+      row.lock.root.hidden = !locked;
+      row.lock.text.textContent = locked ? `Пройди волну ${1 + unlockAhead}` : '';
+    }
 
     row.buy.textContent = `${this.meta.startWavePrice} $`;
     row.buy.disabled = !this.meta.canBuyStartWave();

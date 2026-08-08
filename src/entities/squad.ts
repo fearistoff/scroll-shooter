@@ -54,6 +54,18 @@ interface Ally {
    * вырастает от подошвы; на игровые проверки не влияет.
    */
   spawnLeft: number;
+  /**
+   * Из какого ВИДИМОГО места стреляет боец, если сам он за визуальным потолком:
+   * место выбирается жеребьёвкой при появлении и дальше не меняется.
+   *
+   * Раньше все невидимые брали последнее место строя, а оно крайнее левое в
+   * последнем ряду, — и весь их огонь шёл из одной точки слева. Жеребьёвка одна
+   * на бойца, а не на выстрел: так его очередь читается как поток из одного
+   * места, а не как мигание по всему строю.
+   *
+   * У бойцов внутри потолка не используется вовсе: они стоят на своём месте.
+   */
+  hiddenSlot: number;
 }
 
 /**
@@ -653,8 +665,9 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
    * Смещение бойца index относительно отряда — пишет в offsetX / offsetZ.
    *
    * Ряды берутся из CONFIG.formation.rowSizes (герой стоит в первом ряду один).
-   * Бойцы за визуальным потолком получают координату последнего видимого места —
-   * оттуда вылетают их пули.
+   * Бойцы за визуальным потолком стреляют из СВОЕГО выпавшего места (Ally.hiddenSlot),
+   * а не из последнего в строю: последнее — крайнее левое в последнем ряду, и весь
+   * огонь невидимых шёл из одной точки слева.
    *
    * ШАХМАТКА. Ряд центрируется по своей НОМИНАЛЬНОЙ ширине, а не по числу уже
    * пришедших бойцов: только тогда чётные ряды дают полуцелые смещения, нечётные
@@ -666,7 +679,12 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
    */
   private allyOffset(index: number): void {
     const { rowSizes, spacingX, spacingZ } = CONFIG.formation;
-    const capped = Math.min(index, Squad.visibleAllyCapacity - 1);
+    const capacity = Squad.visibleAllyCapacity;
+    // Место бойца за потолком — выпавшее ему при появлении; на всякий случай
+    // зажимаем: rowSizes можно поменять на живой игре, и старый жребий тогда
+    // указывал бы за строй.
+    const hidden = this.allies[index]?.hiddenSlot ?? capacity - 1;
+    const capped = index < capacity ? index : Math.min(hidden, capacity - 1);
 
     // Ищем ряд перебором: рядов единицы, массив короткий.
     let row = 0;
@@ -1047,6 +1065,8 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
         flashLeft: 0,
         // Единственная точка, где ставится рост: сюда приходят и бочки, и ворота.
         spawnLeft: CONFIG.player.spawnAnim.seconds,
+        // Место для огня, если боец окажется за визуальным потолком (см. Ally).
+        hiddenSlot: Math.floor(Math.random() * Squad.visibleAllyCapacity),
       });
     }
   }
