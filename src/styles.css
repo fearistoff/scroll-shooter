@@ -471,6 +471,61 @@ body {
   background: rgba(8, 9, 12, 0.7);
 }
 
+/* Статистика вылазки на экране паузы. Разделы и строки создаёт screens.ts по
+   PAUSE_SECTIONS — в index.html их нет, поиском по разметке они не находятся.
+
+   Ширина фиксированная, а не по содержимому: подписи стоят слева, значения
+   прижаты к правому краю, и только при общей ширине они выстраиваются одним
+   столбцом. 320px — самая длинная пара («Особое» + два особых ствола с числом
+   носителей) с запасом, и на экране 375px блок ещё не касается краёв. */
+.pause-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: min(320px, 100%);
+  font-size: 14px;
+}
+
+/* Заголовок раздела. Верхний отступ отделяет его от строк предыдущего раздела;
+   у первого заголовка его нет — там уже работает gap самого экрана. */
+.pause-stats__title {
+  margin: 10px 0 3px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  opacity: 0.45;
+}
+
+.pause-stats__title:first-child {
+  margin-top: 0;
+}
+
+.pause-stat {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+/* display: flex перебивает UA-стиль атрибута hidden — возвращаем его силу
+   (строки с пустым значением прячет refreshPauseStats). */
+.pause-stat[hidden] {
+  display: none;
+}
+
+.pause-stat__label {
+  opacity: 0.65;
+}
+
+/* Значение жирным и цифрами одной ширины: правый столбец читается таблицей, а
+   не продолжением подписи. */
+.pause-stat__value {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
 .screen__title {
   font-size: 30px;
   font-weight: 800;

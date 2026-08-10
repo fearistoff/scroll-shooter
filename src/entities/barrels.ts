@@ -17,11 +17,10 @@ import type { CrystalPool } from './crystals';
 import type { SquadTarget } from './enemies';
 import { makeFlashColor } from './flash';
 import {
+  isWeaponReachedInRun,
   randomSpecialWeapon,
   shootersIcon,
   weaponIcon,
-  weaponUnlockKills,
-  weaponUnlockWave,
   type WeaponId,
 } from './weapons';
 
@@ -542,13 +541,13 @@ export class BarrelField {
    *
    * Замок в забеге двойной (CONFIG.run.unlocks.weapons): номер волны и счёт
    * убийств ТЕКУЩЕЙ волны — по убийствам, а не по секундам, чтобы платный старт
-   * с поздней волны не ждал таймер до первой бочки с оружием. Проверяются оба,
-   * потому что незаданный замок в аксессорах отдаёт пропускающее значение (1 и 0).
+   * с поздней волны не ждал таймер до первой бочки с оружием. Считает его
+   * isWeaponReachedInRun — единственный замок ствола внутри забега: в отряд
+   * оружие попадает только отсюда и из оплаченного кита.
    */
   private isWeaponAllowed(id: WeaponId): boolean {
     if (!this.shop.isWeaponUnlocked(id)) return false;
-    if (this.run.waveNumber < weaponUnlockWave(id)) return false;
-    return this.run.killedZombies >= weaponUnlockKills(id);
+    return isWeaponReachedInRun(id, this.run.waveNumber, this.run.killedZombies);
   }
 
   /**

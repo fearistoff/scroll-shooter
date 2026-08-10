@@ -155,6 +155,10 @@
       <div id="screen-pause" class="screen screen--pause">
         <div class="screen__title">Пауза</div>
         <div id="pause-info" class="screen__row"></div>
+        <!-- Информация и статистика по текущей вылазке: разделы и строки
+             собирает screens.ts по PAUSE_SECTIONS, в разметке их нет. Значения
+             — снимок на момент нажатия паузы: игра стоит, обновлять нечего. -->
+        <div id="pause-stats" class="pause-stats"></div>
         <button id="pause-resume" class="screen__button" type="button">Продолжить</button>
       </div>
     </div>

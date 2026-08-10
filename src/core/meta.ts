@@ -121,6 +121,22 @@ export const STAT_BOOST_IDS: readonly StatBoostId[] = [
 ];
 
 /**
+ * СТАРТОВЫЙ КИТ ВЫЛАЗКИ: что оплачено на экране бустеров и действует один забег.
+ *
+ * Отдаётся целиком и один раз (consumeStartKit), поэтому по MetaProgress его
+ * потом не восстановить — забег держит эту запись у себя до конца (Game.runKit):
+ * по ней экран результата раскладывает множитель опыта на сомножители, а экран
+ * паузы показывает, с чем в вылазку вышли.
+ */
+export interface StartKit {
+  shooters: number;
+  weapon: WeaponId | null;
+  special: WeaponId | null;
+  boosts: Partial<Record<StatBoostId, number>>;
+  startWave: number;
+}
+
+/**
  * Взаимоисключающие группы бустов (задано пользователем, 2026-08-04): из
  * боевых — урон, темп, дальность — в кит берётся только один, из доходных —
  * опыт, деньги — тоже только один. Взятый буст БЛОКИРУЕТ остальные строки
@@ -1307,13 +1323,7 @@ export class MetaProgress {
    *
    * Зовётся из Game.startRun ровно один раз за забег.
    */
-  consumeStartKit(): {
-    shooters: number;
-    weapon: WeaponId | null;
-    special: WeaponId | null;
-    boosts: Partial<Record<StatBoostId, number>>;
-    startWave: number;
-  } {
+  consumeStartKit(): StartKit {
     const boosts: Partial<Record<StatBoostId, number>> = {};
     for (const [id, count] of this.startBoostsValue) boosts[id] = count;
 

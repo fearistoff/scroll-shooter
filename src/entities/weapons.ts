@@ -206,6 +206,19 @@ export function weaponUnlockWave(id: WeaponId): number {
 }
 
 /**
+ * Дожил ли ствол до своего замка ВНУТРИ забега: номер волны И счёт убийств
+ * текущей волны. Проверяются оба, потому что незаданный замок в аксессорах
+ * выше отдаёт пропускающее значение (1 и 0).
+ *
+ * Единственный вход ствола в забег — бочка (BarrelField.isWeaponAllowed) или
+ * оплаченный кит, поэтому и замок стоит один, здесь. Отряду он не нужен:
+ * новичок получает то, что у бойцов уже в руках (Squad.addShooters).
+ */
+export function isWeaponReachedInRun(id: WeaponId, wave: number, kills: number): boolean {
+  return wave >= weaponUnlockWave(id) && kills >= weaponUnlockKills(id);
+}
+
+/**
  * Обёртка нарисованной иконки. Высоту задаёт CSS, ширину — viewBox: чем длиннее
  * ствол, тем шире иконка, и разница в длине видна ещё до того, как разглядишь
  * силуэт. Цвета фигур задают классы `wpn-*` из styles.css — все цвета

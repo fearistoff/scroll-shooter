@@ -1043,17 +1043,17 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
     const added = Math.max(0, Math.min(count, free));
 
     /*
-     * Новичок выходит с ЛУЧШИМ из двух: общий ствол в пределах доступа
-     * (см. setCommonWeapon) или высшая ступень, открытая стрелкам сама по
-     * себе (решение пользователя, 2026-08-03). Купленный доступ «Доп.
-     * стрелкам» — гарантированный уровень новичка: бустерные бойцы не выходят
-     * с пистолетами, когда стрелкам уже открыт автомат, даже если общий ствол
-     * отряда пока ниже.
+     * Новичок выходит с ТЕМ ЖЕ стволом, что у остального отряда: общее оружие
+     * в пределах доступа стрелков (allyWeaponFor, см. setCommonWeapon) — то
+     * есть ровно то, что уже в руках у бойцов рядом.
+     *
+     * Купленный доступ «Доп. стрелкам» сам по себе ствола не даёт: он
+     * ПОТОЛОК выдачи, а не пол. Оружие отряду добывают бонусы — бочка или
+     * оплаченный кит; иначе новичок обгонял бы и героя, и старых бойцов
+     * стволом, которого в этой вылазке никто не подбирал (решение
+     * пользователя, 2026-08-10).
      */
-    const chain = CONFIG.weapons.progression as WeaponId[];
-    const fromCommon = this.allyWeaponFor(this.commonWeapon);
-    const best = this.bestAllyFirearm();
-    const allyId = chain.indexOf(best) > chain.indexOf(fromCommon) ? best : fromCommon;
+    const allyId = this.allyWeaponFor(this.commonWeapon);
     const allyMaxHp = this.allyMaxHp;
     for (let i = 0; i < added; i++) {
       this.allies.push({
@@ -1139,18 +1139,6 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
 
     const chain = CONFIG.weapons.progression as WeaponId[];
     for (let i = chain.indexOf(id) - 1; i >= 0; i--) {
-      if (this.allyMayHold(chain[i]!)) return chain[i]!;
-    }
-    return chain[0]!;
-  }
-
-  /**
-   * Высшая стрелковая ступень, открытая доп. стрелкам сама по себе, без
-   * оглядки на общий ствол. Пол выдачи новичка в addShooters.
-   */
-  private bestAllyFirearm(): WeaponId {
-    const chain = CONFIG.weapons.progression as WeaponId[];
-    for (let i = chain.length - 1; i >= 0; i--) {
       if (this.allyMayHold(chain[i]!)) return chain[i]!;
     }
     return chain[0]!;
@@ -1328,6 +1316,26 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
       if (isSpecialWeapon(ally.weapon.weaponId)) total++;
     }
     return total;
+  }
+
+  /**
+   * КАКИЕ особые стволы в отряде и сколько бойцов несут каждый — для экрана
+   * паузы: счётчик specialWeaponCount отвечает только «сколько», а подобранное
+   * из бочек игрок пересчитывает по названиям.
+   *
+   * Собирает Map, поэтому зовётся по нажатию паузы, а не по кадру.
+   */
+  get specialWeapons(): ReadonlyMap<WeaponId, number> {
+    const counts = new Map<WeaponId, number>();
+
+    const add = (id: WeaponId): void => {
+      if (!isSpecialWeapon(id)) return;
+      counts.set(id, (counts.get(id) ?? 0) + 1);
+    };
+
+    add(this.heroWeapon.weaponId);
+    for (const ally of this.allies) add(ally.weapon.weaponId);
+    return counts;
   }
 
   /** Состояние отряда — для отладки и проверок. */

@@ -8,6 +8,7 @@ import {
   upgradeEffect,
   upgradeValue,
   type MetaProgress,
+  type StartKit,
   type StatBoostId,
   type UpgradeId,
   type UpgradeTrackId,
@@ -44,11 +45,54 @@ export interface ScreenHandlers {
   resume(): void;
 }
 
-/** Что показать на экране паузы: где именно забег остановлен. */
+/**
+ * Что показать на экране паузы: где забег остановлен, с чем в него вышли и что в
+ * нём уже сделано.
+ *
+ * Снимок на момент нажатия, а не живые ссылки: на паузе игра стоит, обновлять
+ * значения нечем и незачем.
+ */
 export interface PauseInfo {
   wave: number;
   elapsedSeconds: number;
+  /** Во сколько раз крепче и больнее зомби этой волны по сравнению с первой. */
+  hpMultiplier: number;
+  damageMultiplier: number;
+  /** Во сколько раз дороже кристаллы этой волны. */
+  expMultiplier: number;
+  /** Стрелков в отряде сейчас и предел с прокачкой и бустами кита. */
+  shooters: number;
+  shooterLimit: number;
+  /** Общее стрелковое оружие отряда. */
+  weapon: WeaponId;
+  /** Особые стволы в отряде: сколько бойцов несёт каждый. */
+  specials: ReadonlyMap<WeaponId, number>;
+  /** С чем в вылазку вышли: оплаченный кит этого забега. */
+  kit: StartKit;
+  /** Убито зомби за всю вылазку, без боссов. */
+  killedZombies: number;
+  /** Разбито бочек за вылазку. */
+  brokenBarrels: number;
 }
+
+/**
+ * Строка статистики паузы. Бусты характеристик держат по строке на каждый
+ * StatBoostId: набор их фиксированный, поэтому и здесь он перечислим, а не
+ * собирается на ходу.
+ */
+type PauseStatId =
+  | 'waveHp'
+  | 'waveDamage'
+  | 'waveExp'
+  | 'shooters'
+  | 'weapon'
+  | 'special'
+  | 'kitWave'
+  | 'kitShooters'
+  | 'kitWeapons'
+  | `boost-${StatBoostId}`
+  | 'kills'
+  | 'barrels';
 
 /** Итог забега для экрана результата. */
 export interface RunResult {
@@ -165,6 +209,57 @@ const STAT_BOOST_VIEW: Record<StatBoostId, { icon: string; title: string; note: 
 };
 
 /**
+ * Разделы статистики паузы: порядок строк и их подписи. Разметка собирается из
+ * этого списка (buildPauseStats), в index.html её нет — по той же причине, что у
+ * вкладок прокачки: два списка разъехались бы при первой правке.
+ *
+ * Подписи бустов характеристик берутся из STAT_BOOST_VIEW — тех же, что на экране
+ * бустеров: буст должен называться в пути и в бою одинаково.
+ */
+const PAUSE_SECTIONS: readonly {
+  title: string;
+  rows: readonly { id: PauseStatId; label: string }[];
+}[] = [
+  {
+    title: 'Волна',
+    rows: [
+      { id: 'waveHp', label: 'HP зомби' },
+      { id: 'waveDamage', label: 'Урон зомби' },
+      { id: 'waveExp', label: 'Опыт' },
+    ],
+  },
+  {
+    title: 'Отряд',
+    rows: [
+      { id: 'shooters', label: 'Стрелков' },
+      { id: 'weapon', label: 'Оружие' },
+      { id: 'special', label: 'Особое' },
+    ],
+  },
+  {
+    title: 'Бустеры',
+    rows: [
+      // Порядок строк кита — как на экране бустеров: стартовая волна, бойцы,
+      // бусты характеристик, аренда стволов последней.
+      { id: 'kitWave', label: 'Старт с волны' },
+      { id: 'kitShooters', label: 'Доп. стрелков' },
+      ...STAT_BOOST_IDS.map((id) => ({
+        id: `boost-${id}` as PauseStatId,
+        label: STAT_BOOST_VIEW[id].title,
+      })),
+      { id: 'kitWeapons', label: 'Оружие в аренду' },
+    ],
+  },
+  {
+    title: 'Счёт',
+    rows: [
+      { id: 'kills', label: 'Убито зомби' },
+      { id: 'barrels', label: 'Разбито бочек' },
+    ],
+  },
+];
+
+/**
  * Вкладки экрана прокачки. К трём веткам улучшений (UPGRADE_TRACKS) добавлен
  * магазин оружия: он тоже мета-прогрессия, только за деньги и разовыми
  * покупками, поэтому живёт на том же экране, а не на своём.
@@ -240,6 +335,25 @@ function plural(count: number, one: string, few: string, many: string): string {
 }
 
 /**
+ * Возвращает в начало прокрутку элемента и всего, что прокручивается внутри
+ * него.
+ *
+ * Вложенные списки ищутся по факту сдвига, а не по перечню id: прокручиваемых
+ * блоков на экранах уже несколько (улучшения, бустеры, история версий, разделы
+ * паузы), и список в коде отставал бы от разметки.
+ *
+ * Зовётся, пока элемент ЕЩЁ ВИДИМ: у display: none раскладки нет, и присвоение
+ * scrollTop молча ничего не делает — ЗАМЕРЕНО на истории версий, при сбросе
+ * после скрытия прокрутка оставалась на 1689 px.
+ */
+function resetScroll(root: HTMLElement): void {
+  root.scrollTop = 0;
+  for (const node of root.querySelectorAll<HTMLElement>('*')) {
+    if (node.scrollTop !== 0) node.scrollTop = 0;
+  }
+}
+
+/**
  * Экраны результата забега и прокачки (ТЗ раздел 11).
  *
  * DOM-оверлей поверх холста, как HUD и подписи: текст резкий на любом
@@ -291,6 +405,16 @@ export class Screens {
   private startWaveRow: BoosterRow | null = null;
   /** Строки бустов характеристик — по одной на каждый StatBoostId. */
   private readonly statBoostRows = new Map<StatBoostId, BoosterRow>();
+  /** Строки статистики паузы: значение и сам ряд — пустое значение его прячет. */
+  private readonly pauseStatRows = new Map<
+    PauseStatId,
+    { root: HTMLElement; value: HTMLElement }
+  >();
+  /**
+   * Заголовки разделов паузы со списком своих строк: заголовок прячется, когда
+   * спрятались все строки под ним.
+   */
+  private readonly pauseSections: Array<{ title: HTMLElement; ids: readonly PauseStatId[] }> = [];
   private readonly tracks = new Map<ScreenTrackId, TrackView>();
 
   /**
@@ -395,6 +519,7 @@ export class Screens {
 
     this.buildRows();
     this.buildBoosters();
+    this.buildPauseStats();
     this.buildChangelog();
   }
 
@@ -518,12 +643,15 @@ export class Screens {
 
   /**
    * Экран паузы. Строкой под заголовком — где забег остановлен: на паузе HUD
-   * замирает под оверлеем, и без неё непонятно, к чему возвращаешься.
+   * замирает под оверлеем, и без неё непонятно, к чему возвращаешься. Ниже —
+   * разделы со статистикой вылазки (см. PAUSE_SECTIONS): пауза единственное
+   * место, где на числа можно смотреть, не теряя отряд.
    */
   showPause(info: PauseInfo): void {
     if (this.pauseInfo !== null) {
       this.pauseInfo.textContent = `Волна ${info.wave} · ${formatRunTime(info.elapsedSeconds)}`;
     }
+    this.refreshPauseStats(info);
     this.toggle(this.pauseElement, true);
   }
 
@@ -539,14 +667,6 @@ export class Screens {
    */
   showChangelog(): void {
     this.toggle(this.changelogElement, true);
-
-    // Список длинный, а элемент один на все открытия: без сброса прокрутки
-    // второй заход начинался бы с того места, где закончился первый, — то есть
-    // не с последней версии, ради которой сюда и заходят. Строго ПОСЛЕ показа:
-    // у скрытого display: none элемента раскладки нет, и присвоение scrollTop
-    // молча ничего не делает — ЗАМЕРЕНО, при обратном порядке прокрутка
-    // оставалась на 1689 px.
-    if (this.changelogList !== null) this.changelogList.scrollTop = 0;
   }
 
   hideChangelog(): void {
@@ -644,6 +764,111 @@ export class Screens {
 
       root.append(head, changes);
       this.changelogList.appendChild(root);
+    }
+  }
+
+  /**
+   * Собирает разделы и строки статистики паузы один раз при запуске: набор строк
+   * постоянный, перерисовка ставит им только значения.
+   */
+  private buildPauseStats(): void {
+    const list = document.querySelector<HTMLElement>('#pause-stats');
+    if (list === null) return;
+
+    for (const section of PAUSE_SECTIONS) {
+      const title = document.createElement('div');
+      title.className = 'pause-stats__title';
+      title.textContent = section.title;
+      list.appendChild(title);
+
+      for (const entry of section.rows) {
+        const root = document.createElement('div');
+        root.className = 'pause-stat';
+
+        const label = document.createElement('div');
+        label.className = 'pause-stat__label';
+        label.textContent = entry.label;
+
+        const value = document.createElement('div');
+        value.className = 'pause-stat__value';
+
+        root.append(label, value);
+        list.appendChild(root);
+        this.pauseStatRows.set(entry.id, { root, value });
+      }
+
+      this.pauseSections.push({ title, ids: section.rows.map((entry) => entry.id) });
+    }
+  }
+
+  /**
+   * Значения статистики паузы.
+   *
+   * ПУСТОЕ ЗНАЧЕНИЕ ПРЯЧЕТ СТРОКУ, и это основной способ отбора: на первой волне
+   * все множители равны единице, а особого оружия и бустеров в вылазке может не
+   * быть вовсе — «×1» и пустая графа читались бы как отдельная новость. Раздел, у
+   * которого спрятались все строки, уходит вместе с заголовком, поэтому вылазка
+   * без кита раздела «Бустеры» не показывает.
+   */
+  private refreshPauseStats(info: PauseInfo): void {
+    // Названия особых стволов, а не их число: подобранное из бочек игрок
+    // пересчитывает по именам. Количество приписывается только когда носителей
+    // больше одного — «Огнемёт ×1» говорил бы то же, что «Огнемёт».
+    const specials = [...info.specials]
+      .map(([id, count]) => (count > 1 ? `${WEAPON_NAMES[id]} ×${count}` : WEAPON_NAMES[id]))
+      .join(' · ');
+
+    // Множители волны — до сотых: растут они шагами по 20%, и на второй волне
+    // это 1.2, а к пятой — 2.07; десятых для них мало.
+    const growth = (value: number): string => (value > 1 ? `×${trimNumber(value, 2)}` : '');
+
+    const { kit } = info;
+    const { multiplier, shooterStep } = CONFIG.shop.startBonuses.statBoosts;
+    const boostPercent = `+${trimNumber((multiplier - 1) * 100, 0)}%`;
+
+    // Оба арендованных слота одной строкой: стрелковый и особый ствол берутся
+    // независимо, но читаются как одна покупка «что взяли с собой».
+    const rented = [kit.weapon, kit.special]
+      .filter((id): id is WeaponId => id !== null)
+      .map((id) => WEAPON_NAMES[id])
+      .join(' · ');
+
+    const values: Record<PauseStatId, string> = {
+      waveHp: growth(info.hpMultiplier),
+      waveDamage: growth(info.damageMultiplier),
+      waveExp: growth(info.expMultiplier),
+      // Предел ВКЛЮЧАЯ героя — как «Макс. стрелков» на экране прокачки: числа
+      // отряда везде считаются с основным.
+      shooters: `${info.shooters} из ${info.shooterLimit}`,
+      weapon: WEAPON_NAMES[info.weapon],
+      special: specials,
+      kitWave: kit.startWave > 1 ? `${kit.startWave}` : '',
+      kitShooters: kit.shooters > 0 ? `${kit.shooters}` : '',
+      kitWeapons: rented,
+      // Бусты характеристик берутся по одному, поэтому значение — величина
+      // прибавки, а не число покупок. У предела отряда она в бойцах: прибавка
+      // всегда полная (потолок shooterCap стоит ровно на шаг выше максимума
+      // ветки), у остальных — общий процент множителя.
+      'boost-shooters': kit.boosts.shooters ? `+${shooterStep}` : '',
+      'boost-damage': kit.boosts.damage ? boostPercent : '',
+      'boost-fireRate': kit.boosts.fireRate ? boostPercent : '',
+      'boost-range': kit.boosts.range ? boostPercent : '',
+      'boost-exp': kit.boosts.exp ? boostPercent : '',
+      'boost-money': kit.boosts.money ? boostPercent : '',
+      kills: `${info.killedZombies}`,
+      barrels: `${info.brokenBarrels}`,
+    };
+
+    for (const [id, row] of this.pauseStatRows) {
+      const text = values[id];
+      row.value.textContent = text;
+      row.root.hidden = text === '';
+    }
+
+    for (const section of this.pauseSections) {
+      section.title.hidden = section.ids.every(
+        (id) => this.pauseStatRows.get(id)?.root.hidden !== false,
+      );
     }
   }
 
@@ -1104,6 +1329,11 @@ export class Screens {
       view.tab.classList.toggle('active', active);
       view.group.classList.toggle('visible', active);
     }
+
+    // Список у вкладок общий (группы лежат друг на друге в одной ячейке
+    // сетки), поэтому прокрутка при переключении остаётся от прошлой вкладки —
+    // и короткая ветка открывается пустым местом под своей последней строкой.
+    if (this.upgradeElement !== null) resetScroll(this.upgradeElement);
   }
 
   /**
@@ -1541,6 +1771,10 @@ export class Screens {
 
   private toggle(element: HTMLElement | null, visible: boolean): void {
     if (element === null) return;
+    // Уходя с экрана, отматываем его в начало: следующий заход должен
+    // начинаться с первой строки, а не с того места, где закончился прошлый.
+    // Строго ДО скрытия, причина — в комментарии к resetScroll.
+    if (!visible) resetScroll(element);
     element.classList.toggle('visible', visible);
   }
 }

@@ -18,7 +18,7 @@ import { CameraSpace, createGameCamera } from '../world/camera';
 import { World } from '../world/world';
 import { PointerInput } from './input';
 import { GameLoop } from './loop';
-import { MetaProgress, type StatBoostId } from './meta';
+import { MetaProgress, type StartKit } from './meta';
 import { RunState } from './run';
 import { Viewport } from './viewport';
 
@@ -83,11 +83,18 @@ export class Game {
   private deathLeft = 0;
 
   /**
-   * Бусты кита текущего забега. Запоминаются на старте, потому что к концу
-   * забега кит уже потреблён (consumeStartKit) и по MetaProgress не восстановим,
-   * а экран результата должен показать множитель бустера отдельным сомножителем.
+   * Кит текущего забега. Запоминается на старте, потому что к концу забега он
+   * уже потреблён (consumeStartKit) и по MetaProgress не восстановим: экран
+   * результата раскладывает по нему множитель опыта на сомножители, а экран
+   * паузы показывает, с чем в вылазку вышли.
    */
-  private runBoosts: Partial<Record<StatBoostId, number>> = {};
+  private runKit: StartKit = {
+    shooters: 0,
+    weapon: null,
+    special: null,
+    boosts: {},
+    startWave: 1,
+  };
 
   /**
    * Проекция экран ↔ мир для полёта выпавшего в счётчики HUD. Живёт здесь,
@@ -224,9 +231,26 @@ export class Game {
     if (this.phase !== 'running' && this.phase !== 'dying') return;
 
     this.paused = true;
+    // Снимок собирается здесь, а не в Screens: числа лежат по подсистемам, а
+    // экраны о Game не знают (см. «Интерфейсы объявлены на стороне потребителя»).
     this.screens.showPause({
       wave: this.run.waveNumber,
       elapsedSeconds: this.run.elapsedSeconds,
+      hpMultiplier: this.run.hpMultiplier,
+      damageMultiplier: this.run.damageMultiplier,
+      expMultiplier: this.run.expMultiplier,
+      shooters: this.squad.shooterCount,
+      // Из конфига, а не из уровня прокачки: там уже лежит предел этого забега —
+      // applyTo() записал уровень ветки, applyStartBoosts прибавил буст кита.
+      shooterLimit: CONFIG.formation.maxShooters,
+      weapon: this.squad.weaponId,
+      specials: this.squad.specialWeapons,
+      // Кит забега, а не текущий выбор в MetaProgress: тот уже потреблён и пуст.
+      kit: this.runKit,
+      // Счётчик пула, а не волны: тот обнуляется на каждой новой волне, а строка
+      // говорит про всю вылазку.
+      killedZombies: this.enemies.killed,
+      brokenBarrels: this.barrels.broken,
     });
   }
 
@@ -313,11 +337,11 @@ export class Game {
       collectedExp: collected,
       earnedExp: earned,
       expUpgradeMultiplier: this.meta.multiplier('exp'),
-      expBoostMultiplier: this.runBoosts.exp ? boostMultiplier : 1,
+      expBoostMultiplier: this.runKit.boosts.exp ? boostMultiplier : 1,
       collectedMoney: this.run.money,
       earnedMoney: this.run.moneyEarned,
       moneyUpgradeMultiplier: this.meta.multiplier('money'),
-      moneyBoostMultiplier: this.runBoosts.money ? boostMultiplier : 1,
+      moneyBoostMultiplier: this.runKit.boosts.money ? boostMultiplier : 1,
       elapsedSeconds: this.run.elapsedSeconds,
       wave: this.run.waveNumber,
       unlockedWeapons: opened,
@@ -361,7 +385,7 @@ export class Game {
     // run.reset() — по её номеру считаются бюджет, состав и множители. Выдача
     // отряду при этом остаётся ниже, после reset() подсистем.
     const kit = this.meta.consumeStartKit();
-    this.runBoosts = kit.boosts;
+    this.runKit = kit;
 
     this.run.reset(kit.startWave);
     this.squad.reset();
