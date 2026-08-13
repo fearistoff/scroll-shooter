@@ -20,6 +20,7 @@ import { PointerInput } from './input';
 import { GameLoop } from './loop';
 import { MetaProgress, type StartKit } from './meta';
 import { RunState } from './run';
+import { GlobalStats } from './stats';
 import { Viewport } from './viewport';
 
 /**
@@ -44,6 +45,11 @@ export type GamePhase = 'running' | 'dying' | 'result' | 'upgrade' | 'boosters';
 export class Game {
   readonly run = new RunState();
   readonly meta = new MetaProgress();
+  /**
+   * Статистика за всё время. На игру не влияет — только копит итоги вылазок,
+   * поэтому её не получает никто, кроме finishRun (запись) и экрана статистики.
+   */
+  readonly stats = new GlobalStats();
   readonly screens: Screens;
   readonly world: World;
   readonly bullets: BulletPool;
@@ -167,7 +173,7 @@ export class Game {
     this.input = new PointerInput(canvas);
     this.hud = new Hud(() => this.togglePause());
     this.labels = new LabelLayer();
-    this.screens = new Screens(this.meta, {
+    this.screens = new Screens(this.meta, this.stats, {
       openUpgrade: () => this.openUpgrade(),
       openBoosters: () => this.openBoosters(),
       startRun: () => this.startRun(),
@@ -324,6 +330,26 @@ export class Game {
     // равен достигнутой волне, и разницы между «было» и «стало» не остаётся.
     const opened = this.meta.weaponsOpenedByWave(this.run.waveNumber);
     this.meta.registerWave(this.run.waveNumber);
+
+    /*
+     * ГЛОБАЛЬНАЯ СТАТИСТИКА — единственная точка записи (см. GlobalStats).
+     * Считается здесь же, где итоги забега: подсистемы к следующему забегу
+     * обнулятся, а суммы зачислений уже посчитаны выше.
+     *
+     * Счётчики берутся у пулов, а не у волны: enemies.killed и barrels.broken
+     * копятся за всю вылазку, тогда как счётчики волны обнуляются на каждой
+     * новой. Стартовая волна — из кита забега: по ней считаются убитые боссы,
+     * и оплаченный старт с поздней волны не должен дарить чужие победы.
+     */
+    this.stats.record({
+      wave: this.run.waveNumber,
+      startWave: this.runKit.startWave,
+      elapsedSeconds: this.run.elapsedSeconds,
+      killedZombies: this.enemies.killed,
+      brokenBarrels: this.barrels.broken,
+      earnedExp: earned,
+      earnedMoney: this.run.moneyEarned,
+    });
 
     // Множитель на экране раскладывается на сомножители: прокачка — из уровня
     // ветки (то же число, что applyTo() записал в конфиг на старте забега:

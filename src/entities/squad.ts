@@ -17,6 +17,7 @@ import { FallPose } from './fall';
 import { makeCorpseColor, makeModelFlashColor } from './flash';
 import type { GateTarget } from './gates';
 import type { MineField } from './mines';
+import { buildFigureShadowGeometry, createOvalShadowMaterial } from './shadow';
 import { buildSoldierGeometry } from './soldier';
 import {
   bulletStyleFor,
@@ -132,6 +133,15 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
   private readonly heroFallPose = new FallPose();
 
   private readonly allyMesh: InstancedMesh;
+  /**
+   * Овальные тени под фигурками (shadow.ts): у героя своя — он один и не инстанс,
+   * у союзников общий InstancedMesh на визуальный потолок строя.
+   *
+   * Тень героя КРУПНЕЕ союзничьей, как и он сам: геометрия у каждой своя, потому
+   * что считается от роста и ширины конкретной капсулы.
+   */
+  private readonly heroShadow: Mesh;
+  private readonly allyShadows: InstancedMesh;
   private readonly matrix = new Matrix4();
   private readonly allies: Ally[] = [];
 
@@ -223,6 +233,31 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
     this.allyMesh.frustumCulled = false;
     this.allyMesh.count = 0;
     scene.add(this.allyMesh);
+
+    // Тени: сдвиг пятна вдоль солнца запечён в геометрию, поэтому мешу достаётся
+    // только позиция подошв — у героя это его x, у союзников их места в строю.
+    this.heroShadow = new Mesh(
+      buildFigureShadowGeometry(
+        heroCapsule.length + 2 * heroCapsule.radius,
+        heroCapsule.radius * 2,
+      ),
+      createOvalShadowMaterial(),
+    );
+    this.heroShadow.position.set(0, CONFIG.shadows.liftY, 0);
+    scene.add(this.heroShadow);
+
+    this.allyShadows = new InstancedMesh(
+      buildFigureShadowGeometry(
+        allyCapsule.length + 2 * allyCapsule.radius,
+        allyCapsule.radius * 2,
+      ),
+      createOvalShadowMaterial(),
+      Squad.visibleAllyCapacity,
+    );
+    this.allyShadows.instanceMatrix.setUsage(DynamicDrawUsage);
+    this.allyShadows.frustumCulled = false;
+    this.allyShadows.count = 0;
+    scene.add(this.allyShadows);
 
     // Предел хода читают снаружи (Squad.x) и до первого шага логики, поэтому он
     // не может остаться нулём до первого easeLimit.
@@ -396,6 +431,11 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
     this.heroMaterial.color.copy(this.heroColor);
     this.allyMesh.count = 0;
     this.allyMesh.instanceMatrix.needsUpdate = true;
+    // Тени гасятся и возвращаются в центр вместе с фигурками: иначе новый забег
+    // начался бы с пятнами прошлого строя.
+    this.allyShadows.count = 0;
+    this.allyShadows.instanceMatrix.needsUpdate = true;
+    this.heroShadow.position.x = 0;
     this.heroMesh.position.x = 0;
     // Герой прошлого забега остался лежать: меш один на всю игру, и без явного
     // подъёма новый забег начался бы с капсулы на боку.
@@ -502,6 +542,10 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
 
     const squadX = this.x;
     this.heroMesh.position.x = squadX;
+    // Тень едет за героем вбок. В фазе прощания update не зовут, поэтому она
+    // остаётся там, где герой стоял в момент смерти, — вокруг этой точки он и
+    // заваливается (heroDeathX).
+    this.heroShadow.position.x = squadX;
     // Герой — обычный меш, поэтому вспышка у него через цвет материала.
     this.heroMaterial.color.copy(this.heroFlashLeft > 0 ? this.heroFlash : this.heroColor);
 
@@ -622,11 +666,19 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
       // Индекс в меше равен индексу в строю, поэтому вспышку можно писать здесь же.
       const flashing = (this.allies[i]?.flashLeft ?? 0) > 0;
       this.allyMesh.setColorAt(i, flashing ? this.allyFlash : this.allyColor);
+
+      // Тень — тем же масштабом, что и фигурка: приходящий боец вырастает вместе
+      // со своим пятном. Матрицу можно переписать сразу, setMatrixAt копирует.
+      this.matrix.makeScale(scale, scale, scale);
+      this.matrix.setPosition(squadX + this.offsetX, CONFIG.shadows.liftY, this.offsetZ);
+      this.allyShadows.setMatrixAt(i, this.matrix);
     }
 
     this.allyMesh.count = visible;
     this.allyMesh.instanceMatrix.needsUpdate = true;
     if (this.allyMesh.instanceColor !== null) this.allyMesh.instanceColor.needsUpdate = true;
+    this.allyShadows.count = visible;
+    this.allyShadows.instanceMatrix.needsUpdate = true;
   }
 
   /**

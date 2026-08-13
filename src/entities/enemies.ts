@@ -1,5 +1,4 @@
 import {
-  CapsuleGeometry,
   Color,
   DynamicDrawUsage,
   InstancedMesh,
@@ -12,8 +11,10 @@ import { segmentHitsCircle, segmentPassesCircle } from '../core/collision';
 import type { RunState, ZombieKind } from '../core/run';
 import type { CrystalPool } from './crystals';
 import { FallPose } from './fall';
-import { makeCorpseColor, makeFlashColor } from './flash';
+import { makeCorpseColor, makeModelFlashColor } from './flash';
 import type { MoneyPool } from './money';
+import { buildFigureShadowGeometry, createOvalShadowMaterial } from './shadow';
+import { buildZombieGeometry } from './soldier';
 
 /**
  * То, по чему бьют зомби. В слое 3 это был один герой, теперь весь отряд,
@@ -89,13 +90,45 @@ function kindStats(code: number) {
       : CONFIG.enemies.normal;
 }
 
+/** Полная высота капсулы — рост, а не length: у капсулы сверху и снизу полусферы. */
+function capsuleHeight(capsule: { radius: number; length: number }): number {
+  return capsule.length + 2 * capsule.radius;
+}
+
+/**
+ * РОСТ МОДЕЛИ по коду вида, units (задано пользователем, 2026-08-13).
+ *
+ * Модель у всех видов ОДНА (soldier.ts, buildZombieGeometry), различаются только
+ * равномерный масштаб и палитра, поэтому вид полностью задаётся ростом:
+ *   обычный — полная высота его капсулы, 1.8;
+ *   крупный — по отношению ВЫСОТ капсул (3.0 / 1.8 = ×1.667); это ровно полная
+ *             высота его капсулы, поэтому она и стоит;
+ *   быстрый — доля от роста обычного, enemies.fast.modelHeightScale (0.9, то
+ *             есть рост 1.62): у него капсула той же высоты, что у обычного, и
+ *             вывести рост из неё нельзя — число задано напрямую.
+ * Масштаб во всех случаях равномерный по всем трём осям — так и требовалось.
+ *
+ * ЭТО НЕ БОЕВОЙ ГАБАРИТ. Попадания пуль, обход препятствий и линия остановки
+ * по-прежнему считаются по kindStats().capsule, и у быстрого зомби хитбокс
+ * поэтому шире силуэта сильнее, чем у остальных (общее правило
+ * enemies.hitboxScale — хитбокс шире модели).
+ */
+function modelHeights(): number[] {
+  const { normal, big, fast } = CONFIG.enemies;
+  const normalHeight = capsuleHeight(normal.capsule);
+
+  return [normalHeight, capsuleHeight(big.capsule), normalHeight * fast.modelHeightScale];
+}
+
 /**
  * Зомби всех видов (ТЗ раздел 9): обычные, крупные и быстрые.
  *
  * Все виды живут в ОДНОМ пуле: движение, остановка на линии, удары и попадания
- * у них одинаковые, различаются только HP, урон, габарит, скорость и цвет.
- * Разными остаются лишь InstancedMesh — по одному на вид, потому что геометрия
- * капсулы у них разного размера.
+ * у них одинаковые, различаются только HP, урон, габарит, скорость и палитра.
+ * Разными остаются лишь InstancedMesh — по одному на вид, потому что фигурка у
+ * них своего размера (modelHeights) и своего цвета (раскраска запечена в
+ * геометрию, см. soldier.ts). Тени, наоборот, в одном меше на все виды: у
+ * плоского овала вид задаётся масштабом инстанса.
  *
  * Данные в Float32Array, гашение через swap-remove — как у пуль и кристаллов.
  *
@@ -112,6 +145,19 @@ function kindStats(code: number) {
 export class EnemyPool {
   /** Меши по коду вида: [обычный, крупный, быстрый]. */
   private readonly meshes: readonly InstancedMesh[];
+  /**
+   * Овальные тени под фигурками (shadow.ts) — ОДИН меш на все виды и на тела:
+   * геометрия у тени одна, вид задаётся масштабом инстанса, поэтому дробить её
+   * по видам, как модели, не нужно.
+   */
+  private readonly shadows: InstancedMesh;
+  /**
+   * ВИДИМЫЙ габарит по коду вида — «капсула модели» ростом modelHeights(), в
+   * пропорциях капсулы обычного зомби. По нему считаются посадка (центр в
+   * середине роста), высота полоски HP и поза падения тела: игрок видит модель, а
+   * не боевую капсулу, и у быстрого зомби они разного размера.
+   */
+  private readonly modelCapsules: ReadonlyArray<{ radius: number; length: number }>;
   private readonly matrix = new Matrix4();
   /** Поза падения. Одна на пул: тела считаются по очереди, мусорить нельзя. */
   private readonly fallPose = new FallPose();
@@ -176,13 +222,18 @@ export class EnemyPool {
   private readonly slots: Array<Float32Array | Uint8Array | Int8Array>;
 
   /**
-   * Цвета для instanceColor, индекс — код вида. Заведены один раз: в цикле
-   * отрисовки нельзя мусорить. Вспышка — светлый оттенок СВОЕГО цвета, тела —
-   * тёмный оттенок своего же: мёртвые не должны читаться как толпа.
+   * Цвета для instanceColor — МНОЖИТЕЛИ поверх запечённой в модель раскраски, а
+   * не собственные цвета: опознавательная пара «куртка + кожа» теперь живёт в
+   * геометрии вида (CONFIG.enemies.<вид>.colors). Поэтому обычное состояние —
+   * белый (тождество), вспышка — ярче единицы (makeModelFlashColor), тело —
+   * тёмный множитель, гасящий фигурку целиком, как раньше гасил цвет капсулы.
+   *
+   * Один набор на все виды, не по коду вида: множитель от палитры не зависит.
+   * Заведены один раз — в цикле отрисовки мусорить нельзя.
    */
-  private readonly baseColors: readonly Color[];
-  private readonly flashColors: readonly Color[];
-  private readonly corpseColors: readonly Color[];
+  private readonly baseColor = new Color(0xffffff);
+  private readonly flashColor = makeModelFlashColor();
+  private readonly corpseColor = makeCorpseColor(0xffffff);
   /**
    * Множитель скорости подхода по коду вида (нормаль — 1, см.
    * enemies.bigSpeedScale / fastSpeedScale) и счётчик отрисованных инстансов
@@ -190,6 +241,13 @@ export class EnemyPool {
    */
   private readonly speedScaleOf: Float32Array;
   private readonly drawn = new Int32Array(KIND_NAMES.length);
+  /**
+   * Множитель размера тени по коду вида — тот же, что у модели (рост вида делить
+   * на рост обычного): геометрия овала собрана под обычного зомби.
+   */
+  private readonly shadowScaleOf: Float32Array;
+  /** Сколько теней записано за кадр — живые и тела идут в один меш подряд. */
+  private shadowsDrawn = 0;
 
   /** Поля препятствий, которые зомби обходит. Заполняет Game после создания. */
   private readonly obstacleFields: ObstacleField[] = [];
@@ -234,22 +292,35 @@ export class EnemyPool {
     const { normal, big, fast, poolSize, bigSpeedScale, fastSpeedScale } = CONFIG.enemies;
 
     // Порядок — строго по кодам видов: KIND_NORMAL, KIND_BIG, KIND_FAST.
+    const heights = modelHeights();
     this.meshes = [
-      EnemyPool.createMesh(scene, normal.capsule, normal.color, poolSize),
-      EnemyPool.createMesh(scene, big.capsule, big.color, poolSize),
-      EnemyPool.createMesh(scene, fast.capsule, fast.color, poolSize),
+      EnemyPool.createMesh(scene, heights[KIND_NORMAL]!, normal.colors, poolSize),
+      EnemyPool.createMesh(scene, heights[KIND_BIG]!, big.colors, poolSize),
+      EnemyPool.createMesh(scene, heights[KIND_FAST]!, fast.colors, poolSize),
     ];
-    this.baseColors = [new Color(normal.color), new Color(big.color), new Color(fast.color)];
-    this.flashColors = [
-      makeFlashColor(normal.color),
-      makeFlashColor(big.color),
-      makeFlashColor(fast.color),
-    ];
-    this.corpseColors = [
-      makeCorpseColor(normal.color),
-      makeCorpseColor(big.color),
-      makeCorpseColor(fast.color),
-    ];
+
+    // Капсула модели — пропорции ОБЫЧНОГО зомби, растянутые до роста вида:
+    // length + 2 × radius при этом равно росту, поэтому центр в середине роста и
+    // подошвы на дороге получаются сами, как у настоящей капсулы.
+    const normalHeight = heights[KIND_NORMAL]!;
+    this.modelCapsules = heights.map((height) => ({
+      radius: (normal.capsule.radius * height) / normalHeight,
+      length: (normal.capsule.length * height) / normalHeight,
+    }));
+
+    // Тень — овал под фигурку обычного зомби; крупный и быстрый получают её тем
+    // же равномерным масштабом, что и модель.
+    this.shadows = new InstancedMesh(
+      buildFigureShadowGeometry(normalHeight, normal.capsule.radius * 2),
+      createOvalShadowMaterial(),
+      poolSize,
+    );
+    this.shadows.instanceMatrix.setUsage(DynamicDrawUsage);
+    this.shadows.frustumCulled = false;
+    this.shadows.count = 0;
+    scene.add(this.shadows);
+    this.shadowScaleOf = new Float32Array(heights.map((height) => height / normalHeight));
+
     this.speedScaleOf = new Float32Array([1, bigSpeedScale, fastSpeedScale]);
 
     this.posX = new Float32Array(poolSize);
@@ -285,16 +356,22 @@ export class EnemyPool {
 
   private static createMesh(
     scene: Scene,
-    capsule: { radius: number; length: number },
-    _color: number,
+    height: number,
+    colors: { jacket: number; skin: number },
     poolSize: number,
   ): InstancedMesh {
     const mesh = new InstancedMesh(
-      new CapsuleGeometry(capsule.radius, capsule.length, 4, 10),
-      // Материал БЕЛЫЙ намеренно: цвет каждого зомби задаётся через instanceColor,
-      // который three умножает на цвет материала. Оставь здесь зелёный — вспышка
-      // не смогла бы стать краснее его, умножение только гасит.
-      new MeshStandardMaterial({ color: 0xffffff, roughness: 0.8, metalness: 0 }),
+      buildZombieGeometry(height, colors),
+      // Материал БЕЛЫЙ и с вертексными цветами намеренно: раскраска фигурки
+      // запечена в геометрию, а материал и instanceColor — множители поверх неё.
+      // Поставь здесь зелёный — он перекрасил бы модель целиком, а вспышка (она
+      // множитель ярче единицы) не смогла бы уйти от его оттенка.
+      new MeshStandardMaterial({
+        color: 0xffffff,
+        vertexColors: true,
+        roughness: 0.8,
+        metalness: 0,
+      }),
       poolSize,
     );
     mesh.instanceMatrix.setUsage(DynamicDrawUsage);
@@ -537,6 +614,7 @@ export class EnemyPool {
     const step = (worldSpeed + extraSpeed) * dt;
 
     this.drawn.fill(0);
+    this.shadowsDrawn = 0;
 
     for (let i = 0; i < this.aliveCount; ) {
       const code = this.kindOf[i]!;
@@ -578,10 +656,11 @@ export class EnemyPool {
         continue;
       }
 
-      // Высота центра капсулы умножается на тот же масштаб — иначе раздутый
-      // зомби наполовину провалился бы под дорогу: капсула масштабируется
+      // Высота центра МОДЕЛИ умножается на тот же масштаб — иначе раздутый
+      // зомби наполовину провалился бы под дорогу: модель масштабируется
       // относительно своего центра, а расти должна от подошвы.
-      const y = (stats.capsule.length / 2 + stats.capsule.radius) * scale;
+      const model = this.modelCapsules[code]!;
+      const y = (model.length / 2 + model.radius) * scale;
       this.matrix.makeScale(scale, scale, scale);
       this.matrix.setPosition(this.posX[i]!, y, this.posZ[i]!);
       // Цвет пишется рядом с матрицей и по тому же индексу отрисовки: у зомби
@@ -591,8 +670,11 @@ export class EnemyPool {
       const mesh = this.meshes[code]!;
       const slot = this.drawn[code]!;
       mesh.setMatrixAt(slot, this.matrix);
-      mesh.setColorAt(slot, flashing ? this.flashColors[code]! : this.baseColors[code]!);
+      mesh.setColorAt(slot, flashing ? this.flashColor : this.baseColor);
       this.drawn[code] = slot + 1;
+
+      // Тень — после модели, тем же масштабом: пятно раздувается вместе с замахом.
+      this.addShadow(this.posX[i]!, this.posZ[i]!, this.shadowScaleOf[code]! * scale);
 
       i++;
     }
@@ -620,16 +702,16 @@ export class EnemyPool {
       }
 
       const code = this.kindOf[i]!;
-      const capsule = kindStats(code).capsule;
       // Поза целиком — в FallPose: наклон вокруг подошвы в произвольную сторону
       // (там же разбор формулы). Тело валится в свою сторону из 360°, поэтому
-      // уезжает от места смерти и по x, и по z.
+      // уезжает от места смерти и по x, и по z. Габарит — модельный: тело должно
+      // лежать на дороге тем, что видно, а не боевой капсулой.
       const pose = this.fallPose.set(
         this.posX[i]!,
         this.posZ[i]!,
         this.fallYaw[i]!,
         this.fallLeft[i]!,
-        capsule,
+        this.modelCapsules[code]!,
       );
 
       // Масштаба у тела нет: makeRotationAxis даёт единичный, и замах, застигнутый
@@ -640,8 +722,15 @@ export class EnemyPool {
       const mesh = this.meshes[code]!;
       const slot = this.drawn[code]!;
       mesh.setMatrixAt(slot, this.matrix);
-      mesh.setColorAt(slot, this.corpseColors[code]!);
+      mesh.setColorAt(slot, this.corpseColor);
       this.drawn[code] = slot + 1;
+
+      // Тень у тела остаётся — лежащее тоже её отбрасывает — и стоит под ЦЕНТРОМ
+      // тела (pose), а не под подошвами: заваливаясь, тело уезжает от места
+      // смерти на половину своей длины, и пятно, оставленное на подошвах,
+      // отрывалось бы от него. Своей позы у плоского овала при этом нет: он
+      // всегда лежит вдоль солнца.
+      this.addShadow(pose.x, pose.z, this.shadowScaleOf[code]!);
 
       i++;
     }
@@ -652,6 +741,23 @@ export class EnemyPool {
       mesh.instanceMatrix.needsUpdate = true;
       if (mesh.instanceColor !== null) mesh.instanceColor.needsUpdate = true;
     }
+
+    this.shadows.count = this.shadowsDrawn;
+    this.shadows.instanceMatrix.needsUpdate = true;
+  }
+
+  /**
+   * Пишет овальную тень под фигурку: тот же равномерный масштаб, что у модели, но
+   * плоско над дорогой. Сдвиг пятна вдоль солнца запечён в геометрию, поэтому
+   * здесь только позиция подошв.
+   *
+   * Матрица общая с моделью и телом: setMatrixAt копирует, так что её можно
+   * переиспользовать сразу после записи фигурки.
+   */
+  private addShadow(x: number, z: number, scale: number): void {
+    this.matrix.makeScale(scale, scale, scale);
+    this.matrix.setPosition(x, CONFIG.shadows.liftY, z);
+    this.shadows.setMatrixAt(this.shadowsDrawn++, this.matrix);
   }
 
   /**
@@ -773,11 +879,12 @@ export class EnemyPool {
       if (this.hpBarLeft[i]! <= 0) continue;
 
       const code = this.kindOf[i]!;
-      const stats = kindStats(code);
-      const top = stats.capsule.length + stats.capsule.radius * 2;
-      // Полоска обычного (и быстрого — он того же роста и мельче) зомби мельче:
-      // их на дороге до 200, и полный размер у каждого забивает кадр. У крупного
-      // размер базовый.
+      // Макушка МОДЕЛИ, а не боевой капсулы: у быстрого зомби она ниже капсулы, и
+      // полоска иначе висела бы в воздухе над ним.
+      const model = this.modelCapsules[code]!;
+      const top = model.length + model.radius * 2;
+      // Полоска обычного и быстрого зомби мельче: их на дороге до 200, и полный
+      // размер у каждого забивает кадр. У крупного размер базовый.
       visit(
         this.posX[i]!,
         top + offsetY,
@@ -958,6 +1065,10 @@ export class EnemyPool {
       mesh.count = 0;
       mesh.instanceMatrix.needsUpdate = true;
     }
+    // Тени гасятся вместе с фигурками, иначе на пустой дороге остались бы пятна.
+    this.shadowsDrawn = 0;
+    this.shadows.count = 0;
+    this.shadows.instanceMatrix.needsUpdate = true;
   }
 
   /*
@@ -1072,9 +1183,14 @@ export class EnemyPool {
 
     for (let i = this.aliveCount; i < this.count; i++) {
       const code = this.kindOf[i]!;
-      const capsule = kindStats(code).capsule;
       const yaw = this.fallYaw[i]!;
-      const pose = this.fallPose.set(this.posX[i]!, this.posZ[i]!, yaw, this.fallLeft[i]!, capsule);
+      const pose = this.fallPose.set(
+        this.posX[i]!,
+        this.posZ[i]!,
+        yaw,
+        this.fallLeft[i]!,
+        this.modelCapsules[code]!,
+      );
 
       out.push({
         x: +this.posX[i]!.toFixed(3),

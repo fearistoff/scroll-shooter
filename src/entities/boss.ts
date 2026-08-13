@@ -1,10 +1,11 @@
 import {
-  CapsuleGeometry,
   CircleGeometry,
   Color,
   Mesh,
   MeshBasicMaterial,
   MeshStandardMaterial,
+  Quaternion,
+  Vector3,
   type Scene,
 } from 'three';
 import { CONFIG } from '../config';
@@ -12,8 +13,10 @@ import { segmentHitsCircle, segmentPassesCircle } from '../core/collision';
 import type { RunState } from '../core/run';
 import type { CrystalPool } from './crystals';
 import { FallPose } from './fall';
-import { makeCorpseColor, makeFlashColor } from './flash';
+import { makeCorpseColor, makeModelFlashColor } from './flash';
 import type { MoneyPool } from './money';
+import { buildFigureShadowGeometry, createOvalShadowMaterial } from './shadow';
+import { buildZombieGeometry } from './soldier';
 
 /** Фаза боссфайта. */
 export type BossPhase = 'absent' | 'entering' | 'fighting' | 'dead';
@@ -21,9 +24,28 @@ export type BossPhase = 'absent' | 'entering' | 'fighting' | 'dead';
 /** Вид атаки босса. Одновременно идёт ровно одна — см. Boss.updateAttacks. */
 export type BossAttackKind = 'aoe' | 'single';
 
+/** Ось поворота модели. Одна на модуль: доворот считается каждый кадр. */
+const UP = new Vector3(0, 1, 0);
+
+/**
+ * Угол, приведённый к (−π, π]. Без этого доворот на 190° шёл бы «длинной
+ * стороной», через 170° в обратную сторону.
+ */
+function wrapAngle(angle: number): number {
+  const full = Math.PI * 2;
+  return (((angle + Math.PI) % full) + full) % full - Math.PI;
+}
+
+function clamp(value: number, limit: number): number {
+  return Math.min(limit, Math.max(-limit, value));
+}
+
 /** Отряд с точки зрения босса. */
 export interface BossTarget {
-  /** Позиция отряда по x — по ней босс намечает AoE. */
+  /**
+   * Позиция отряда по x — по ней босс намечает AoE и на неё доворачивается
+   * модель. Это же координата ГЛАВНОГО СТРЕЛКА: герой стоит в центре строя.
+   */
   readonly x: number;
   /** Урон всем стрелкам внутри круга (AoE). Возвращает число задетых. */
   damageShootersInCircle(x: number, z: number, radius: number, damage: number): number;
@@ -71,6 +93,13 @@ export class Boss {
    * Материал тоже свой: у живого он мигает вспышкой урона, телу это не нужно.
    */
   private readonly corpseMesh: Mesh;
+  /**
+   * Овальные тени под фигурками (shadow.ts) — своя у живого и своя у тела, по той
+   * же причине, что и два меша: тело доезжает до края экрана уже в следующей
+   * волне, когда под новым боссом снова нужна тень.
+   */
+  private readonly shadow: Mesh;
+  private readonly corpseShadow: Mesh;
   /** Кольцо-телеграф AoE. Лежит на земле, видно только во время замаха. */
   private readonly telegraph: Mesh;
 
@@ -120,6 +149,23 @@ export class Boss {
   private telegraphActive = false;
   private telegraphX = 0;
 
+  /**
+   * Куда смотрит модель, радианы: 0 — на отряд (+Z), плюс — вправо. Модель
+   * собрана лицом к +Z, поэтому это прямо угол её поворота вокруг Y.
+   */
+  private yaw = 0;
+  /**
+   * Угловая скорость доворота, рад/с. Хранится, потому что ease с двух сторон
+   * невозможен без неё: скорость должна разгоняться и гаснуть, а не выставляться
+   * по остатку угла заново каждый кадр.
+   */
+  private yawSpeed = 0;
+  /**
+   * Разворот, с которым босса застала смерть: тело падает из той же позы, в
+   * которой стоял живой. Заведён полем — кватернион считается каждый кадр тела.
+   */
+  private readonly corpseFacing = new Quaternion();
+
   /** Остаток вспышки от урона (ui.damageFlash). Тает по игровому dt. */
   private flashLeft = 0;
   /** Лежит ли на дороге тело босса — оно живёт своей жизнью после его смерти. */
@@ -137,11 +183,15 @@ export class Boss {
    * атак, а сжатие — нет, потому что после удара таймер уже перезаряжен.
    */
   private recoverLeft = 0;
-  /** Материал и цвета для вспышки: босс — обычный меш, не инстанс. */
+  /**
+   * Материал и цвета для вспышки: босс — обычный меш, не инстанс.
+   *
+   * Цвета — МНОЖИТЕЛИ поверх запечённой в модель раскраски, как у зомби и отряда:
+   * белый в покое, ярче единицы на вспышке (makeModelFlashColor).
+   */
   private readonly material: MeshStandardMaterial;
-  private readonly baseColor = new Color(CONFIG.boss.color);
-  /** Вспышка — светлый оттенок собственного цвета босса. */
-  private readonly flashColor = makeFlashColor(CONFIG.boss.color);
+  private readonly baseColor = new Color(0xffffff);
+  private readonly flashColor = makeModelFlashColor();
 
   private aoeHitsTotal = 0;
   private singleHitsTotal = 0;
@@ -154,28 +204,51 @@ export class Boss {
     private readonly crystals: CrystalPool,
     private readonly money: MoneyPool,
   ) {
-    const { capsule, color, telegraph } = CONFIG.boss;
+    const { capsule, colors, telegraph } = CONFIG.boss;
 
-    this.material = new MeshStandardMaterial({ color, roughness: 0.75, metalness: 0.05 });
-    // Геометрия одна на живого и на тело: капсула у них та же самая.
-    const capsuleGeometry = new CapsuleGeometry(capsule.radius, capsule.length, 6, 16);
-    this.mesh = new Mesh(capsuleGeometry, this.material);
+    // Материал БЕЛЫЙ и с вертексными цветами: босс — тот же зомби, раскраска
+    // запечена в геометрию, а цвет материала остался множителем для вспышки.
+    this.material = new MeshStandardMaterial({
+      color: 0xffffff,
+      vertexColors: true,
+      roughness: 0.75,
+      metalness: 0.05,
+    });
+    // Модель зомби в рост капсулы (задано пользователем, 2026-08-13): гигант —
+    // тоже зомби, и фигурка у него та же, только вчетверо крупнее обычного.
+    // Геометрия одна на живого и на тело — размер у них тот же самый.
+    const bossHeight = capsule.length + 2 * capsule.radius;
+    const modelGeometry = buildZombieGeometry(bossHeight, colors);
+    this.mesh = new Mesh(modelGeometry, this.material);
     this.mesh.visible = false;
     scene.add(this.mesh);
 
     // У тела свой материал, и он сразу тёмный: цвет тела не меняется за его жизнь,
     // а живой босс в это же время может мигать вспышкой — общий материал развёл бы
-    // эти два состояния по одному полю.
+    // эти два состояния по одному полю. Тёмный МНОЖИТЕЛЬ поверх раскраски, как у
+    // тел зомби: гасит все детали фигурки разом.
     this.corpseMesh = new Mesh(
-      capsuleGeometry,
+      modelGeometry,
       new MeshStandardMaterial({
-        color: makeCorpseColor(color),
+        color: makeCorpseColor(0xffffff),
+        vertexColors: true,
         roughness: 0.75,
         metalness: 0.05,
       }),
     );
     this.corpseMesh.visible = false;
     scene.add(this.corpseMesh);
+
+    // Тени: геометрия и материал общие у живого и у тела, разные только позиции.
+    // Ширина овала — по капсуле, как у остальных фигурок.
+    const shadowGeometry = buildFigureShadowGeometry(bossHeight, capsule.radius * 2);
+    const shadowMaterial = createOvalShadowMaterial();
+    this.shadow = new Mesh(shadowGeometry, shadowMaterial);
+    this.shadow.visible = false;
+    scene.add(this.shadow);
+    this.corpseShadow = new Mesh(shadowGeometry, shadowMaterial);
+    this.corpseShadow.visible = false;
+    scene.add(this.corpseShadow);
 
     const circle = new CircleGeometry(CONFIG.boss.attacks.aoe.radius, 32);
     circle.rotateX(-Math.PI / 2);
@@ -258,6 +331,18 @@ export class Boss {
     return this.telegraphActive;
   }
 
+  /**
+   * Куда должна смотреть модель, радианы: на центр круга AoE, пока он лежит, иначе
+   * на ГЛАВНОГО СТРЕЛКА (squad.x — это его координата, герой стоит в центре строя).
+   *
+   * Цель всегда на линии отряда (z = 0), босс — в (0, posZ). Модель собрана лицом
+   * к +Z, поэтому её угол поворота — прямо atan2(dx, dz).
+   */
+  private get targetFacing(): number {
+    const targetX = this.telegraphActive ? this.telegraphX : this.squad.x;
+    return Math.atan2(targetX, -this.posZ);
+  }
+
   get aoeCasts(): number {
     return this.aoeCastTotal;
   }
@@ -281,6 +366,7 @@ export class Boss {
     this.corpseFallLeft = 0;
     this.corpseZ = 0;
     this.corpseMesh.visible = false;
+    this.corpseShadow.visible = false;
   }
 
   /**
@@ -310,7 +396,13 @@ export class Boss {
     // забег он начал бы раздутым — меш один на всю игру, его не пересоздают.
     this.mesh.scale.setScalar(1);
     this.mesh.visible = false;
+    this.shadow.visible = false;
     this.telegraph.visible = false;
+    // Разворот — из того же ряда: босс мог погибнуть отвернувшимся, и следующий
+    // вышел бы на дорогу боком, доворачиваясь уже на ходу.
+    this.yaw = 0;
+    this.yawSpeed = 0;
+    this.mesh.rotation.y = 0;
   }
 
   /** Выпускает босса на поле. */
@@ -348,6 +440,11 @@ export class Boss {
     this.recoverLeft = 0;
     this.mesh.scale.setScalar(1);
     this.mesh.visible = true;
+    this.shadow.visible = true;
+    // Выходит лицом к отряду, доворот начинается уже на дороге.
+    this.yaw = 0;
+    this.yawSpeed = 0;
+    this.mesh.rotation.y = 0;
   }
 
   /** Движение к точке остановки и атаки. */
@@ -373,15 +470,60 @@ export class Boss {
       this.updateAttacks(dt);
     }
 
+    // Доворот — тоже ПОСЛЕ атак: круг AoE, легший в этом кадре, уже сменил цель,
+    // и модель начинает разворачиваться к нему в тот же кадр, а не со следующего.
+    this.updateFacing(dt);
+
     // Масштаб считается ПОСЛЕ атак: удар, случившийся в этом кадре, уже поставил
     // recoverLeft, и сжатие начинается с пика, а не со следующего кадра.
     const scale = this.attackScale();
     this.mesh.scale.setScalar(scale);
-    // Высота центра капсулы умножается на тот же масштаб — рост идёт от подошвы,
+    // Высота центра модели умножается на тот же масштаб — рост идёт от подошвы,
     // иначе раздутый босс провалился бы в дорогу. Круг-телеграф лежит отдельным
     // мешем и не масштабируется: он размечает область урона, а не тело.
     const y = (capsule.length / 2 + capsule.radius) * scale;
     this.mesh.position.set(0, y, this.posZ);
+    // Тень — тем же масштабом и на землю: раздувается вместе с замахом, но не
+    // поворачивается вслед за моделью — её направление задаёт солнце, а не поза.
+    this.shadow.scale.setScalar(scale);
+    this.shadow.position.set(0, CONFIG.shadows.liftY, this.posZ);
+  }
+
+  /**
+   * Шаг доворота модели к targetFacing (CONFIG.boss.turn, задано пользователем
+   * 2026-08-13).
+   *
+   * EASE С ДВУХ СТОРОН. Желаемая скорость пропорциональна остатку угла (остаток,
+   * делённый на easeSeconds) — это торможение на подъезде; сама скорость догоняет
+   * желаемую с ограниченным ускорением (максимум за то же easeSeconds) — это
+   * разгон на старте. Потолок — turn.maxDegreesPerSecond.
+   *
+   * Скорость хранится полем, и без этого ease-in не выходит: выставляя её по
+   * остатку угла заново каждый кадр, на смене цели модель срывалась бы с места на
+   * полной скорости.
+   *
+   * Перелёта нет: тормозить модель начинает за maxSpeed × easeSeconds по углу (90°
+   * при нынешних числах), а на само торможение с полной скорости уходит вдвое
+   * меньше (45°).
+   */
+  private updateFacing(dt: number): void {
+    const { maxDegreesPerSecond, easeSeconds } = CONFIG.boss.turn;
+
+    const delta = wrapAngle(this.targetFacing - this.yaw);
+    const maxSpeed = (maxDegreesPerSecond * Math.PI) / 180;
+
+    if (easeSeconds > 0) {
+      const desired = clamp(delta / easeSeconds, maxSpeed);
+      // Ускорение выведено из потолка: за easeSeconds скорость успевает пройти
+      // весь диапазон от нуля до максимума.
+      this.yawSpeed += clamp(desired - this.yawSpeed, (maxSpeed / easeSeconds) * dt);
+    } else {
+      // Ease выключен: поворот идёт сразу на потолке скорости.
+      this.yawSpeed = clamp(delta / Math.max(dt, 1e-6), maxSpeed);
+    }
+
+    this.yaw = wrapAngle(this.yaw + this.yawSpeed * dt);
+    this.mesh.rotation.y = this.yaw;
   }
 
   /**
@@ -402,6 +544,7 @@ export class Boss {
     if (this.corpseZ > CONFIG.world.despawnZ) {
       this.corpseActive = false;
       this.corpseMesh.visible = false;
+      this.corpseShadow.visible = false;
       return;
     }
 
@@ -410,8 +553,17 @@ export class Boss {
     // corpseYaw. Наклон вокруг произвольной горизонтальной оси, поэтому rotation.z
     // здесь больше не годится — ставится кватернион.
     const pose = this.corpsePose.set(0, this.corpseZ, this.corpseYaw, this.corpseFallLeft, capsule);
-    this.corpseMesh.quaternion.setFromAxisAngle(pose.axis, pose.angle);
+    // Наклон падения — ПОВЕРХ разворота, с которым босса застала смерть: сначала
+    // модель повёрнута к своей цели, потом её валит набок. Без этого умножения
+    // тело в первый же кадр щёлкало бы лицом к отряду.
+    this.corpseMesh.quaternion
+      .setFromAxisAngle(pose.axis, pose.angle)
+      .multiply(this.corpseFacing);
     this.corpseMesh.position.set(pose.x, pose.y, pose.z);
+    // Тень тела — под его ЦЕНТРОМ, как и у тел зомби: гигант, заваливаясь, уезжает
+    // от подошв на 2 units, и пятно, оставленное на месте смерти, висело бы рядом
+    // с телом отдельным кругом.
+    this.corpseShadow.position.set(pose.x, CONFIG.shadows.liftY, pose.z);
   }
 
   /**
@@ -578,16 +730,20 @@ export class Boss {
     this.hp = 0;
     this.phase = 'dead';
     this.mesh.visible = false;
+    this.shadow.visible = false;
     this.telegraph.visible = false;
     this.telegraphActive = false;
 
     // Живой меш прячется, а на его место встаёт тело — с той же точки, где босса
-    // застала смерть. Масштаб замаха телу не передаётся: оно падает в свой размер.
+    // застала смерть. Масштаб замаха телу не передаётся: оно падает в свой размер,
+    // а вот разворот передаётся — иначе тело щёлкнуло бы лицом к отряду.
     this.corpseActive = true;
     this.corpseFallLeft = CONFIG.deathAnim.fallSeconds;
     this.corpseYaw = Math.random() * Math.PI * 2;
     this.corpseZ = this.posZ;
+    this.corpseFacing.setFromAxisAngle(UP, this.yaw);
     this.corpseMesh.visible = true;
+    this.corpseShadow.visible = true;
     // Поза выставляется общей формулой, а не руками: иначе первый кадр тела
     // рисовался бы по одной раскладке, а все следующие — по другой.
     this.updateCorpse(0);
@@ -659,6 +815,9 @@ export class Boss {
     sameKindInRow: number;
     recoverLeft: number;
     scale: number;
+    facingDegrees: number;
+    targetFacingDegrees: number;
+    turnSpeedDegrees: number;
     moneyLayersPaid: number;
     layerTotal: number;
     corpse: {
@@ -690,6 +849,11 @@ export class Boss {
       recoverLeft: +this.recoverLeft.toFixed(3),
       // Фактический масштаб меша — по нему проверяется анимация атаки.
       scale: +this.mesh.scale.x.toFixed(3),
+      // Разворот модели: 0 — лицом к отряду, плюс — вправо (в сторону +X).
+      // Рядом цель доворота и текущая скорость — ими проверяется ease и потолок.
+      facingDegrees: +((this.yaw * 180) / Math.PI).toFixed(1),
+      targetFacingDegrees: +((this.targetFacing * 180) / Math.PI).toFixed(1),
+      turnSpeedDegrees: +((this.yawSpeed * 180) / Math.PI).toFixed(1),
       // За сколько полос деньги уже выданы — из layerTotal, полос всего.
       moneyLayersPaid: this.moneyLayersPaid,
       layerTotal: this.layerTotal,

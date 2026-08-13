@@ -14,3 +14,21 @@ export function formatRunTime(seconds: number): string {
   const rest = total % 60;
   return `${minutes}:${rest < 10 ? '0' : ''}${rest}`;
 }
+
+/**
+ * Формат накопленного времени для экрана статистики: там суммируются все
+ * вылазки, и часы набегают за один вечер.
+ *
+ * До часа — тот же M:SS, что в секундомере: время вылазки игрок читает именно в
+ * этом виде, и второй формат для тех же величин сбивал бы. От часа — «2 ч 13
+ * мин»: «133:20» о двух часах не говорит ничего, а секунды в такой сумме уже
+ * ничего не значат.
+ */
+export function formatTotalTime(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds));
+  if (total < 3600) return formatRunTime(total);
+
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  return `${hours} ч ${minutes} мин`;
+}

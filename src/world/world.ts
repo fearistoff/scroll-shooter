@@ -16,6 +16,7 @@ import {
 } from 'three';
 import { CONFIG } from '../config';
 import type { RunState } from '../core/run';
+import { buildBoxShadowGeometry, createFlatShadowMaterial } from '../entities/shadow';
 
 /**
  * Мир: дорога, земля, декор, свет, туман (ТЗ раздел 3).
@@ -33,6 +34,13 @@ import type { RunState } from '../core/run';
 export class World {
   readonly group = new Group();
 
+  /**
+   * Высота земли по сторонам дороги, units: чуть ниже асфальта, чтобы на стыке не
+   * было спора за z-буфер. Отсюда же считается высота теней столбиков — они лежат
+   * на обочине, а не на дороге.
+   */
+  private static readonly shoulderY = -0.05;
+
   /** Накопленный сдвиг декора, units. Растёт на run.worldSpeed за секунду. */
   private offset = 0;
 
@@ -41,6 +49,12 @@ export class World {
   private readonly markingSpan: number;
 
   private readonly roadside: InstancedMesh;
+  /**
+   * Тени столбиков — четырёхугольники на обочине (entities/shadow.ts). Отдельный
+   * меш с тем же числом инстансов: раскладываются они вместе со столбиками, одной
+   * матрицей на пару.
+   */
+  private readonly roadsideShadows: InstancedMesh;
   private readonly roadsideCount: number;
   private readonly roadsideSpan: number;
 
@@ -83,7 +97,7 @@ export class World {
     for (const side of [-1, 1]) {
       const shoulder = new Mesh(shoulderGeometry, shoulderMaterial);
       shoulder.rotation.x = -Math.PI / 2;
-      shoulder.position.set(side * shoulderX, -0.05, roadCenterZ);
+      shoulder.position.set(side * shoulderX, World.shoulderY, roadCenterZ);
       this.group.add(shoulder);
     }
 
@@ -113,13 +127,23 @@ export class World {
     this.prepareInstanced(this.roadside);
     this.group.add(this.roadside);
 
+    this.roadsideShadows = new InstancedMesh(
+      buildBoxShadowGeometry(side.size),
+      createFlatShadowMaterial(),
+      this.roadsideCount * 2,
+    );
+    this.prepareInstanced(this.roadsideShadows);
+    this.group.add(this.roadsideShadows);
+
     this.layoutDecor();
 
     this.group.add(new AmbientLight(lights.ambientColor, lights.ambientIntensity));
 
     const dirLight = new DirectionalLight(lights.dirColor, lights.dirIntensity);
     dirLight.position.set(lights.dirPosition.x, lights.dirPosition.y, lights.dirPosition.z);
-    dirLight.target.position.set(0, 0, -10);
+    // Цель — из конфига, а не числом здесь: по этой же паре считается наклон
+    // плоских теней (entities/shadow.ts), и солнце у света и у теней одно.
+    dirLight.target.position.set(lights.dirTarget.x, lights.dirTarget.y, lights.dirTarget.z);
     this.group.add(dirLight);
     this.group.add(dirLight.target);
 
@@ -180,16 +204,23 @@ export class World {
   private layoutRoadside(): void {
     const { spacingZ, offsetX, size } = CONFIG.world.roadside;
     const y = size.y / 2;
+    // Столбики стоят на обочине, а она ниже дороги — тень поднимается над НЕЙ, а
+    // не над асфальтом, иначе висела бы в воздухе.
+    const shadowY = World.shoulderY + CONFIG.shadows.liftY;
 
     let instance = 0;
     for (let i = 0; i < this.roadsideCount; i++) {
       const z = this.wrapZ(i, spacingZ, this.roadsideSpan);
       for (const side of [-1, 1]) {
         this.matrix.makeTranslation(side * offsetX, y, z);
-        this.roadside.setMatrixAt(instance++, this.matrix);
+        this.roadside.setMatrixAt(instance, this.matrix);
+        // Тень — под основанием того же столбика: наклон и длина уже в геометрии.
+        this.matrix.makeTranslation(side * offsetX, shadowY, z);
+        this.roadsideShadows.setMatrixAt(instance++, this.matrix);
       }
     }
 
     this.roadside.instanceMatrix.needsUpdate = true;
+    this.roadsideShadows.instanceMatrix.needsUpdate = true;
   }
 }

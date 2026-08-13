@@ -103,6 +103,17 @@
         <div id="upgrade-tabs"></div>
         <div id="upgrade-list"></div>
         <button id="upgrade-start" class="screen__button" type="button">Начать вылазку</button>
+        <!-- Глобальная статистика за всё время. Показ ставит screens.ts: до
+             первой вылазки кнопка ведёт на одни нули. Скрыта изначально, чтобы
+             не мелькнуть на чистом сохранении. -->
+        <button
+          id="upgrade-stats"
+          class="screen__button screen__button--ghost"
+          type="button"
+          hidden
+        >
+          Статистика
+        </button>
         <!-- Подпись и показ ставит screens.ts: кнопка есть только когда есть что
              сбрасывать, а по нажатиям текст меняется на подтверждения. Скрыта
              изначально, чтобы не мелькнуть на чистом сохранении. -->
@@ -140,10 +151,20 @@
         </button>
       </div>
 
+      <!-- Глобальная статистика за всё время (src/core/stats.ts). Открывается
+           только с экрана прокачки, поэтому в разметке стоит сразу за ним и
+           перекрывает его целиком — как история версий ниже. Разделы и строки
+           собирает screens.ts по STATS_SECTIONS, в разметке их нет. -->
+      <div id="screen-stats" class="screen screen--sheet">
+        <div class="screen__title">Статистика</div>
+        <div id="stats-list" class="stat-list"></div>
+        <button id="stats-close" class="screen__button" type="button">Назад</button>
+      </div>
+
       <!-- История версий. Открывается только с экрана прокачки, поэтому в
            разметке стоит сразу за ним и перекрывает его целиком. Список
            собирает screens.ts по CHANGELOG. -->
-      <div id="screen-changelog" class="screen screen--changelog">
+      <div id="screen-changelog" class="screen screen--sheet screen--changelog">
         <div class="screen__title">Что нового</div>
         <div id="changelog-list" class="changelog"></div>
         <button id="changelog-close" class="screen__button" type="button">Назад</button>
@@ -157,8 +178,10 @@
         <div id="pause-info" class="screen__row"></div>
         <!-- Информация и статистика по текущей вылазке: разделы и строки
              собирает screens.ts по PAUSE_SECTIONS, в разметке их нет. Значения
-             — снимок на момент нажатия паузы: игра стоит, обновлять нечего. -->
-        <div id="pause-stats" class="pause-stats"></div>
+             — снимок на момент нажатия паузы: игра стоит, обновлять нечего.
+             Классы те же, что у экрана статистики: разделы «подпись — значение»
+             оформлены одинаково везде. -->
+        <div id="pause-stats" class="stat-list"></div>
         <button id="pause-resume" class="screen__button" type="button">Продолжить</button>
       </div>
     </div>

@@ -27,8 +27,9 @@ import {
   WEAPON_NAMES,
   type WeaponId,
 } from '../entities/weapons';
+import type { GlobalStats } from '../core/stats';
 import { CHANGELOG, formatChangelogDate } from './changelog';
-import { formatRunTime } from './time';
+import { formatRunTime, formatTotalTime } from './time';
 
 /** Что экраны умеют сообщать наружу. */
 export interface ScreenHandlers {
@@ -209,17 +210,32 @@ const STAT_BOOST_VIEW: Record<StatBoostId, { icon: string; title: string; note: 
 };
 
 /**
+ * Раздел статистики: заголовок и строки «подпись — значение».
+ *
+ * Один тип на экран паузы и на экран глобальной статистики — разметку обоих
+ * собирает и заполняет общая пара методов (buildStatList / fillStatList): строки
+ * там одного устройства, и вторая копия сборки разъехалась бы с этой.
+ */
+interface StatSection<Id extends string> {
+  title: string;
+  rows: readonly { id: Id; label: string }[];
+}
+
+/** Строка статистики в DOM: значение и сам ряд — пустое значение его прячет. */
+interface StatRow {
+  root: HTMLElement;
+  value: HTMLElement;
+}
+
+/**
  * Разделы статистики паузы: порядок строк и их подписи. Разметка собирается из
- * этого списка (buildPauseStats), в index.html её нет — по той же причине, что у
- * вкладок прокачки: два списка разъехались бы при первой правке.
+ * этого списка, в index.html её нет — по той же причине, что у вкладок
+ * прокачки: два списка разъехались бы при первой правке.
  *
  * Подписи бустов характеристик берутся из STAT_BOOST_VIEW — тех же, что на экране
  * бустеров: буст должен называться в пути и в бою одинаково.
  */
-const PAUSE_SECTIONS: readonly {
-  title: string;
-  rows: readonly { id: PauseStatId; label: string }[];
-}[] = [
+const PAUSE_SECTIONS: readonly StatSection<PauseStatId>[] = [
   {
     title: 'Волна',
     rows: [
@@ -255,6 +271,70 @@ const PAUSE_SECTIONS: readonly {
     rows: [
       { id: 'kills', label: 'Убито зомби' },
       { id: 'barrels', label: 'Разбито бочек' },
+    ],
+  },
+];
+
+/** Строка экрана глобальной статистики (см. STATS_SECTIONS). */
+type GlobalStatId =
+  | 'runs'
+  | 'bestWave'
+  | 'bestTime'
+  | 'averageTime'
+  | 'totalTime'
+  | 'zombies'
+  | 'zombiesPerRun'
+  | 'bosses'
+  | 'barrels'
+  | 'exp'
+  | 'money'
+  | 'bestExp'
+  | 'bestMoney'
+  | 'averageLoot';
+
+/**
+ * Разделы экрана статистики за всё время. Порядок отвечает на вопросы в том же
+ * порядке, в каком их задают: сколько играл и как далеко дошёл, сколько при этом
+ * убил, сколько с этого получил.
+ *
+ * Средние значения стоят рядом со своими суммами, а не отдельным разделом: они
+ * читаются как уточнение суммы, а не как самостоятельная новость.
+ */
+const STATS_SECTIONS: readonly StatSection<GlobalStatId>[] = [
+  {
+    title: 'Вылазки',
+    rows: [
+      { id: 'runs', label: 'Всего вылазок' },
+      { id: 'bestWave', label: 'Лучшая волна' },
+      { id: 'bestTime', label: 'Лучшее время' },
+      { id: 'averageTime', label: 'В среднем' },
+      { id: 'totalTime', label: 'Всего в бою' },
+    ],
+  },
+  {
+    title: 'Счёт',
+    rows: [
+      { id: 'zombies', label: 'Убито зомби' },
+      { id: 'bosses', label: 'Убито боссов' },
+      { id: 'barrels', label: 'Разбито бочек' },
+      // Среднее названо своим предметом, а не «В среднем», как в соседних
+      // разделах: там оно стоит под однородными строками (время, добыча), а
+      // здесь над ним три разных счётчика, и к чему относится среднее, из
+      // порядка строк не следует.
+      { id: 'zombiesPerRun', label: 'Зомби за вылазку' },
+    ],
+  },
+  {
+    title: 'Добыча',
+    rows: [
+      { id: 'exp', label: 'Всего опыта' },
+      { id: 'money', label: 'Всего денег' },
+      // Рекорды по валютам — отдельными строками, а не одной «лучшая вылазка»:
+      // лучший опыт и лучшие деньги могли достаться разным забегам, и в общей
+      // строке они читались бы как итог одного.
+      { id: 'bestExp', label: 'Лучший опыт' },
+      { id: 'bestMoney', label: 'Лучшие деньги' },
+      { id: 'averageLoot', label: 'В среднем' },
     ],
   },
 ];
@@ -319,6 +399,17 @@ function formatEarned(
 }
 
 /**
+ * Большое число с разделением разрядов: за десятки вылазок опыт набирает шесть
+ * знаков, и «1234567» глазами не читается.
+ *
+ * Только на экране статистики — там числа накопительные. В ценах и счётчиках
+ * забега разряды были бы шумом: те не выходят за тысячи.
+ */
+function formatTotal(value: number): string {
+  return Math.round(value).toLocaleString('ru-RU');
+}
+
+/**
  * Форма слова при числе: 1 стрелок, 2 стрелка, 5 стрелков.
  *
  * Правило полное, с сотнями: бойцов в бустерах бывает до 22, то есть в диапазон
@@ -369,6 +460,8 @@ export class Screens {
   private readonly boostersElement: HTMLElement | null;
   private readonly pauseElement: HTMLElement | null;
   private readonly pauseInfo: HTMLElement | null;
+  private readonly statsElement: HTMLElement | null;
+  private readonly statsButton: HTMLButtonElement | null;
   private readonly changelogElement: HTMLElement | null;
   private readonly changelogList: HTMLElement | null;
   private readonly resultTitle: HTMLElement | null;
@@ -405,16 +498,16 @@ export class Screens {
   private startWaveRow: BoosterRow | null = null;
   /** Строки бустов характеристик — по одной на каждый StatBoostId. */
   private readonly statBoostRows = new Map<StatBoostId, BoosterRow>();
-  /** Строки статистики паузы: значение и сам ряд — пустое значение его прячет. */
-  private readonly pauseStatRows = new Map<
-    PauseStatId,
-    { root: HTMLElement; value: HTMLElement }
-  >();
+  /** Строки статистики паузы. */
+  private readonly pauseStatRows = new Map<PauseStatId, StatRow>();
   /**
    * Заголовки разделов паузы со списком своих строк: заголовок прячется, когда
    * спрятались все строки под ним.
    */
   private readonly pauseSections: Array<{ title: HTMLElement; ids: readonly PauseStatId[] }> = [];
+  /** Строки экрана глобальной статистики — устроены как строки паузы. */
+  private readonly statRows = new Map<GlobalStatId, StatRow>();
+  private readonly statSections: Array<{ title: HTMLElement; ids: readonly GlobalStatId[] }> = [];
   private readonly tracks = new Map<ScreenTrackId, TrackView>();
 
   /**
@@ -425,6 +518,7 @@ export class Screens {
 
   constructor(
     private readonly meta: MetaProgress,
+    private readonly stats: GlobalStats,
     handlers: ScreenHandlers,
   ) {
     this.resultElement = document.querySelector<HTMLElement>('#screen-result');
@@ -432,6 +526,8 @@ export class Screens {
     this.boostersElement = document.querySelector<HTMLElement>('#screen-boosters');
     this.pauseElement = document.querySelector<HTMLElement>('#screen-pause');
     this.pauseInfo = document.querySelector<HTMLElement>('#pause-info');
+    this.statsElement = document.querySelector<HTMLElement>('#screen-stats');
+    this.statsButton = document.querySelector<HTMLButtonElement>('#upgrade-stats');
     this.changelogElement = document.querySelector<HTMLElement>('#screen-changelog');
     this.changelogList = document.querySelector<HTMLElement>('#changelog-list');
     this.resultTitle = document.querySelector<HTMLElement>('#result-title');
@@ -482,8 +578,17 @@ export class Screens {
       }
 
       this.meta.reset();
+      // Статистика стирается вместе с прогрессом: сброс обещает начать как в
+      // первый раз, а оставшийся счётчик вылазок говорил бы обратное.
+      this.stats.reset();
       this.refreshUpgrades();
     });
+
+    this.statsButton?.addEventListener('click', () => this.showStats());
+
+    document
+      .querySelector<HTMLButtonElement>('#stats-close')
+      ?.addEventListener('click', () => this.hideStats());
 
     // Версия ставится один раз: в течение сессии она не меняется. Нажатие на
     // неё открывает историю версий — отдельной кнопки для неё на экране нет:
@@ -498,14 +603,24 @@ export class Screens {
       .querySelector<HTMLButtonElement>('#changelog-close')
       ?.addEventListener('click', () => this.hideChangelog());
 
-    // Esc закрывает историю. Пауза тот же Esc ловит своим слушателем в Game, но
-    // открыта история только с экрана прокачки, где пауза и так запрещена, —
-    // разойтись эти два обработчика не могут.
+    // Esc закрывает то, что открыто поверх прокачки, — историю версий или
+    // статистику. Пауза тот же Esc ловит своим слушателем в Game, но открыты оба
+    // экрана только с прокачки, где пауза и так запрещена, — разойтись эти
+    // обработчики не могут. Открыт при этом всегда ровно один: на прокачку они
+    // возвращают, а не переходят друг в друга.
     window.addEventListener('keydown', (event) => {
       if (event.key !== 'Escape') return;
-      if (this.changelogElement?.classList.contains('visible') !== true) return;
-      event.preventDefault();
-      this.hideChangelog();
+
+      if (this.changelogElement?.classList.contains('visible') === true) {
+        event.preventDefault();
+        this.hideChangelog();
+        return;
+      }
+
+      if (this.statsElement?.classList.contains('visible') === true) {
+        event.preventDefault();
+        this.hideStats();
+      }
     });
 
     // Пасхалка: нажатие на банк добавляет CONFIG.ui.devCheatAmount. Условие то
@@ -520,6 +635,7 @@ export class Screens {
     this.buildRows();
     this.buildBoosters();
     this.buildPauseStats();
+    this.buildGlobalStats();
     this.buildChangelog();
   }
 
@@ -673,12 +789,29 @@ export class Screens {
     this.toggle(this.changelogElement, false);
   }
 
+  /**
+   * Статистика за всё время — поверх прокачки, как история версий, и по той же
+   * причине не гасит её под собой.
+   *
+   * Значения ставятся на показе, а не при сборке: между заходами сюда игрок
+   * успевает сделать вылазку, и числа за экраном меняются.
+   */
+  showStats(): void {
+    this.refreshGlobalStats();
+    this.toggle(this.statsElement, true);
+  }
+
+  hideStats(): void {
+    this.toggle(this.statsElement, false);
+  }
+
   /** Скрывает всё: идёт забег. */
   hide(): void {
     this.toggle(this.resultElement, false);
     this.toggle(this.upgradeElement, false);
     this.toggle(this.boostersElement, false);
     this.toggle(this.pauseElement, false);
+    this.toggle(this.statsElement, false);
     this.toggle(this.changelogElement, false);
   }
 
@@ -775,29 +908,77 @@ export class Screens {
     const list = document.querySelector<HTMLElement>('#pause-stats');
     if (list === null) return;
 
-    for (const section of PAUSE_SECTIONS) {
+    Screens.buildStatList(list, PAUSE_SECTIONS, this.pauseStatRows, this.pauseSections);
+  }
+
+  /** Разделы экрана статистики — той же сборкой, что и разделы паузы. */
+  private buildGlobalStats(): void {
+    const list = document.querySelector<HTMLElement>('#stats-list');
+    if (list === null) return;
+
+    Screens.buildStatList(list, STATS_SECTIONS, this.statRows, this.statSections);
+  }
+
+  /**
+   * Разметка списка «подпись — значение»: заголовки разделов и строки под ними.
+   *
+   * Одна на экран паузы и на экран статистики (см. StatSection). Строки
+   * регистрируются в переданной карте, заголовки — в переданном списке: их
+   * держат сами экраны, потому что ключи строк у них разные.
+   */
+  private static buildStatList<Id extends string>(
+    list: HTMLElement,
+    sections: readonly StatSection<Id>[],
+    rows: Map<Id, StatRow>,
+    titles: Array<{ title: HTMLElement; ids: readonly Id[] }>,
+  ): void {
+    for (const section of sections) {
       const title = document.createElement('div');
-      title.className = 'pause-stats__title';
+      title.className = 'stat-list__title';
       title.textContent = section.title;
       list.appendChild(title);
 
       for (const entry of section.rows) {
         const root = document.createElement('div');
-        root.className = 'pause-stat';
+        root.className = 'stat';
 
         const label = document.createElement('div');
-        label.className = 'pause-stat__label';
+        label.className = 'stat__label';
         label.textContent = entry.label;
 
         const value = document.createElement('div');
-        value.className = 'pause-stat__value';
+        value.className = 'stat__value';
 
         root.append(label, value);
         list.appendChild(root);
-        this.pauseStatRows.set(entry.id, { root, value });
+        rows.set(entry.id, { root, value });
       }
 
-      this.pauseSections.push({ title, ids: section.rows.map((entry) => entry.id) });
+      titles.push({ title, ids: section.rows.map((entry) => entry.id) });
+    }
+  }
+
+  /**
+   * Проставляет значения списку и прячет пустое.
+   *
+   * ПУСТОЕ ЗНАЧЕНИЕ ПРЯЧЕТ СТРОКУ, а раздел, у которого спрятались все строки,
+   * уходит вместе с заголовком. Правило общее для обоих экранов: на паузе им
+   * отбираются строки (см. refreshPauseStats), на статистике — оно просто ничего
+   * не прячет, там все значения есть всегда.
+   */
+  private static fillStatList<Id extends string>(
+    rows: Map<Id, StatRow>,
+    titles: readonly { title: HTMLElement; ids: readonly Id[] }[],
+    values: Record<Id, string>,
+  ): void {
+    for (const [id, row] of rows) {
+      const text = values[id];
+      row.value.textContent = text;
+      row.root.hidden = text === '';
+    }
+
+    for (const section of titles) {
+      section.title.hidden = section.ids.every((id) => rows.get(id)?.root.hidden !== false);
     }
   }
 
@@ -859,17 +1040,47 @@ export class Screens {
       barrels: `${info.brokenBarrels}`,
     };
 
-    for (const [id, row] of this.pauseStatRows) {
-      const text = values[id];
-      row.value.textContent = text;
-      row.root.hidden = text === '';
-    }
+    Screens.fillStatList(this.pauseStatRows, this.pauseSections, values);
+  }
 
-    for (const section of this.pauseSections) {
-      section.title.hidden = section.ids.every(
-        (id) => this.pauseStatRows.get(id)?.root.hidden !== false,
-      );
-    }
+  /**
+   * Значения экрана статистики за всё время (см. GlobalStats).
+   *
+   * Числа накопительные, поэтому большие идут с разделением разрядов
+   * (formatTotal), а средние округляются до целого: «13.7 зомби за вылазку»
+   * точнее ровно настолько, насколько это никому не нужно.
+   *
+   * Нули не прячутся, в отличие от паузы: на этом экране ноль — такой же ответ,
+   * как и число, а пропавшая строка читалась бы как поломка. Скрыт целиком сам
+   * экран, пока не сделано ни одной вылазки: до первой смерти сюда не пускает
+   * кнопка (см. refreshStatsButton).
+   */
+  private refreshGlobalStats(): void {
+    const { stats } = this;
+
+    const values: Record<GlobalStatId, string> = {
+      runs: formatTotal(stats.runs),
+      // Рекорд волны — из статистики, а не из прогресса: оба обновляются в
+      // Game.finishRun и равны, но экран статистики читает свои числа.
+      bestWave: formatTotal(stats.bestWave),
+      bestTime: formatRunTime(stats.bestSeconds),
+      averageTime: formatRunTime(stats.averageSeconds),
+      totalTime: formatTotalTime(stats.totalSeconds),
+      zombies: formatTotal(stats.zombies),
+      zombiesPerRun: formatTotal(stats.runs > 0 ? stats.zombies / stats.runs : 0),
+      bosses: formatTotal(stats.bosses),
+      barrels: formatTotal(stats.barrels),
+      exp: `${formatTotal(stats.exp)} EXP`,
+      money: `${formatTotal(stats.money)} $`,
+      bestExp: `${formatTotal(stats.bestExp)} EXP`,
+      bestMoney: `${formatTotal(stats.bestMoney)} $`,
+      // Обе валюты одной строкой: средние считаются по одному и тому же числу
+      // вылазок, и разносить их по двум строкам значило бы дважды написать «в
+      // среднем» об одном и том же.
+      averageLoot: `${formatTotal(stats.averageExp)} EXP · ${formatTotal(stats.averageMoney)} $`,
+    };
+
+    Screens.fillStatList(this.statRows, this.statSections, values);
   }
 
   /** Одна строка улучшения. Возвращает готовый элемент, регистрируя его в rows. */
@@ -1346,6 +1557,7 @@ export class Screens {
   private refreshUpgrades(): void {
     this.resetStep = 0;
     this.refreshReset();
+    this.refreshStatsButton();
 
     // Конфиг — к текущим уровням ПЕРЕД пересчётом строк: показания урона читают
     // из него общий множитель (player.squadDamageMultiplier), и без этого
@@ -1722,6 +1934,17 @@ export class Screens {
 
     this.upgradeReset.hidden = !this.meta.hasProgress;
     this.upgradeReset.textContent = RESET_LABELS[this.resetStep] ?? RESET_LABELS[0]!;
+  }
+
+  /**
+   * Кнопка статистики: есть, только когда сделана хоть одна вылазка. До неё
+   * экран показывал бы одни нули — то есть предлагал бы посмотреть на пустое
+   * место в самом начале игры, где и без него есть на что смотреть.
+   */
+  private refreshStatsButton(): void {
+    if (this.statsButton === null) return;
+
+    this.statsButton.hidden = !this.stats.hasRuns;
   }
 
   /**
