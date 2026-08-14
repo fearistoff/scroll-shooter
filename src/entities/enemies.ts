@@ -14,7 +14,7 @@ import { FallPose } from './fall';
 import { makeCorpseColor, makeModelFlashColor } from './flash';
 import type { MoneyPool } from './money';
 import { buildFigureShadowGeometry, createOvalShadowMaterial } from './shadow';
-import { buildZombieGeometry } from './soldier';
+import { buildZombieGeometry, figureHalfWidth } from './soldier';
 
 /**
  * То, по чему бьют зомби. В слое 3 это был один герой, теперь весь отряд,
@@ -152,10 +152,15 @@ export class EnemyPool {
    */
   private readonly shadows: InstancedMesh;
   /**
-   * ВИДИМЫЙ габарит по коду вида — «капсула модели» ростом modelHeights(), в
-   * пропорциях капсулы обычного зомби. По нему считаются посадка (центр в
-   * середине роста), высота полоски HP и поза падения тела: игрок видит модель, а
-   * не боевую капсулу, и у быстрого зомби они разного размера.
+   * ВИДИМЫЙ габарит по коду вида — «капсула модели»: радиус равен ЗАМЕРЕННОЙ
+   * полуширине фигурки (figureHalfWidth), длина добирает остаток роста, так что
+   * length + 2 × radius = modelHeights()[код].
+   *
+   * По нему считаются посадка (центр в середине роста), высота полоски HP и поза
+   * падения тела: игрок видит модель, а не боевую капсулу, и совпадают они только
+   * по высоте. Радиус именно замеренный, потому что от него зависит, на какой
+   * высоте лежит тело: возьми радиус боевой капсулы — и тело зависнет над
+   * асфальтом на разницу (0.09 units у обычного зомби).
    */
   private readonly modelCapsules: ReadonlyArray<{ radius: number; length: number }>;
   private readonly matrix = new Matrix4();
@@ -299,14 +304,14 @@ export class EnemyPool {
       EnemyPool.createMesh(scene, heights[KIND_FAST]!, fast.colors, poolSize),
     ];
 
-    // Капсула модели — пропорции ОБЫЧНОГО зомби, растянутые до роста вида:
-    // length + 2 × radius при этом равно росту, поэтому центр в середине роста и
-    // подошвы на дороге получаются сами, как у настоящей капсулы.
+    // Капсула модели: радиус — замер по фигурке, длина — остаток роста. Сумма
+    // length + 2 × radius равна росту, поэтому центр в середине роста и подошвы на
+    // дороге получаются сами, как у настоящей капсулы.
     const normalHeight = heights[KIND_NORMAL]!;
-    this.modelCapsules = heights.map((height) => ({
-      radius: (normal.capsule.radius * height) / normalHeight,
-      length: (normal.capsule.length * height) / normalHeight,
-    }));
+    this.modelCapsules = this.meshes.map((mesh, code) => {
+      const radius = figureHalfWidth(mesh.geometry);
+      return { radius, length: heights[code]! - 2 * radius };
+    });
 
     // Тень — овал под фигурку обычного зомби; крупный и быстрый получают её тем
     // же равномерным масштабом, что и модель.

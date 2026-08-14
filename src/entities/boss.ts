@@ -16,7 +16,7 @@ import { FallPose } from './fall';
 import { makeCorpseColor, makeModelFlashColor } from './flash';
 import type { MoneyPool } from './money';
 import { buildFigureShadowGeometry, createOvalShadowMaterial } from './shadow';
-import { buildZombieGeometry } from './soldier';
+import { buildZombieGeometry, figureHalfWidth } from './soldier';
 
 /** Фаза боссфайта. */
 export type BossPhase = 'absent' | 'entering' | 'fighting' | 'dead';
@@ -102,6 +102,17 @@ export class Boss {
   private readonly corpseShadow: Mesh;
   /** Кольцо-телеграф AoE. Лежит на земле, видно только во время замаха. */
   private readonly telegraph: Mesh;
+
+  /**
+   * ГАБАРИТ ФИГУРКИ, units: полуширина (замер по геометрии, figureHalfWidth) и
+   * «капсула модели» того же роста, что боевая, но толщиной по фигурке.
+   *
+   * Капсула из конфига задаёт боссу только РОСТ (length + 2 × radius = 7.2) — по
+   * ширине она вдвое толще модели, поэтому и хитбокс попаданий, и точка опоры
+   * падающего тела считаются отсюда, а не из неё.
+   */
+  private readonly modelHalfWidth: number;
+  private readonly modelCapsule: { radius: number; length: number };
 
   private phase: BossPhase = 'absent';
   private hp = 0;
@@ -219,6 +230,11 @@ export class Boss {
     // Геометрия одна на живого и на тело — размер у них тот же самый.
     const bossHeight = capsule.length + 2 * capsule.radius;
     const modelGeometry = buildZombieGeometry(bossHeight, colors);
+    this.modelHalfWidth = figureHalfWidth(modelGeometry);
+    this.modelCapsule = {
+      radius: this.modelHalfWidth,
+      length: bossHeight - 2 * this.modelHalfWidth,
+    };
     this.mesh = new Mesh(modelGeometry, this.material);
     this.mesh.visible = false;
     scene.add(this.mesh);
@@ -534,8 +550,6 @@ export class Boss {
   private updateCorpse(dt: number): void {
     if (!this.corpseActive) return;
 
-    const { capsule } = CONFIG.boss;
-
     if (this.corpseFallLeft > 0) this.corpseFallLeft = Math.max(0, this.corpseFallLeft - dt);
     // Тело уносит дорога, и скорость у неё текущая: со смертью босса мир как раз
     // трогается обратно, поэтому тело уезжает вместе с разгоняющейся дорогой.
@@ -549,10 +563,20 @@ export class Boss {
     }
 
     // Поза — общая с зомби (босс тоже зомби), считает FallPose: подошва остаётся
-    // в (0, corpseZ), а центр капсулы уезжает по дуге вокруг неё в сторону
+    // в (0, corpseZ), а центр модели уезжает по дуге вокруг неё в сторону
     // corpseYaw. Наклон вокруг произвольной горизонтальной оси, поэтому rotation.z
     // здесь больше не годится — ставится кватернион.
-    const pose = this.corpsePose.set(0, this.corpseZ, this.corpseYaw, this.corpseFallLeft, capsule);
+    //
+    // Габарит — МОДЕЛЬНЫЙ: лёжа тело поднято над асфальтом на радиус, и с боевой
+    // капсулой (1.6) гигант висел бы над дорогой на 0.8 units — ровно на разницу
+    // с толщиной своей фигурки.
+    const pose = this.corpsePose.set(
+      0,
+      this.corpseZ,
+      this.corpseYaw,
+      this.corpseFallLeft,
+      this.modelCapsule,
+    );
     // Наклон падения — ПОВЕРХ разворота, с которым босса застала смерть: сначала
     // модель повёрнута к своей цели, потом её валит набок. Без этого умножения
     // тело в первый же кадр щёлкало бы лицом к отряду.
@@ -679,10 +703,11 @@ export class Boss {
    * него: урон засчитывается один раз на пересечении, а снаряд летит дальше и
    * достаёт тех, кто стоит за боссом.
    *
-   * Хитбокс — СВОЙ множитель CONFIG.boss.hitboxScale (1 — ровно по модели),
-   * а не общий с толпой enemies.hitboxScale: гигант в припуске «зацепить
-   * краем» не нуждается, обоснование у числа в конфиге. Взрыва мины это,
-   * как и у зомби, не касается: damageInRadius меряет от центра.
+   * Хитбокс — полуширина ФИГУРКИ × СВОЙ множитель CONFIG.boss.hitboxScale (1 —
+   * ровно по силуэту), а не общий с толпой enemies.hitboxScale: гигант в припуске
+   * «зацепить краем» не нуждается, обоснование у числа в конфиге. Считается от
+   * модели, а не от капсулы: капсула у босса вдвое толще фигурки и давала бы
+   * попадания в 0.8 units мимо силуэта.
    */
   readonly tryHit = (
     xFrom: number,
@@ -695,7 +720,7 @@ export class Boss {
   ): boolean => {
     if (!this.isActive) return false;
 
-    const reach = CONFIG.boss.capsule.radius * CONFIG.boss.hitboxScale + bulletRadius;
+    const reach = this.modelHalfWidth * CONFIG.boss.hitboxScale + bulletRadius;
     const touched = pierce
       ? segmentPassesCircle(0, this.posZ, reach, xFrom, zFrom, xTo, zTo)
       : segmentHitsCircle(0, this.posZ, reach, xFrom, zFrom, xTo, zTo);
@@ -705,11 +730,16 @@ export class Boss {
     return true;
   };
 
-  /** Урон по площади (взрыв мины). Возвращает 1, если босса задело. */
+  /**
+   * Урон по площади (взрыв мины). Возвращает 1, если босса задело.
+   *
+   * Меряется от центра по НАСТОЯЩЕМУ габариту, без множителя хитбокса, — и этот
+   * габарит теперь тоже модельный: то, что игрок видит стоящим на дороге.
+   */
   damageInRadius(x: number, z: number, radius: number, damage: number): number {
     if (!this.isActive) return 0;
 
-    const reach = radius + CONFIG.boss.capsule.radius;
+    const reach = radius + this.modelHalfWidth;
     const dx = x - 0;
     const dz = z - this.posZ;
     if (dx * dx + dz * dz > reach * reach) return 0;
