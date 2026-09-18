@@ -4,10 +4,15 @@ import { CONFIG } from '../config';
 /**
  * Портретный холст под телефон.
  *
- * Холст не растягивается на всё окно: соотношение сторон зажимается в диапазон
- * реальных телефонов (viewport.minAspect … maxAspect), результат вписывается в
- * окно и центрируется, по бокам остаются тёмные поля. Так игра выглядит
- * одинаково и на телефоне, и в широком окне браузера на десктопе.
+ * На телефоне холст занимает окно целиком — и по ширине, и по высоте. Ограничение
+ * одно: окно шире портретного предела (viewport.maxAspect) режется по ширине и
+ * центрируется, по бокам остаются тёмные поля. Так игра занимает весь экран
+ * телефона и не растягивается на всю ширину монитора на десктопе.
+ *
+ * Нижней границы соотношения нет намеренно: на экране выше предела она давала
+ * поля сверху и снизу, и на iPhone в standalone они не пересчитывались — высота
+ * холста зависела только от ширины, а та не менялась, так что проверка «размер
+ * тот же — выходим» гасила все последующие замеры, и полосы оставались навсегда.
  *
  * Отслеживание размера — через ResizeObserver, а не событие resize: оно приходит
  * не на всякое изменение вьюпорта (сворачивание адресной строки в мобильном
@@ -50,25 +55,28 @@ export class Viewport {
   }
 
   private apply(): void {
-    const { minAspect, maxAspect, maxPixelRatio } = CONFIG.viewport;
+    const { maxAspect, maxPixelRatio } = CONFIG.viewport;
 
     const availWidth = window.innerWidth;
     const availHeight = window.innerHeight;
     if (availWidth <= 0 || availHeight <= 0) return;
 
     const windowAspect = availWidth / availHeight;
-    const aspect = Math.min(Math.max(windowAspect, minAspect), maxAspect);
 
     let width: number;
     let height: number;
-    if (windowAspect > aspect) {
-      // Окно шире, чем допустимо — упираемся в высоту, срезаем ширину.
+    if (windowAspect > maxAspect) {
+      // Окно шире портретного предела (десктоп, планшет в альбоме) — упираемся
+      // в высоту и срезаем ширину, по бокам остаются тёмные поля.
       height = availHeight;
-      width = height * aspect;
+      width = height * maxAspect;
     } else {
-      // Окно уже допустимого — упираемся в ширину, срезаем высоту.
+      // Окно не шире предела — телефон. Холст занимает его целиком, высоту не
+      // срезаем: на экране выше 19.5:9 вертикальный letterbox давал чёрные
+      // полосы сверху и снизу, а на телефоне терять высоту незачем.
+      // Соотношение уходит в камеру как есть, поэтому minAspect здесь не нужен.
       width = availWidth;
-      height = width / aspect;
+      height = availHeight;
     }
 
     width = Math.round(width);
@@ -83,12 +91,12 @@ export class Viewport {
     // Контейнер холста тянем следом, иначе HUD поверх него разъедется с картинкой.
     const stage = this.canvas.parentElement;
     if (stage !== null) {
-      // stage.style.width = `${width}px`;
-      // stage.style.height = `${height}px`;
+      stage.style.width = `${width}px`;
+      stage.style.height = `${height}px`;
 
       // Класс для узкого холста: HUD по нему опускает полосу волны под верхнюю
-      // строку. Медиа-запрос здесь не подошёл бы — он смотрит на окно, а размер
-      // холста задаётся letterbox'ом и может быть заметно меньше окна.
+      // строку. Медиа-запрос здесь не подошёл бы — он смотрит на окно, а на
+      // широком десктопном окне холст режется по ширине и заметно уже него.
       stage.classList.toggle('narrow', width < CONFIG.viewport.narrowWidthPx);
     }
 
