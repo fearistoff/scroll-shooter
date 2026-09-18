@@ -4,7 +4,7 @@ import { BarrelField } from '../entities/barrels';
 import { BonusSlot } from '../entities/bonusSlot';
 import { Boss } from '../entities/boss';
 import { BulletPool } from '../entities/bullets';
-import { CrystalPool } from '../entities/crystals';
+import { ExpSink } from '../entities/exp';
 import { EnemyPool } from '../entities/enemies';
 import { ExplosionPool } from '../entities/explosions';
 import { GateField } from '../entities/gates';
@@ -53,8 +53,9 @@ export class Game {
   readonly screens: Screens;
   readonly world: World;
   readonly bullets: BulletPool;
-  readonly crystals: CrystalPool;
-  /** Монеты денег: та же механика подбора, что у кристаллов, другая валюта. */
+  /** Опыт: начисляется сразу в момент убийства, на экране не показывается. */
+  readonly exp: ExpSink;
+  /** Монеты денег: выпадают на дорогу и летят в свой счётчик. */
   readonly money: MoneyPool;
   readonly enemies: EnemyPool;
   /** Вспышки взрывов: одна картинка на мины и гранаты. */
@@ -136,12 +137,12 @@ export class Game {
     // ноль (см. RunState.worldSpeed).
     this.world = new World(this.scene, this.run);
     this.bullets = new BulletPool(this.scene);
-    // Кристаллам забег нужен ради множителя опыта волны: он применяется на
-    // выпадении, внутри CrystalPool.spawn (см. RunState.expMultiplier).
-    this.crystals = new CrystalPool(this.scene, this.run);
+    // Опыту забег нужен и как множитель волны, и как счётчик: начисление идёт
+    // сразу в run (см. ExpSink).
+    this.exp = new ExpSink(this.run);
     // Монеты создаются до зомби и босса: оба роняют их в своей воронке смерти.
     this.money = new MoneyPool(this.scene);
-    this.enemies = new EnemyPool(this.scene, this.run, this.crystals, this.money);
+    this.enemies = new EnemyPool(this.scene, this.run, this.exp, this.money);
     // Вспышки создаются до мин: поле показывает через них детонацию.
     this.explosions = new ExplosionPool(this.scene, this.run);
     // Порядок создания разрывает цикл зависимостей: мины знают зомби, отряд —
@@ -153,13 +154,13 @@ export class Game {
     this.barrels = new BarrelField(
       this.scene,
       this.squad,
-      this.crystals,
+      this.exp,
       this.run,
       this.bonusSlot,
       this.meta,
     );
     this.gates = new GateField(this.scene, this.squad, this.run, this.bonusSlot);
-    this.boss = new Boss(this.scene, this.squad, this.run, this.crystals, this.money);
+    this.boss = new Boss(this.scene, this.squad, this.run, this.exp, this.money);
     this.mines.addAreaTarget(this.barrels);
     this.mines.addAreaTarget(this.boss);
     // Зомби обходят бочки и части ворот, не проходя сквозь них. Босс сюда не
@@ -314,9 +315,9 @@ export class Game {
     // экрана результата.
     this.resume();
 
-    // Летящее к счётчикам уже принадлежит игроку: зачисляем до подсчёта итогов,
+    // Летящие монеты уже принадлежат игроку: зачисляем до подсчёта итогов,
     // иначе забег недосчитывался бы всего, что не долетело за pickupFlight.seconds.
-    this.crystals.flushPending(this.collectExp);
+    // Опыт зачисляется сразу на убийстве, и добирать его нечем.
     this.money.flushPending(this.collectMoney);
 
     const collected = this.run.exp;
@@ -349,6 +350,7 @@ export class Game {
       brokenBarrels: this.barrels.broken,
       earnedExp: earned,
       earnedMoney: this.run.moneyEarned,
+      usedBoosters: Game.kitUsed(this.runKit),
     });
 
     // Множитель на экране раскладывается на сомножители: прокачка — из уровня
@@ -372,6 +374,25 @@ export class Game {
       wave: this.run.waveNumber,
       unlockedWeapons: opened,
     });
+  }
+
+  /**
+   * Вышел ли отряд с оплаченным китом. Считается по киту забега, а не по
+   * MetaProgress: к концу вылазки кит уже потреблён (consumeStartKit), и по
+   * прогрессу его не восстановить.
+   *
+   * Условие повторяет MetaProgress.hasStartKit, а не зовёт его, ровно поэтому:
+   * там спрашивается про кит, который СЕЙЧАС собран на экране бустеров, а здесь
+   * — про кит, с которым ушли в этот забег.
+   */
+  private static kitUsed(kit: StartKit): boolean {
+    return (
+      kit.shooters > 0 ||
+      kit.weapon !== null ||
+      kit.special !== null ||
+      Object.keys(kit.boosts).length > 0 ||
+      kit.startWave > 1
+    );
   }
 
   private openUpgrade(): void {
@@ -421,7 +442,7 @@ export class Game {
     this.mines.reset();
     this.explosions.reset();
     this.bullets.reset();
-    this.crystals.reset();
+    this.exp.reset();
     this.money.reset();
     this.boss.reset();
 
@@ -504,12 +525,9 @@ export class Game {
     // Вспышки после мин и пуль: рождённая в этом же шаге сфера сразу получает
     // первый прирост радиуса и видна с первого кадра.
     this.explosions.update(dt);
-    // Кристаллы после пуль: выпавший с только что убитого зомби стартует сразу.
-    // Проекция синхронизируется перед ними обоими — камера и холст общие.
+    // Монеты после пуль: выпавшая с только что убитого зомби стартует сразу.
+    // Опыта здесь нет: он начисляется прямо в воронке смерти, лететь нечему.
     this.space.sync(this.viewport.cssWidth, this.viewport.cssHeight);
-    const expAnchor = this.hud.expAnchor;
-    this.crystals.update(dt, this.space, expAnchor.x, expAnchor.y, this.collectExp);
-    // Монеты — там же и по той же причине: выпадают в той же воронке смерти.
     const moneyAnchor = this.hud.moneyAnchor;
     this.money.update(dt, this.space, moneyAnchor.x, moneyAnchor.y, this.collectMoney);
     this.world.update(dt);
@@ -529,7 +547,6 @@ export class Game {
       barrelsBroken: this.barrels.broken,
       mines: this.mines.activeCount,
       minesArmed: this.mines.armedCount,
-      crystals: this.crystals.activeCount,
       coins: this.money.activeCount,
       exp: this.run.exp,
       money: this.run.money,
@@ -690,10 +707,7 @@ export class Game {
     this.explosions.spawnAt(x, z, radius);
   }
 
-  /** Собранный кристалл идёт в счётчик забега. Ссылка одна на всю игру. */
-  private readonly collectExp = (value: number): void => this.run.addExp(value);
-
-  /** Собранная монета — в счётчик денег забега. */
+  /** Собранная монета — в счётчик денег забега. Ссылка одна на всю игру. */
   private readonly collectMoney = (value: number): void => this.run.addMoney(value);
 
   /** Одна ссылка на всю игру — подписи собираются каждый кадр. */

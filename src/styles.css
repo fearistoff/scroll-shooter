@@ -531,6 +531,40 @@ body {
   text-align: right;
 }
 
+/* Звёздочка у рекорда, поставленного с бустерами, и её расшифровка внизу
+   экрана. Серые и не жирные: это оговорка к числу, а не само число (жирность и
+   tabular-nums достались бы от .stat__value, внутри которого лежит звёздочка).
+
+   ЗВЁЗДОЧКА ВЫНЕСЕНА ЗА ПРАВЫЙ КРАЙ ЗНАЧЕНИЯ (position: absolute), поэтому
+   числа всех строк стоят по одной линии: в потоке она сдвигала бы помеченное
+   число влево, и правый столбец переставал читаться таблицей. Отступ слева
+   отделяет её от числа. */
+.stat__value {
+  position: relative;
+}
+
+.stat__star {
+  position: absolute;
+  left: 100%;
+  margin-left: 4px;
+  font-weight: 400;
+}
+
+.stat__star,
+.stat-note {
+  color: #ffffff;
+  opacity: 0.4;
+}
+
+.stat-note {
+  width: min(320px, 100%);
+  font-size: 12px;
+}
+
+.stat-note[hidden] {
+  display: none;
+}
+
 .screen__title {
   font-size: 30px;
   font-weight: 800;

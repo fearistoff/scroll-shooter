@@ -9,7 +9,7 @@ import {
 import { CONFIG } from '../config';
 import { segmentHitsCircle, segmentPassesCircle } from '../core/collision';
 import type { RunState, ZombieKind } from '../core/run';
-import type { CrystalPool } from './crystals';
+import type { ExpSink } from './exp';
 import { FallPose } from './fall';
 import { makeCorpseColor, makeModelFlashColor } from './flash';
 import type { MoneyPool } from './money';
@@ -291,7 +291,7 @@ export class EnemyPool {
   constructor(
     scene: Scene,
     private readonly run: RunState,
-    private readonly crystals: CrystalPool,
+    private readonly exp: ExpSink,
     private readonly money: MoneyPool,
   ) {
     const { normal, big, fast, poolSize, bigSpeedScale, fastSpeedScale } = CONFIG.enemies;
@@ -453,7 +453,7 @@ export class EnemyPool {
    * слот, потому что иначе списанная единица бюджета исчезала бы без зомби.
    *
    * Порядок аргументов — КООРДИНАТА ПЕРВОЙ, как у всех spawn в проекте
-   * (crystals, money, bullets, barrels). У босса аргументов нет вовсе, и из
+   * (money, bullets, barrels). У босса аргументов нет вовсе, и из
    * замерочного скрипта легко позвать `spawn('normal', -2.5)` по памяти.
    */
   spawn(x: number, kind: ZombieKind = 'normal'): void {
@@ -956,15 +956,16 @@ export class EnemyPool {
     this.flashLeft[i] = CONFIG.ui.damageFlash.seconds;
     if (this.hp[i]! > 0) return false;
 
-    // Кристалл падает там, где зомби погиб; крупный и быстрый стоят дороже
-    // обычного (ТЗ раздел 9, exp.perFastZombie).
+    // Опыт начисляется за убийство; крупный и быстрый стоят дороже обычного
+    // (ТЗ раздел 9, exp.perFastZombie). Точка смерти передаётся, хотя на экране
+    // ничего не появляется, — см. ExpSink.award.
     const value =
       code === KIND_BIG
         ? CONFIG.exp.perBigZombie
         : code === KIND_FAST
           ? CONFIG.exp.perFastZombie
           : CONFIG.exp.perNormalZombie;
-    this.crystals.spawn(this.posX[i]!, this.posZ[i]!, value);
+    this.exp.award(this.posX[i]!, this.posZ[i]!, value);
 
     // Деньги — там же, но не с каждого: бросок вероятности внутри воронки.
     // Зомби единственный их источник, поэтому вызов стоит только здесь и у босса.

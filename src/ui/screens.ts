@@ -221,10 +221,18 @@ interface StatSection<Id extends string> {
   rows: readonly { id: Id; label: string }[];
 }
 
-/** Строка статистики в DOM: значение и сам ряд — пустое значение его прячет. */
+/**
+ * Строка статистики в DOM: значение и сам ряд — пустое значение его прячет.
+ *
+ * Звёздочка отдельным элементом, а не символом в конце значения: значения
+ * ставятся через textContent, и приписанная к строке звёздочка получила бы
+ * стиль числа (жирный, tabular-nums), тогда как она — оговорка к нему.
+ */
 interface StatRow {
   root: HTMLElement;
+  /** Само число: свой элемент, иначе textContent стирал бы звёздочку рядом. */
   value: HTMLElement;
+  star: HTMLElement;
 }
 
 /**
@@ -461,6 +469,8 @@ export class Screens {
   private readonly pauseElement: HTMLElement | null;
   private readonly pauseInfo: HTMLElement | null;
   private readonly statsElement: HTMLElement | null;
+  /** Сноска «* — с бустерами» под списком: показывается вместе со звёздочками. */
+  private readonly statsNote: HTMLElement | null;
   private readonly statsButton: HTMLButtonElement | null;
   private readonly changelogElement: HTMLElement | null;
   private readonly changelogList: HTMLElement | null;
@@ -527,6 +537,7 @@ export class Screens {
     this.pauseElement = document.querySelector<HTMLElement>('#screen-pause');
     this.pauseInfo = document.querySelector<HTMLElement>('#pause-info');
     this.statsElement = document.querySelector<HTMLElement>('#screen-stats');
+    this.statsNote = document.querySelector<HTMLElement>('#stats-note');
     this.statsButton = document.querySelector<HTMLButtonElement>('#upgrade-stats');
     this.changelogElement = document.querySelector<HTMLElement>('#screen-changelog');
     this.changelogList = document.querySelector<HTMLElement>('#changelog-list');
@@ -946,12 +957,24 @@ export class Screens {
         label.className = 'stat__label';
         label.textContent = entry.label;
 
-        const value = document.createElement('div');
-        value.className = 'stat__value';
+        // Обёртка со стилем значения, а внутри — число и звёздочка. Звёздочка
+        // лежит здесь же, потому что ставится она относительно правого края
+        // ЗНАЧЕНИЯ (см. .stat__star): отдельным элементом ряда ей не от чего
+        // было бы отсчитываться.
+        const valueBox = document.createElement('div');
+        valueBox.className = 'stat__value';
 
-        root.append(label, value);
+        const value = document.createElement('span');
+
+        const star = document.createElement('span');
+        star.className = 'stat__star';
+        star.textContent = '*';
+        star.hidden = true;
+
+        valueBox.append(value, star);
+        root.append(label, valueBox);
         list.appendChild(root);
-        rows.set(entry.id, { root, value });
+        rows.set(entry.id, { root, value, star });
       }
 
       titles.push({ title, ids: section.rows.map((entry) => entry.id) });
@@ -965,16 +988,22 @@ export class Screens {
    * уходит вместе с заголовком. Правило общее для обоих экранов: на паузе им
    * отбираются строки (см. refreshPauseStats), на статистике — оно просто ничего
    * не прячет, там все значения есть всегда.
+   *
+   * starred — строки, чьё значение получает звёздочку «с бустерами». Пустой
+   * набор у паузы: там показана текущая вылазка, и кит её расписан отдельным
+   * разделом, а не пометкой.
    */
   private static fillStatList<Id extends string>(
     rows: Map<Id, StatRow>,
     titles: readonly { title: HTMLElement; ids: readonly Id[] }[],
     values: Record<Id, string>,
+    starred: ReadonlySet<Id> = new Set(),
   ): void {
     for (const [id, row] of rows) {
       const text = values[id];
       row.value.textContent = text;
       row.root.hidden = text === '';
+      row.star.hidden = !starred.has(id);
     }
 
     for (const section of titles) {
@@ -1080,7 +1109,26 @@ export class Screens {
       averageLoot: `${formatTotal(stats.averageExp)} EXP · ${formatTotal(stats.averageMoney)} $`,
     };
 
-    Screens.fillStatList(this.statRows, this.statSections, values);
+    /*
+     * ЗВЁЗДОЧКА У РЕКОРДА, ПОСТАВЛЕННОГО С ОПЛАЧЕННЫМ КИТОМ. Помечается каждый
+     * рекорд отдельно: они ставятся независимо и достаются разным вылазкам.
+     *
+     * Нулевой рекорд не помечается, хотя флаг у него может стоять: вылазка с
+     * китом, не добывшая ни монеты, поставила «рекорд» 0 и записала признак, а
+     * звёздочка у нуля обещала бы достижение, которого не было.
+     */
+    const boosted = stats.boostedRecords;
+    const starred = new Set<GlobalStatId>();
+    if (boosted.wave && stats.bestWave > 0) starred.add('bestWave');
+    if (boosted.seconds && stats.bestSeconds > 0) starred.add('bestTime');
+    if (boosted.exp && stats.bestExp > 0) starred.add('bestExp');
+    if (boosted.money && stats.bestMoney > 0) starred.add('bestMoney');
+
+    Screens.fillStatList(this.statRows, this.statSections, values, starred);
+
+    // Расшифровка звёздочки нужна, только когда звёздочка есть: без неё сноска
+    // объясняла бы то, чего на экране нет.
+    if (this.statsNote !== null) this.statsNote.hidden = starred.size === 0;
   }
 
   /** Одна строка улучшения. Возвращает готовый элемент, регистрируя его в rows. */

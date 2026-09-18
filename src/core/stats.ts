@@ -21,6 +21,15 @@ export interface RunRecord {
   /** Зачислено в банки — с множителями прокачки и бустеров, как на результате. */
   earnedExp: number;
   earnedMoney: number;
+  /**
+   * Вылазка шла с оплаченным китом: доп. бойцы, арендованное оружие, бусты
+   * характеристик или старт с поздней волны — любое из этого (MetaProgress,
+   * hasStartKit на момент старта забега).
+   *
+   * Нужен рекордам: забег с китом и забег без него — разные условия, и рекорд,
+   * поставленный за деньги, должен называть себя так (см. GlobalStats.record).
+   */
+  usedBoosters: boolean;
 }
 
 /**
@@ -46,6 +55,19 @@ interface SavedStats {
   /** Лучшая добыча за одну вылазку. */
   bestExp: number;
   bestMoney: number;
+  /**
+   * Стоял ли рекорд с бустерами — по флагу на КАЖДЫЙ рекорд, а не один на всю
+   * статистику: четыре рекорда ставятся независимо и достаются разным вылазкам.
+   *
+   * Флаг переписывается ровно тогда, когда переписывается сам рекорд, поэтому
+   * он всегда описывает ту вылазку, чьё число сейчас показано. Значения 0 и 1, а
+   * не true/false: readNumber читает все поля одинаково, и булево поле пришлось
+   * бы читать отдельной веткой ради одного бита.
+   */
+  bestWaveBoosted: number;
+  bestSecondsBoosted: number;
+  bestExpBoosted: number;
+  bestMoneyBoosted: number;
 }
 
 /** Пустая статистика: значения по умолчанию и заодно образец для чтения. */
@@ -61,6 +83,10 @@ const EMPTY: SavedStats = {
   money: 0,
   bestExp: 0,
   bestMoney: 0,
+  bestWaveBoosted: 0,
+  bestSecondsBoosted: 0,
+  bestExpBoosted: 0,
+  bestMoneyBoosted: 0,
 };
 
 /**
@@ -110,6 +136,25 @@ export class GlobalStats {
 
   get bestSeconds(): number {
     return this.data.bestSeconds;
+  }
+
+  /**
+   * Стоял ли каждый из рекордов с бустерами. Отдельным объектом, а не четырьмя
+   * геттерами: читает их одно место — экран статистики, — и там они нужны все
+   * разом, рядом со своими числами.
+   */
+  get boostedRecords(): {
+    wave: boolean;
+    seconds: boolean;
+    exp: boolean;
+    money: boolean;
+  } {
+    return {
+      wave: this.data.bestWaveBoosted === 1,
+      seconds: this.data.bestSecondsBoosted === 1,
+      exp: this.data.bestExpBoosted === 1,
+      money: this.data.bestMoneyBoosted === 1,
+    };
   }
 
   /** Средняя длительность вылазки. Без вылазок — 0, а не деление на ноль. */
@@ -172,21 +217,41 @@ export class GlobalStats {
    * Боссы считаются как пройденные волны (wave − startWave): волну заканчивает
    * только смерть босса, а старт с поздней волны боссов не дарит — иначе
    * оплаченный бустером старт с 5-й волны записывал бы четыре чужие победы.
+   *
+   * ПРИЗНАК БУСТЕРОВ СТАВИТСЯ ТОЛЬКО ВМЕСТЕ С САМИМ РЕКОРДОМ, и потому каждый
+   * рекорд обновляется сравнением, а не через Math.max: иначе флаг пришлось бы
+   * ставить вторым действием и он мог бы разъехаться с числом, которое
+   * описывает. Равенство рекорд НЕ переписывает — повторение прежнего числа не
+   * новое достижение, и менять его пометку не за что.
    */
   record(run: RunRecord): void {
     const data = this.data;
+    const boosted = run.usedBoosters ? 1 : 0;
 
     data.runs += 1;
     data.seconds += Math.max(0, run.elapsedSeconds);
-    data.bestSeconds = Math.max(data.bestSeconds, run.elapsedSeconds);
-    data.bestWave = Math.max(data.bestWave, run.wave);
     data.bosses += Math.max(0, run.wave - run.startWave);
     data.zombies += Math.max(0, run.killedZombies);
     data.barrels += Math.max(0, run.brokenBarrels);
     data.exp += Math.max(0, run.earnedExp);
     data.money += Math.max(0, run.earnedMoney);
-    data.bestExp = Math.max(data.bestExp, run.earnedExp);
-    data.bestMoney = Math.max(data.bestMoney, run.earnedMoney);
+
+    if (run.elapsedSeconds > data.bestSeconds) {
+      data.bestSeconds = run.elapsedSeconds;
+      data.bestSecondsBoosted = boosted;
+    }
+    if (run.wave > data.bestWave) {
+      data.bestWave = run.wave;
+      data.bestWaveBoosted = boosted;
+    }
+    if (run.earnedExp > data.bestExp) {
+      data.bestExp = run.earnedExp;
+      data.bestExpBoosted = boosted;
+    }
+    if (run.earnedMoney > data.bestMoney) {
+      data.bestMoney = run.earnedMoney;
+      data.bestMoneyBoosted = boosted;
+    }
 
     this.save();
   }
@@ -235,6 +300,12 @@ export class GlobalStats {
       data.barrels = Math.floor(data.barrels);
       data.money = Math.floor(data.money);
       data.bestMoney = Math.floor(data.bestMoney);
+      // Признаки бустеров — ровно 0 или 1: из чужого JSON сюда могло прийти
+      // любое число, а показывается по ним пометка у рекорда.
+      data.bestWaveBoosted = data.bestWaveBoosted >= 1 ? 1 : 0;
+      data.bestSecondsBoosted = data.bestSecondsBoosted >= 1 ? 1 : 0;
+      data.bestExpBoosted = data.bestExpBoosted >= 1 ? 1 : 0;
+      data.bestMoneyBoosted = data.bestMoneyBoosted >= 1 ? 1 : 0;
 
       this.data = data;
     } catch {

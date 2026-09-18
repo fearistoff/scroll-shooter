@@ -29,8 +29,7 @@ export interface HudState {
   barrelsBroken: number;
   mines: number;
   minesArmed: number;
-  crystals: number;
-  /** Монет денег на дороге — отладочный счётчик, как и кристаллы. */
+  /** Монет денег на дороге — отладочный счётчик. */
   coins: number;
   exp: number;
   /** Собрано денег за забег — валюта магазина оружия. */
@@ -100,17 +99,18 @@ export class Hud {
   private lastTrackColor = '';
 
   /**
-   * Центры плашек EXP и денег в пикселях холста — цель полёта кристаллов и монет
-   * (см. PickupPool). Меряются по требованию и кешируются: getBoundingClientRect
+   * Центр плашки денег в пикселях холста — цель полёта монет (см. PickupPool).
+   * Опыт сюда не входит: он начисляется сразу на убийстве и никуда не летит.
+   *
+   * Меряется по требованию и кешируется: getBoundingClientRect
    * заставляет браузер пересчитать раскладку, а звать его каждый кадр не за чем —
    * плашка стоит на месте.
    *
    * Кеш сбрасывается ровно в двух случаях: сменился размер холста (ResizeObserver
    * ниже) и сменилась ДЛИНА строки счётчика. Не значение, а именно длина: в HUD
-   * стоит font-variant-numeric: tabular-nums, все цифры одной ширины, и «EXP 12»
-   * → «EXP 13» плашку не двигает.
+   * стоит font-variant-numeric: tabular-nums, все цифры одной ширины, и «$ 12»
+   * → «$ 13» плашку не двигает.
    */
-  private readonly expAnchorPoint: HudAnchor = { x: 0, y: 0 };
   private readonly moneyAnchorPoint: HudAnchor = { x: 0, y: 0 };
   private anchorsDirty = true;
   private readonly anchorObserver: ResizeObserver | null;
@@ -155,12 +155,6 @@ export class Hud {
     }
   }
 
-  /** Центр плашки EXP — туда летят кристаллы. */
-  get expAnchor(): HudAnchor {
-    this.measureAnchors();
-    return this.expAnchorPoint;
-  }
-
   /** Центр плашки денег — туда летят монеты. */
   get moneyAnchor(): HudAnchor {
     this.measureAnchors();
@@ -168,7 +162,7 @@ export class Hud {
   }
 
   update(state: HudState): void {
-    // Округляем вниз: EXP дробный (кристалл ×1.5 от прокачки), и без округления
+    // Округляем вниз: EXP дробный (множитель волны и прокачки), и без округления
     // в плашку лезло «EXP 330.72000000000065» — она распирала верхнюю строку и
     // налезала на полосу волны.
     const exp = `EXP ${Math.floor(state.exp)}`;
@@ -176,8 +170,10 @@ export class Hud {
     // округлять нечего — находка округляется на выпадении (MoneyPool.dropFrom).
     const money = `$ ${state.money}`;
 
-    // Плашка выросла на цифру — центр уехал, и цель полёта нужно перемерить.
-    if (exp.length !== this.lastExp.length || money.length !== this.lastMoney.length) {
+    // Плашка денег выросла на цифру — центр уехал, и цель полёта монет нужно
+    // перемерить. Длина строки EXP на него не влияет: плашки лежат одна под
+    // другой и растут вширь, а не вниз.
+    if (money.length !== this.lastMoney.length) {
       this.anchorsDirty = true;
     }
 
@@ -222,7 +218,7 @@ export class Hud {
       `отряд ${state.shooters}${hidden} · ${state.weapon}${specials} · ` +
       `зомби ${state.enemies}${big}${fast}${corpses} · убито ${state.killed} · пули ${state.bullets} · ` +
       `бочки ${state.barrels} (разбито ${state.barrelsBroken})${mines} · ` +
-      `кристаллы ${state.crystals} · монеты ${state.coins} · fps ${state.fps}`;
+      `монеты ${state.coins} · fps ${state.fps}`;
     this.setText(this.debugElement, debug, 'lastDebug');
   }
 
@@ -285,7 +281,6 @@ export class Hud {
     // Координаты нужны относительно холста, а не окна: холст центрирован в окне
     // letterbox'ом, и слева от него бывают тёмные поля.
     const root = this.rootElement.getBoundingClientRect();
-    Hud.measureCenter(this.expElement, root, this.expAnchorPoint);
     Hud.measureCenter(this.moneyElement, root, this.moneyAnchorPoint);
     this.anchorsDirty = false;
   }

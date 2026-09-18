@@ -11,7 +11,7 @@ import {
 import { CONFIG } from '../config';
 import { segmentHitsCircle, segmentPassesCircle } from '../core/collision';
 import type { RunState } from '../core/run';
-import type { CrystalPool } from './crystals';
+import type { ExpSink } from './exp';
 import { FallPose } from './fall';
 import { makeCorpseColor, makeModelFlashColor } from './flash';
 import type { MoneyPool } from './money';
@@ -212,7 +212,7 @@ export class Boss {
     scene: Scene,
     private readonly squad: BossTarget,
     private readonly run: RunState,
-    private readonly crystals: CrystalPool,
+    private readonly exp: ExpSink,
     private readonly money: MoneyPool,
   ) {
     const { capsule, colors, telegraph } = CONFIG.boss;
@@ -778,18 +778,11 @@ export class Boss {
     // рисовался бы по одной раскладке, а все следующие — по другой.
     this.updateCorpse(0);
 
-    // Босс осыпается кристаллами: он один стоит целой волны. Награда задана
-    // ЦЕЛИКОМ (CONFIG.exp.perBoss) и делится на число кристаллов, а не задана на
-    // штуку: сколько их сыплется — вопрос картинки, и правка crystalDrops не
-    // должна менять цену босса. Число своё, а не по слоям полосы: слоёв у босса
-    // десятой волны 52, и он рассыпался бы крошкой. Множитель волны добавит
-    // CrystalPool.spawn — на выпадении, то есть ещё в СВОЕЙ волне.
-    const drops = Math.max(1, CONFIG.boss.crystalDrops);
-    const perDrop = CONFIG.exp.perBoss / drops;
-    for (let n = 0; n < drops; n++) {
-      const spread = (Math.random() * 2 - 1) * CONFIG.boss.capsule.radius * 2;
-      this.crystals.spawn(spread, this.posZ, perDrop);
-    }
+    // Опыт за босса — одним начислением: он один стоит целой волны, и награда
+    // задана целиком (CONFIG.exp.perBoss). Дробить её не на что, показывать на
+    // дороге нечего (см. ExpSink). Множитель волны добавит сам ExpSink, то есть
+    // ещё в СВОЕЙ волне: startNextWave срабатывает на следующем кадре.
+    this.exp.award(0, this.posZ, CONFIG.exp.perBoss);
 
     // Деньги с босса — одной монетой, но крупной, и растут вместе с его запасом
     // прочности: множитель волны тот же самый (run.hpMultiplier). Бросок

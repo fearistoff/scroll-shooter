@@ -13,7 +13,7 @@ import { CONFIG } from '../config';
 import { segmentHitsCircle, segmentPassesCircle } from '../core/collision';
 import type { RunState } from '../core/run';
 import type { BonusSlot } from './bonusSlot';
-import type { CrystalPool } from './crystals';
+import type { ExpSink } from './exp';
 import type { SquadTarget } from './enemies';
 import { makeFlashColor } from './flash';
 import {
@@ -321,7 +321,7 @@ export class BarrelField {
   constructor(
     scene: Scene,
     private readonly squad: SquadTarget & BonusReceiver,
-    private readonly crystals: CrystalPool,
+    private readonly exp: ExpSink,
     private readonly run: RunState,
     private readonly bonusSlot: BonusSlot,
     private readonly shop: WeaponUnlocks,
@@ -824,12 +824,12 @@ export class BarrelField {
   }
 
   /**
-   * Разрушение бочки: содержимое отряду, кристалл EXP на землю, слот в пул.
+   * Разрушение бочки: содержимое отряду, опыт в счётчик, слот в пул.
    * Один метод на выстрел и на взрыв мины — иначе награда за них разъехалась бы.
    */
   private breakBarrel(i: number): void {
     this.applyContent(this.content[i]!, this.amount[i]!, this.special[i] ?? null);
-    this.crystals.spawn(this.posX[i]!, this.posZ[i]!, CONFIG.exp.perBarrel);
+    this.exp.award(this.posX[i]!, this.posZ[i]!, CONFIG.exp.perBarrel);
     this.brokenTotal++;
     this.recycle(i);
   }
