@@ -9,6 +9,7 @@ import {
   type Scene,
 } from 'three';
 import { CONFIG } from '../config';
+import { turnToward } from '../core/angle';
 import { segmentHitsCircle, segmentPassesCircle } from '../core/collision';
 import type { RunState } from '../core/run';
 import type { ExpSink } from './exp';
@@ -26,19 +27,6 @@ export type BossAttackKind = 'aoe' | 'single';
 
 /** Ось поворота модели. Одна на модуль: доворот считается каждый кадр. */
 const UP = new Vector3(0, 1, 0);
-
-/**
- * Угол, приведённый к (−π, π]. Без этого доворот на 190° шёл бы «длинной
- * стороной», через 170° в обратную сторону.
- */
-function wrapAngle(angle: number): number {
-  const full = Math.PI * 2;
-  return (((angle + Math.PI) % full) + full) % full - Math.PI;
-}
-
-function clamp(value: number, limit: number): number {
-  return Math.min(limit, Math.max(-limit, value));
-}
 
 /** Отряд с точки зрения босса. */
 export interface BossTarget {
@@ -507,38 +495,24 @@ export class Boss {
 
   /**
    * Шаг доворота модели к targetFacing (CONFIG.boss.turn, задано пользователем
-   * 2026-08-13).
-   *
-   * EASE С ДВУХ СТОРОН. Желаемая скорость пропорциональна остатку угла (остаток,
-   * делённый на easeSeconds) — это торможение на подъезде; сама скорость догоняет
-   * желаемую с ограниченным ускорением (максимум за то же easeSeconds) — это
-   * разгон на старте. Потолок — turn.maxDegreesPerSecond.
-   *
-   * Скорость хранится полем, и без этого ease-in не выходит: выставляя её по
-   * остатку угла заново каждый кадр, на смене цели модель срывалась бы с места на
-   * полной скорости.
-   *
-   * Перелёта нет: тормозить модель начинает за maxSpeed × easeSeconds по углу (90°
-   * при нынешних числах), а на само торможение с полной скорости уходит вдвое
-   * меньше (45°).
+   * 2026-08-13). Ease с двух сторон и потолок скорости — в turnToward, скорость
+   * хранится полем: без этого ease-in не выходит. Замеры доворота — при числах
+   * в CONFIG.boss.turn.
    */
   private updateFacing(dt: number): void {
     const { maxDegreesPerSecond, easeSeconds } = CONFIG.boss.turn;
 
-    const delta = wrapAngle(this.targetFacing - this.yaw);
-    const maxSpeed = (maxDegreesPerSecond * Math.PI) / 180;
+    const turned = turnToward(
+      this.yaw,
+      this.yawSpeed,
+      this.targetFacing,
+      dt,
+      maxDegreesPerSecond,
+      easeSeconds,
+    );
 
-    if (easeSeconds > 0) {
-      const desired = clamp(delta / easeSeconds, maxSpeed);
-      // Ускорение выведено из потолка: за easeSeconds скорость успевает пройти
-      // весь диапазон от нуля до максимума.
-      this.yawSpeed += clamp(desired - this.yawSpeed, (maxSpeed / easeSeconds) * dt);
-    } else {
-      // Ease выключен: поворот идёт сразу на потолке скорости.
-      this.yawSpeed = clamp(delta / Math.max(dt, 1e-6), maxSpeed);
-    }
-
-    this.yaw = wrapAngle(this.yaw + this.yawSpeed * dt);
+    this.yaw = turned.yaw;
+    this.yawSpeed = turned.yawSpeed;
     this.mesh.rotation.y = this.yaw;
   }
 

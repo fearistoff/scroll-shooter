@@ -6,8 +6,10 @@ import {
   Mesh,
   MeshStandardMaterial,
   type Scene,
+  Vector3,
 } from 'three';
 import { CONFIG } from '../config';
+import { turnToward } from '../core/angle';
 import { cubicBezierEase } from '../core/easing';
 import type { BonusReceiver } from './barrels';
 import type { BossTarget } from './boss';
@@ -41,6 +43,9 @@ export interface AllyWeaponAccess {
   isAllyWeaponUnlocked(id: WeaponId): boolean;
 }
 
+/** Ось разворота стрелков. Одна на модуль: кватернион героя строится каждый кадр. */
+const UP = new Vector3(0, 1, 0);
+
 /** Доп. стрелок. Главный герой хранится отдельно — он не взаимозаменяем. */
 interface Ally {
   hp: number;
@@ -67,6 +72,17 @@ interface Ally {
    * У бойцов внутри потолка не используется вовсе: они стоят на своём месте.
    */
   hiddenSlot: number;
+  /**
+   * Куда боец смотрит сейчас, радианы (0 — вперёд, вглубь дороги). Доворачивается
+   * к цели в updateFacing.
+   *
+   * Угол СВОЙ у каждого бойца, а не общий на строй: от места в шеренге зависит
+   * направление на босса, и одним числом фланги смотрели бы мимо. Хранится здесь,
+   * потому что союзники — инстансы одного меша, и своей ноды у них нет.
+   */
+  yaw: number;
+  /** Угловая скорость разворота, рад/с. Хранится ради ease-in (см. updateFacing). */
+  yawSpeed: number;
 }
 
 /**
@@ -143,6 +159,8 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
   private readonly heroShadow: Mesh;
   private readonly allyShadows: InstancedMesh;
   private readonly matrix = new Matrix4();
+  /** Черновик масштаба для матрицы инстанса: общий на все кадры, в цикле не мусорим. */
+  private readonly allyScale = new Vector3();
   private readonly allies: Ally[] = [];
 
   /** Материал героя — по нему переключается его вспышка (он один, не инстанс). */
@@ -186,6 +204,17 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
    */
   private aimX: number | null = null;
   private aimZ: number | null = null;
+
+  /**
+   * Куда смотрит герой, радианы (0 — вперёд, вглубь дороги). Союзники держат свой
+   * угол каждый (Ally.yaw), а у героя он здесь: меш у него отдельный.
+   *
+   * В кватернион идёт только в живой фазе. В прощании меш занят падением
+   * (applyHeroFall), и разворот туда не вмешивается.
+   */
+  private heroYaw = 0;
+  /** Угловая скорость разворота героя, рад/с. Нужна ease-in (см. updateFacing). */
+  private heroYawSpeed = 0;
 
   constructor(
     scene: Scene,
@@ -425,6 +454,10 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
     this.snapTravelLimit();
     this.aimX = null;
     this.aimZ = null;
+    // Вместе с прицелом сбрасывается и разворот: без этого новый забег начался бы
+    // с героем, смотрящим на босса прошлого. Союзники обнуляются со строем.
+    this.heroYaw = 0;
+    this.heroYawSpeed = 0;
     this.heroRegenDelayLeft = 0;
     this.heroFlashLeft = 0;
     this.healPulseTime = 0;
@@ -513,6 +546,63 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
     this.heroMesh.position.set(pose.x, pose.y, pose.z);
   }
 
+  /**
+   * Куда должен смотреть стрелок, стоящий в (x, z), радианы.
+   *
+   * Без прицела — 0: вперёд, вглубь дороги, как собрана модель (buildSoldier‑
+   * Geometry, лицо к −Z). С прицелом — направление на точку; z у цели меньше,
+   * чем у стрелка, поэтому в atan2 идёт −dz.
+   *
+   * Угол считается ОТ МЕСТА БОЙЦА, а не от центра строя: на фланге широкой
+   * шеренги направление на босса заметно отличается, и общим углом крайние
+   * смотрели бы мимо цели, в которую стреляют.
+   */
+  private facingFor(x: number, z: number): number {
+    if (this.aimX === null || this.aimZ === null) return 0;
+    return Math.atan2(this.aimX - x, -(this.aimZ - z));
+  }
+
+  /**
+   * Доворачивает героя и союзников к цели (player.turn).
+   *
+   * Зовётся ПОСЛЕ того, как отряд сдвинулся за вводом, и ДО раскладки строя:
+   * layoutAllies пишет угол в матрицу инстанса, и на шаг свежее значение ему
+   * нужно уже готовым.
+   */
+  private updateFacing(dt: number): void {
+    const { maxDegreesPerSecond, easeSeconds } = CONFIG.player.turn;
+    const squadX = this.x;
+
+    const hero = turnToward(
+      this.heroYaw,
+      this.heroYawSpeed,
+      this.facingFor(squadX, 0),
+      dt,
+      maxDegreesPerSecond,
+      easeSeconds,
+    );
+    this.heroYaw = hero.yaw;
+    this.heroYawSpeed = hero.yawSpeed;
+
+    // Доворачивают ВСЕ бойцы, включая тех, что за визуальным потолком: боец из-за
+    // потолка попадает в строй, когда сосед погиб, и въезжать в кадр он должен
+    // уже лицом к цели, а не доворачиваться на глазах.
+    for (let i = 0; i < this.allies.length; i++) {
+      const ally = this.allies[i]!;
+      this.allyOffset(i);
+      const turned = turnToward(
+        ally.yaw,
+        ally.yawSpeed,
+        this.facingFor(squadX + this.offsetX, this.offsetZ),
+        dt,
+        maxDegreesPerSecond,
+        easeSeconds,
+      );
+      ally.yaw = turned.yaw;
+      ally.yawSpeed = turned.yawSpeed;
+    }
+  }
+
   /** Двигает отряд за вводом, раскладывает строй и стреляет. */
   update(dt: number, targetPercent: number): void {
     // Первым делом: положение отряда считается от предела, и позади по шагу идут
@@ -540,8 +630,14 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
 
     this.regenerate(dt);
 
+    // Доворот — до раскладки строя: layoutAllies кладёт угол в матрицу инстанса.
+    this.updateFacing(dt);
+
     const squadX = this.x;
     this.heroMesh.position.x = squadX;
+    // Живой герой смотрит на цель. В прощании кватернион занят падением
+    // (applyHeroFall), но туда update не заходит вовсе.
+    this.heroMesh.quaternion.setFromAxisAngle(UP, this.heroYaw);
     // Тень едет за героем вбок. В фазе прощания update не зовут, поэтому она
     // остаётся там, где герой стоял в момент смерти, — вокруг этой точки он и
     // заваливается (heroDeathX).
@@ -660,7 +756,11 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
       // Рост от подошвы: масштаб равномерный, а центр капсулы поднимается вместе
       // с ним — при y = const боец вырастал бы из-под асфальта (см. spawnScale).
       const scale = Squad.spawnScale(this.allies[i]!.spawnLeft);
-      this.matrix.makeScale(scale, scale, scale);
+      // Поворот вокруг Y и равномерный масштаб: makeRotationY задаёт базис, а
+      // scale домножает его на месте — порядок важен, scale после позиции сбросил
+      // бы её. Разворот у каждого свой (см. Ally.yaw).
+      this.matrix.makeRotationY(this.allies[i]!.yaw);
+      this.matrix.scale(this.allyScale.setScalar(scale));
       this.matrix.setPosition(squadX + this.offsetX, y * scale, this.offsetZ);
       this.allyMesh.setMatrixAt(i, this.matrix);
       // Индекс в меше равен индексу в строю, поэтому вспышку можно писать здесь же.
@@ -1119,6 +1219,10 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
         spawnLeft: CONFIG.player.spawnAnim.seconds,
         // Место для огня, если боец окажется за визуальным потолком (см. Ally).
         hiddenSlot: Math.floor(Math.random() * Squad.visibleAllyCapacity),
+        // Пришёл уже лицом к цели, а не к дороге: на боссфайте пополнение
+        // доворачивалось бы на глазах, хотя стреляет оно в босса с первого шага.
+        yaw: this.heroYaw,
+        yawSpeed: 0,
       });
     }
   }
@@ -1413,8 +1517,10 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
       regenDelayLeft: number;
       spawnLeft: number;
       scale: number;
+      facingDegrees: number;
     }>;
     heroRegenDelayLeft: number;
+    heroFacingDegrees: number;
   } {
     const squadX = this.x;
     const allies = this.allies.map((ally, index) => {
@@ -1430,6 +1536,8 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
         regenDelayLeft: +ally.regenDelayLeft.toFixed(3),
         spawnLeft: +ally.spawnLeft.toFixed(3),
         scale: +Squad.spawnScale(ally.spawnLeft).toFixed(3),
+        // Куда смотрит боец: 0 — вперёд, вглубь дороги; плюс — вправо.
+        facingDegrees: +((ally.yaw * 180) / Math.PI).toFixed(1),
       };
     });
 
@@ -1446,6 +1554,7 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
       hidden: this.hiddenAllyCount,
       allies,
       heroRegenDelayLeft: +this.heroRegenDelayLeft.toFixed(3),
+      heroFacingDegrees: +((this.heroYaw * 180) / Math.PI).toFixed(1),
     };
   }
 }
