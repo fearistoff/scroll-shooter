@@ -14,6 +14,7 @@ import { Squad } from '../entities/squad';
 import { Hud } from '../ui/hud';
 import { LabelLayer } from '../ui/labels';
 import { Screens } from '../ui/screens';
+import { pickBiome } from '../world/biomes';
 import { CameraSpace, createGameCamera } from '../world/camera';
 import { World } from '../world/world';
 import { PointerInput } from './input';
@@ -445,6 +446,8 @@ export class Game {
     this.exp.reset();
     this.money.reset();
     this.boss.reset();
+    // Мир — к стартовой локации: забег всегда начинается в пустоши.
+    this.world.reset();
 
     /*
      * СТАРТОВЫЙ КИТ — оплаченные за деньги бойцы и ствол на этот забег
@@ -603,6 +606,10 @@ export class Game {
       this.run.startNextWave();
       // Не reset(): он убрал бы тело босса в том же кадре, в котором оно легло.
       this.boss.prepareNextWave();
+      // Новая волна — новая локация (biomes.ts). Смена начинается здесь, а
+      // доигрывается сама за CONFIG.biomes.transitionSeconds: на этом шаге
+      // дорога ещё стоит после боссфайта и разгоняется одновременно с ней.
+      this.world.enterBiome(pickBiome(this.world.biome));
     }
 
     const shouldSpawn =

@@ -1,12 +1,11 @@
 import {
   BoxGeometry,
-  BufferAttribute,
   BufferGeometry,
-  Color,
   CylinderGeometry,
   SphereGeometry,
 } from 'three';
 import { CONFIG } from '../config';
+import { bake, mergeBaked } from './baked';
 
 /*
  * СТАТИЧНЫЕ ЧЕЛОВЕЧЕСКИЕ ФИГУРКИ — боец отряда и зомби, обе вместо капсулы.
@@ -27,10 +26,11 @@ import { CONFIG } from '../config';
  *
  * ПОЧЕМУ ОДИН МЕШ, А НЕ ГРУППА. Бойцов до 23 видимых, зомби до 200, и те и другие
  * рисуются ИНСТАНСАМИ одного InstancedMesh — значит, вся фигурка обязана быть
- * одной геометрией. Детали окрашены ВЕРТЕКСНЫМИ цветами, запечёнными при сборке:
- * материал остаётся белым, и весь существующий механизм вспышек и трупов
- * (умножение цвета материала или instanceColor) продолжает работать — он
- * теперь множитель поверх запечённой раскраски, см. makeModelFlashColor.
+ * одной геометрией. Детали окрашены ВЕРТЕКСНЫМИ цветами, запечёнными при сборке
+ * (bake и mergeBaked в baked.ts): материал остаётся белым, и весь существующий
+ * механизм вспышек и трупов (умножение цвета материала или instanceColor)
+ * продолжает работать — он множитель поверх запечённой раскраски, см.
+ * makeModelFlashColor.
  *
  * Цвета читаются из конфига ОДИН РАЗ при сборке и запекаются в геометрию:
  * крутить их на живой игре через __config нельзя, нужна пересборка (перезагрузка
@@ -40,52 +40,6 @@ import { CONFIG } from '../config';
 
 /** Рост фигурки в единицах иконки — под него масштабируется всё остальное. */
 const ICON_HEIGHT = 16;
-
-/** Красит геометрию в один цвет вертексным атрибутом и разворачивает индексы. */
-function bake(source: BufferGeometry, hex: number): BufferGeometry {
-  // Трапеции приходят уже развёрнутыми (им нужны плоские нормали до поворотов),
-  // повторный toNonIndexed на них дал бы предупреждение three в консоль.
-  const geometry = source.index !== null ? source.toNonIndexed() : source;
-  if (geometry !== source) source.dispose();
-
-  const color = new Color(hex);
-  const count = geometry.getAttribute('position').count;
-  const colors = new Float32Array(count * 3);
-  for (let i = 0; i < count; i++) color.toArray(colors, i * 3);
-  geometry.setAttribute('color', new BufferAttribute(colors, 3));
-
-  return geometry;
-}
-
-/**
- * Склейка окрашенных деталей в одну геометрию. Своя, а не BufferGeometryUtils
- * из three/addons: нужны ровно position + normal + color, и тянуть весь модуль
- * утилит ради двадцати строк незачем.
- */
-function mergeBaked(parts: BufferGeometry[]): BufferGeometry {
-  let total = 0;
-  for (const part of parts) total += part.getAttribute('position').count;
-
-  const position = new Float32Array(total * 3);
-  const normal = new Float32Array(total * 3);
-  const color = new Float32Array(total * 3);
-
-  let offset = 0;
-  for (const part of parts) {
-    const count = part.getAttribute('position').count;
-    position.set(part.getAttribute('position').array as Float32Array, offset * 3);
-    normal.set(part.getAttribute('normal').array as Float32Array, offset * 3);
-    color.set(part.getAttribute('color').array as Float32Array, offset * 3);
-    offset += count;
-    part.dispose();
-  }
-
-  const merged = new BufferGeometry();
-  merged.setAttribute('position', new BufferAttribute(position, 3));
-  merged.setAttribute('normal', new BufferAttribute(normal, 3));
-  merged.setAttribute('color', new BufferAttribute(color, 3));
-  return merged;
-}
 
 function box(
   hex: number,
