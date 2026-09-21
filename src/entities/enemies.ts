@@ -5,8 +5,10 @@ import {
   Matrix4,
   MeshStandardMaterial,
   type Scene,
+  Vector3,
 } from 'three';
 import { CONFIG } from '../config';
+import { turnToward } from '../core/angle';
 import { segmentHitsCircle, segmentPassesCircle } from '../core/collision';
 import type { RunState, ZombieKind } from '../core/run';
 import type { ExpSink } from './exp';
@@ -28,14 +30,46 @@ export interface SquadTarget {
   readonly shooterCount: number;
 
   /**
-   * Наносит урон ближайшему стрелку — без ограничения по расстоянию: нападающий
-   * уже стоит на линии перед отрядом, и «ближайший» считается по фактическому
-   * расстоянию до (fromX, fromZ), поэтому первым получает передний ряд.
+   * Наносит урон ближайшему стрелку — без ограничения по расстоянию: кто именно
+   * ближайший, считается по фактическому расстоянию до (fromX, fromZ), поэтому
+   * первым получает передний ряд.
    *
-   * Возвращает true, если удар кого-то достал. False теперь означает только
-   * «стрелков не осталось»: раньше так же сообщалось о промахе по досягаемости.
+   * Досягаемость проверяет ВЫЗЫВАЮЩИЙ: у зомби она своя у каждого вида (зона
+   * поражения от роста, см. EnemyPool.reachOf), и отряд о ней не знает. Зомби
+   * зовёт этот метод, только убедившись, что цель в зоне — по nearestShooter.
+   *
+   * Возвращает true, если удар кого-то достал; false означает «стрелков не
+   * осталось».
    */
   damageNearestShooter(fromX: number, fromZ: number, amount: number): boolean;
+
+  /**
+   * Куда и как далеко до ближайшего стрелка от точки (fromX, fromZ).
+   *
+   * Нужен зомби трижды за кадр: доворот лицом к цели, боковая погоня за ней и
+   * проверка, что она ещё в зоне поражения. Все три спрашивают ОДНО И ТО ЖЕ —
+   * ближайшего стрелка, и три отдельных метода разошлись бы между собой:
+   * зомби целился бы в одного, а бил другого.
+   *
+   * Пишет в переданный приёмник и возвращает true; при пустом отряде возвращает
+   * false и приёмник не трогает. Приёмник, а не новый объект: метод зовётся на
+   * каждого живого зомби каждый кадр, а зомби на дороге сотни.
+   */
+  nearestShooter(fromX: number, fromZ: number, out: ShooterHit): boolean;
+}
+
+/**
+ * Приёмник для SquadTarget.nearestShooter: место ближайшего стрелка и квадрат
+ * расстояния до него.
+ *
+ * Квадрат, а не расстояние: зомби сравнивает его с квадратом своей зоны
+ * поражения, и корень в этой цепочке не нужен ни разу — а считался бы он на
+ * каждого зомби каждый кадр.
+ */
+export interface ShooterHit {
+  x: number;
+  z: number;
+  distanceSq: number;
 }
 
 /**
@@ -164,6 +198,8 @@ export class EnemyPool {
    */
   private readonly modelCapsules: ReadonlyArray<{ radius: number; length: number }>;
   private readonly matrix = new Matrix4();
+  /** Черновик масштаба для матрицы инстанса: один на пул, в цикле не мусорим. */
+  private readonly instanceScaleVec = new Vector3();
   /** Поза падения. Одна на пул: тела считаются по очереди, мусорить нельзя. */
   private readonly fallPose = new FallPose();
 
@@ -214,6 +250,22 @@ export class EnemyPool {
    * Разыгрывается в момент смерти.
    */
   private readonly fallYaw: Float32Array;
+  /**
+   * Куда зомби смотрит сейчас, радианы. Отряду соответствует π, а НЕ ноль:
+   * модель зомби собрана из модели бойца и смотрит туда же, к −Z
+   * (buildZombieGeometry), а идут они навстречу — зомби из −Z к отряду в z = 0.
+   * Поэтому «лицом к отряду» — это разворот на 180°, и с него зомби выходит
+   * (см. spawn).
+   *
+   * ЗАМЕРЕНО по boundingBox геометрии: вытянутые руки зомби лежат в −Z
+   * (min.z = −0.276 у обычного), спина — в +Z (max.z = 0.512).
+   *
+   * Доворачивается к цели в updateFacing. Живого поля хватает одного: тело
+   * поворот не меняет, оно падает по fallYaw.
+   */
+  private readonly yaw: Float32Array;
+  /** Угловая скорость разворота, рад/с. Хранится ради ease-in (см. turnToward). */
+  private readonly yawSpeed: Float32Array;
 
   /**
    * Все массивы данных слота одним списком.
@@ -341,6 +393,8 @@ export class EnemyPool {
     this.recoverLeft = new Float32Array(poolSize);
     this.fallLeft = new Float32Array(poolSize);
     this.fallYaw = new Float32Array(poolSize);
+    this.yaw = new Float32Array(poolSize);
+    this.yawSpeed = new Float32Array(poolSize);
 
     this.slots = [
       this.posX,
@@ -356,6 +410,8 @@ export class EnemyPool {
       this.recoverLeft,
       this.fallLeft,
       this.fallYaw,
+      this.yaw,
+      this.yawSpeed,
     ];
   }
 
@@ -521,6 +577,19 @@ export class EnemyPool {
     // обнуления новый зомби вышел бы на дорогу заваленным набок.
     this.fallLeft[i] = 0;
     this.fallYaw[i] = 0;
+    /*
+     * Разворот — туда же, но выходит зомби НЕ с нулём, а лицом на отряд (π).
+     *
+     * Ноль — это лицо к −Z, то есть В ГЛУБЬ дороги: модель зомби собрана из
+     * модели бойца и смотрит туда же, куда боец, а идут они навстречу друг
+     * другу. Зомби выходит из −Z и движется к +Z, поэтому лицом к отряду он
+     * стоит развёрнутым на 180°.
+     *
+     * Без этого зомби выезжал бы из-за горизонта спиной к отряду и доворачивался
+     * на глазах — и вытянутые руки смотрели бы от отряда, а не на него.
+     */
+    this.yaw[i] = Math.PI;
+    this.yawSpeed[i] = 0;
 
     this.spawnedTotal++;
     if (kind === 'big') this.bigSpawnedTotal++;
@@ -602,12 +671,120 @@ export class EnemyPool {
     }
   }
 
+  /**
+   * Радиус зоны поражения зомби i, units: рост вида × enemies.attackReach.
+   *
+   * От РОСТА, а не от радиуса капсулы (CONFIG.enemies.attackReach): виды
+   * различаются ростом почти вдвое при близкой ширине, и «крупный достаёт
+   * дальше» держится именно на росте. Рост берётся из капсулы МОДЕЛИ — это тот
+   * габарит, который видит игрок.
+   */
+  private reachOf(code: number): number {
+    const model = this.modelCapsules[code]!;
+    return (model.length + 2 * model.radius) * CONFIG.enemies.attackReach;
+  }
+
+  /**
+   * Приёмник ближайшего стрелка. Один на пул: цель опрашивается на каждого
+   * живого зомби каждый кадр, и новый объект здесь — мусор сотнями за кадр.
+   */
+  private readonly shooterHit = { x: 0, z: 0, distanceSq: 0 };
+
+  /**
+   * Боковой ход к цели: зомби смещается по x, пока стрелок не окажется в зоне
+   * поражения (CONFIG.enemies.pursuit).
+   *
+   * Идёт и на подходе, и у линии остановки (решение пользователя 2026-09-21):
+   * без погони у линии зона поражения дала бы уводом отряда полный иммунитет —
+   * толпа стояла бы столбами, промахиваясь мимо ушедшего вбок отряда.
+   *
+   * Только по x: по z зомби держит свою линию остановки, и подходить ближе ему
+   * нельзя — иначе толпа въехала бы в строй.
+   *
+   * Мёртвая зона гасит дрожь у цели: шаг за кадр перелетает точную координату,
+   * и без неё знак смещения менялся бы каждый кадр (см. pursuit.deadZoneX).
+   */
+  private pursueShooter(
+    i: number,
+    targetX: number,
+    targetZ: number,
+    reach: number,
+    radius: number,
+    dt: number,
+  ): void {
+    const { speed, deadZoneX } = CONFIG.enemies.pursuit;
+
+    /*
+     * ЦЕЛЬ ХОДА — КРАЙ ЗОНЫ, А НЕ КООРДИНАТА СТРЕЛКА. Зомби нужно ровно одно:
+     * чтобы цель оказалась в зоне поражения. Дойдя до края зоны, он встаёт.
+     *
+     * Иначе вся толпа сходится в один x: каждый идёт к x ОДНОГО И ТОГО ЖЕ
+     * ближайшего стрелка, и у линии остановки они складываются в колонну по
+     * одному. ЗАМЕРЕНО на ходе «в точную координату»: шесть зомби у линии стояли
+     * в пределах 0.16 units по x — вместо толпы получался столбик.
+     *
+     * Боковой охват считается из зоны: цель попадает в круг радиуса reach, когда
+     * зомби подошёл по x на sqrt(reach² − dz²). У стоящих на разных линиях
+     * остановки (stopLineJitter) dz разный, поэтому и охват разный — толпа
+     * расходится по ширине сама, без отдельного разброса.
+     *
+     * ПОКА ЦЕЛЬ ДАЛЬШЕ ЗОНЫ ПО Z, боковой ход не нужен вовсе: на подходе (dz в
+     * десятки units против зоны в единицы) круг до линии отряда не достаёт ни
+     * при каком x, и «подойти по x» означало бы «встать ровно на координату
+     * цели». Ровно так толпа и схлопывалась: ЗАМЕРЕНО — зомби со спавна в x = 4.5
+     * приходил на x = 0.03 ещё на z = −33, за двадцать с лишним units до линии
+     * остановки. Поэтому дальние идут прямо, а вбок забирают, подойдя.
+     */
+    const dz = targetZ - this.posZ[i]!;
+    if (Math.abs(dz) >= reach) return;
+
+    const lateral = Math.sqrt(reach * reach - dz * dz);
+
+    const dx = targetX - this.posX[i]!;
+    // Уже в зоне по x — стоим: подходить ближе незачем, цель и так достаётся.
+    if (Math.abs(dx) <= lateral) return;
+
+    // Идём только до края зоны, а не до самой цели.
+    const need = Math.abs(dx) - lateral;
+    if (need <= deadZoneX) return;
+
+    const roadLimit = CONFIG.world.roadWidth / 2 - radius;
+    const step = Math.min(speed * dt, need) * Math.sign(dx);
+    this.posX[i] = Math.min(roadLimit, Math.max(-roadLimit, this.posX[i]! + step));
+  }
+
+  /**
+   * Доворот зомби i лицом к точке (targetX, targetZ) — CONFIG.enemies.turn.
+   *
+   * Формула угла та же, что у стрелков (Squad.facingFor): модель зомби собрана
+   * из модели бойца и смотрит так же, к −Z, поэтому в atan2 идут ОБА остатка со
+   * знаком минус. Боссовая формула здесь не подходит — его модель смотрит к +Z.
+   *
+   * Сам поворот — общий turnToward (core/angle), как у босса и у отряда: скорость
+   * хранится полем, иначе ease-in не выходит.
+   */
+  private updateFacing(i: number, targetX: number, targetZ: number, dt: number): void {
+    const { maxDegreesPerSecond, easeSeconds } = CONFIG.enemies.turn;
+    const target = Math.atan2(this.posX[i]! - targetX, this.posZ[i]! - targetZ);
+
+    const turned = turnToward(
+      this.yaw[i]!,
+      this.yawSpeed[i]!,
+      target,
+      dt,
+      maxDegreesPerSecond,
+      easeSeconds,
+    );
+    this.yaw[i] = turned.yaw;
+    this.yawSpeed[i] = turned.yawSpeed;
+  }
+
   /** Поток сверху, движение к отряду, остановка на линии и удары. */
   update(dt: number, squad: SquadTarget): void {
     this.spawnStream(dt, squad);
     this.collectObstacles();
 
-    const { extraSpeed, attackInterval, attackAnim } = CONFIG.enemies;
+    const { extraSpeed, attackInterval, firstAttackDelay, attackAnim } = CONFIG.enemies;
     const { despawnZ } = CONFIG.world;
     // Скорость мира — текущая (run), а не номинальная: на боссфайте дорога стоит,
     // и зомби на ней шёл бы только своими ногами. Живых зомби в этот момент нет
@@ -637,14 +814,59 @@ export class EnemyPool {
           this.posZ[i]! + step * this.speedScaleOf[code]!,
           this.stopAt[i]!,
         );
-      } else {
-        // Дошёл: бьёт ближайшего стрелка с периодом attackInterval.
-        this.attackTimer[i]! += dt;
-        if (this.attackTimer[i]! >= attackInterval) {
-          this.attackTimer[i]! -= attackInterval;
-          // Замах кончился ударом — дальше сжатие обратно.
-          this.recoverLeft[i] = attackAnim.recoverSeconds;
-          squad.damageNearestShooter(this.posX[i]!, this.posZ[i]!, this.damage[i]!);
+      }
+
+      /*
+       * ЦЕЛЬ. Один опрос на кадр, и от него зависят три вещи сразу: куда зомби
+       * повёрнут, куда он смещается вбок и достаёт ли его удар. Опрашивать
+       * порознь нельзя — перебор разошёлся бы, и зомби целился бы в одного
+       * стрелка, а бил другого.
+       *
+       * Цель ищут и ИДУЩИЕ: доворот с погоней начинаются на подходе, поэтому
+       * толпа приходит на отряд веером, а не стеной по всей ширине дороги.
+       */
+      const hasTarget = squad.nearestShooter(this.posX[i]!, this.posZ[i]!, this.shooterHit);
+
+      if (hasTarget) {
+        this.updateFacing(i, this.shooterHit.x, this.shooterHit.z, dt);
+        this.pursueShooter(
+          i,
+          this.shooterHit.x,
+          this.shooterHit.z,
+          this.reachOf(code),
+          stats.capsule.radius,
+          dt,
+        );
+      }
+
+      if (arrived) {
+        /*
+         * Дошёл: копит замах и бьёт ближайшего стрелка с периодом attackInterval —
+         * но ТОЛЬКО пока цель в зоне поражения (reachOf, от роста вида).
+         *
+         * УДАР ПРЕРЫВАЕТСЯ, если стрелок из зоны ушёл (решение пользователя
+         * 2026-09-21): таймер замаха откатывается к началу, и раздутая капсула
+         * сдувается — зомби «не донёс» удар. Без отката зомби копил бы замах на
+         * пустом месте и бил в тот же кадр, в который отряд вернулся бы в зону,
+         * то есть увод отряда не давал бы ничего.
+         *
+         * Откат именно к firstAttackDelay, а не к нулю: вернувшийся в зону отряд
+         * получает то же окно на реакцию, что и при первом подходе, — иначе
+         * зомби, у которого цель мигнула из зоны и обратно, ударил бы почти сразу.
+         */
+        const reach = this.reachOf(code);
+        const inReach = hasTarget && this.shooterHit.distanceSq <= reach * reach;
+
+        if (!inReach) {
+          this.attackTimer[i] = attackInterval - firstAttackDelay;
+        } else {
+          this.attackTimer[i]! += dt;
+          if (this.attackTimer[i]! >= attackInterval) {
+            this.attackTimer[i]! -= attackInterval;
+            // Замах кончился ударом — дальше сжатие обратно.
+            this.recoverLeft[i] = attackAnim.recoverSeconds;
+            squad.damageNearestShooter(this.posX[i]!, this.posZ[i]!, this.damage[i]!);
+          }
         }
       }
 
@@ -666,7 +888,11 @@ export class EnemyPool {
       // относительно своего центра, а расти должна от подошвы.
       const model = this.modelCapsules[code]!;
       const y = (model.length / 2 + model.radius) * scale;
-      this.matrix.makeScale(scale, scale, scale);
+      // Поворот вокруг Y и равномерный масштаб замаха: makeRotationY задаёт
+      // базис, scale домножает его на месте. Порядок важен — масштаб после
+      // позиции сбросил бы её (так же собирается матрица бойца, Squad.layoutAllies).
+      this.matrix.makeRotationY(this.yaw[i]!);
+      this.matrix.scale(this.instanceScaleVec.setScalar(scale));
       this.matrix.setPosition(this.posX[i]!, y, this.posZ[i]!);
       // Цвет пишется рядом с матрицей и по тому же индексу отрисовки: у зомби
       // индекс в пуле и индекс в меше не совпадают (каждый вид рисуется своим
@@ -1144,6 +1370,8 @@ export class EnemyPool {
     attackTimer: number;
     recoverLeft: number;
     scale: number;
+    facingDegrees: number;
+    reach: number;
   }> {
     const out = [];
     for (let i = 0; i < this.aliveCount; i++) {
@@ -1160,6 +1388,10 @@ export class EnemyPool {
         recoverLeft: +this.recoverLeft[i]!.toFixed(3),
         // Фактический масштаб инстанса — по нему проверяется анимация атаки.
         scale: +this.instanceScale(i).toFixed(3),
+        // Куда смотрит: 0 — вперёд на отряд, плюс — вправо. По нему проверяется
+        // доворот, по reach — зона поражения.
+        facingDegrees: +((this.yaw[i]! * 180) / Math.PI).toFixed(1),
+        reach: +this.reachOf(this.kindOf[i]!).toFixed(3),
       });
     }
     return out;

@@ -14,7 +14,7 @@ import { cubicBezierEase } from '../core/easing';
 import type { BonusReceiver } from './barrels';
 import type { BossTarget } from './boss';
 import type { BulletPool } from './bullets';
-import type { SquadTarget } from './enemies';
+import type { ShooterHit, SquadTarget } from './enemies';
 import { FallPose } from './fall';
 import { makeCorpseColor, makeModelFlashColor } from './flash';
 import type { GateTarget } from './gates';
@@ -1041,6 +1041,60 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
    *
    * Бойцы за визуальным потолком недосягаемы: они позади всего строя.
    */
+  /**
+   * Место ближайшего к (fromX, fromZ) стрелка — в приёмник out (см. ShooterHit).
+   *
+   * Перебор ТОТ ЖЕ, что в damageNearestShooter, и это важно: зомби по этому
+   * методу и целится, и проверяет досягаемость, а бьёт через damageNearestShooter.
+   * Разойдись два перебора — зомби доворачивался бы к одному стрелку, а урон
+   * получал бы другой.
+   *
+   * «Невидимые» союзники (за визуальным потолком) не учитываются, как и там: у
+   * них нет своего места в строю, и целиться в них зомби не может.
+   */
+  nearestShooter(fromX: number, fromZ: number, out: ShooterHit): boolean {
+    const squadX = this.x;
+
+    let bestX = 0;
+    let bestZ = 0;
+    let bestDistanceSq = Infinity;
+    let found = false;
+
+    // Герой — цель только когда он единственный стрелок: пока есть союзники,
+    // удар достаётся им (см. damageNearestShooter и правило в CLAUDE.md).
+    if (this.allies.length === 0) {
+      const heroDx = squadX - fromX;
+      const heroDz = 0 - fromZ;
+      bestX = squadX;
+      bestZ = 0;
+      bestDistanceSq = heroDx * heroDx + heroDz * heroDz;
+      found = true;
+    }
+
+    const visible = this.visibleAllyCount;
+    for (let i = 0; i < visible; i++) {
+      this.allyOffset(i);
+      const allyX = squadX + this.offsetX;
+      const allyZ = this.offsetZ;
+      const dx = allyX - fromX;
+      const dz = allyZ - fromZ;
+      const distanceSq = dx * dx + dz * dz;
+      if (distanceSq < bestDistanceSq) {
+        bestDistanceSq = distanceSq;
+        bestX = allyX;
+        bestZ = allyZ;
+        found = true;
+      }
+    }
+
+    if (!found) return false;
+
+    out.x = bestX;
+    out.z = bestZ;
+    out.distanceSq = bestDistanceSq;
+    return true;
+  }
+
   damageNearestShooter(fromX: number, fromZ: number, amount: number): boolean {
     const squadX = this.x;
 
