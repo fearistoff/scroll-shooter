@@ -549,9 +549,14 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
   /**
    * Куда должен смотреть стрелок, стоящий в (x, z), радианы.
    *
-   * Без прицела — 0: вперёд, вглубь дороги, как собрана модель (buildSoldier‑
-   * Geometry, лицо к −Z). С прицелом — направление на точку; z у цели меньше,
-   * чем у стрелка, поэтому в atan2 идёт −dz.
+   * Без прицела — 0: вперёд, вглубь дороги, как собрана модель
+   * (buildSoldierGeometry, лицо к −Z). С прицелом — направление на точку.
+   *
+   * ЗНАКИ ОТ ЛИЦА К −Z. Поворот на yaw вокруг Y переводит взгляд (0, 0, −1) в
+   * (−sin yaw, 0, −cos yaw), поэтому в atan2 идут ОБА остатка со знаком минус:
+   * atan2(−dx, −dz), то есть atan2(x − aimX, z − aimZ). У босса модель собрана
+   * лицом к +Z, и там та же геометрия даёт atan2(dx, −dz) — формулы не
+   * взаимозаменяемы, различие ровно в развороте моделей.
    *
    * Угол считается ОТ МЕСТА БОЙЦА, а не от центра строя: на фланге широкой
    * шеренги направление на босса заметно отличается, и общим углом крайние
@@ -559,7 +564,7 @@ export class Squad implements SquadTarget, BonusReceiver, GateTarget, BossTarget
    */
   private facingFor(x: number, z: number): number {
     if (this.aimX === null || this.aimZ === null) return 0;
-    return Math.atan2(this.aimX - x, -(this.aimZ - z));
+    return Math.atan2(x - this.aimX, z - this.aimZ);
   }
 
   /**
